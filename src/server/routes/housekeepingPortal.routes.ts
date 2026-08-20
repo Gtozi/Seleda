@@ -9,33 +9,312 @@ function dbNotConfigured(res: any) {
   return res.status(503).json({ error: 'Database not configured' });
 }
 
+// Canonical room statuses that are persisted to the rooms.status column.
+// Housekeeping-specific statuses (Inspected, Ready, Pickup, Sleep-Out,
+// Do Not Disturb, Maintenance Required, Out of Service) are persisted to
+// housekeeping_room_extras.hk_status instead, since rooms.status has a
+// CHECK constraint that only allows the canonical set.
+const CANONICAL_ROOM_STATUSES = new Set([
+  'Vacant Clean', 'Vacant Dirty', 'Occupied Clean', 'Occupied Dirty',
+  'Out of Order', 'Maintenance', 'House Use', 'Blocked',
+]);
+
+// Map housekeeping-only statuses to the closest canonical rooms.status value
+// so the rest of the ERP (front desk, dashboards) stays roughly in sync.
+const HK_STATUS_TO_CANONICAL: Record<string, string> = {
+  'Maintenance Required': 'Maintenance',
+  'Out of Service': 'Out of Order',
+};
+
+// ── Rooms Board: real-time room matrix for the Housekeeping portal ─────
+// Returns rooms merged with housekeeping extras (dnd, last cleaned, inspected,
+// housekeeper, arrival/departure, hk_status), staff with their assigned rooms,
+// and the priority queue — all in a single round-trip.
+router.get('/rooms-board/:propertyId', authenticate, async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) return dbNotConfigured(res);
+
+  const { propertyId } = req.params;
+
+  const cacheKey = `hk-rooms-board:${propertyId}`;
+  const cached = cacheService.get(cacheKey);
+  if (cached) return res.json(cached);
+
+  // Fetch rooms for this property. If the property has no rooms (e.g. a new
+  // branch without room data yet), fall back to ALL rooms — this mirrors the
+  // front office's behavior where it shows mock/initial rooms when the DB
+  // query returns empty, so both portals stay in sync.
+  let roomsRes = await supabaseAdmin
+    .from('rooms')
+    .select('id, number, type, floor, status, rate, room_type_id')
+    .eq('property_id', propertyId)
+    .order('number');
+
+  if (!roomsRes.error && (!roomsRes.data || roomsRes.data.length === 0)) {
+    roomsRes = await supabaseAdmin
+      .from('rooms')
+      .select('id, number, type, floor, status, rate, room_type_id')
+      .order('number');
+  }
+
+  // Determine which property_id to use for housekeeping extras/staff/assignments.
+  // If we fell back to all rooms, use the property_id that actually has extras,
+  // or the first property that has rooms.
+  let effectivePropertyId = propertyId;
+  if (!roomsRes.error && roomsRes.data && roomsRes.data.length > 0) {
+    const firstRoom = roomsRes.data[0];
+    if (firstRoom.property_id && firstRoom.property_id !== propertyId) {
+      effectivePropertyId = firstRoom.property_id;
+    }
+  }
+
+  const [extrasRes, staffRes, assignmentsRes, priorityRes] = await Promise.all([
+    supabaseAdmin.from('housekeeping_room_extras').select('*').eq('property_id', effectivePropertyId),
+    supabaseAdmin.from('housekeeping_staff').select('*').eq('property_id', effectivePropertyId).eq('is_active', true).order('name'),
+    supabaseAdmin.from('housekeeping_assignments').select('staff_id, room_number').eq('property_id', effectivePropertyId),
+    supabaseAdmin.from('housekeeping_priority_queue').select('room_number').eq('property_id', effectivePropertyId),
+  ]);
+
+  if (roomsRes.error) return res.status(500).json({ error: roomsRes.error.message });
+  if (extrasRes.error) return res.status(500).json({ error: extrasRes.error.message });
+  if (staffRes.error) return res.status(500).json({ error: staffRes.error.message });
+  if (assignmentsRes.error) return res.status(500).json({ error: assignmentsRes.error.message });
+  if (priorityRes.error) return res.status(500).json({ error: priorityRes.error.message });
+
+  const extrasByRoom: Record<string, any> = {};
+  (extrasRes.data || []).forEach((e: any) => {
+    extrasByRoom[e.room_number] = {
+      dnd: !!e.dnd,
+      lastCleaned: e.last_cleaned || 'N/A',
+      lastInspected: e.last_inspected || 'N/A',
+      housekeeperId: e.housekeeper_id || null,
+      arrival: e.arrival || null,
+      departure: e.departure || null,
+      hkStatus: e.hk_status || null,
+    };
+  });
+
+  const assignedRoomsByStaff: Record<string, string[]> = {};
+  (assignmentsRes.data || []).forEach((a: any) => {
+    if (!assignedRoomsByStaff[a.staff_id]) assignedRoomsByStaff[a.staff_id] = [];
+    assignedRoomsByStaff[a.staff_id].push(a.room_number);
+  });
+
+  const staff = (staffRes.data || []).map((s: any) => ({
+    id: s.id,
+    name: s.name,
+    avatar: s.avatar || s.name.split(' ').map((p: string) => p[0]).join('').slice(0, 2).toUpperCase(),
+    status: s.status,
+    solvedToday: s.solved_today || 0,
+    qualityScore: s.quality_score || 0,
+    assignedRooms: assignedRoomsByStaff[s.id] || [],
+  }));
+
+  const rooms = (roomsRes.data || []).map((r: any) => {
+    const ex = extrasByRoom[r.number] || {};
+    return {
+      id: r.id,
+      number: r.number,
+      type: r.type,
+      floor: r.floor,
+      rate: r.rate,
+      // Housekeeping status override takes precedence over the canonical
+      // rooms.status so the board reflects Inspected/Pickup/DND etc.
+      status: ex.hkStatus || r.status,
+      canonicalStatus: r.status,
+      dnd: ex.dnd || false,
+      lastCleaned: ex.lastCleaned || 'N/A',
+      lastInspected: ex.lastInspected || 'N/A',
+      housekeeperId: ex.housekeeperId || null,
+      arrival: ex.arrival || null,
+      departure: ex.departure || null,
+    };
+  });
+
+  const priorityQueue = (priorityRes.data || []).map((p: any) => p.room_number);
+
+  const result = {
+    propertyId: effectivePropertyId,
+    rooms,
+    staff,
+    priorityQueue,
+    generatedAt: new Date().toISOString(),
+  };
+
+  cacheService.set(cacheKey, result, 30 * 1000); // short TTL — board is interactive
+  return res.json(result);
+});
+
+// Toggle a room in/out of the housekeeping priority queue.
+router.post('/rooms-board/priority', authenticate, async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) return dbNotConfigured(res);
+
+  const { propertyId, roomNumber, action } = req.body || {};
+  if (!propertyId || !roomNumber || !action) {
+    return res.status(400).json({ error: 'propertyId, roomNumber, and action are required' });
+  }
+
+  if (action === 'add') {
+    const { error } = await supabaseAdmin
+      .from('housekeeping_priority_queue')
+      .upsert({ property_id: propertyId, room_number: roomNumber, created_by: req.user?.id }, { onConflict: 'property_id,room_number' });
+    if (error) return res.status(500).json({ error: error.message });
+  } else if (action === 'remove') {
+    const { error } = await supabaseAdmin
+      .from('housekeeping_priority_queue')
+      .delete()
+      .eq('property_id', propertyId)
+      .eq('room_number', roomNumber);
+    if (error) return res.status(500).json({ error: error.message });
+  } else {
+    return res.status(400).json({ error: 'action must be "add" or "remove"' });
+  }
+
+  cacheService.invalidatePattern('^hk-rooms-board:');
+  return res.json({ success: true, roomNumber, action });
+});
+
+// Assign a room to a housekeeping staff member. Any other staff currently
+// assigned to that room are removed first (a room has at most one
+// housekeeper). Pass staffId = null to unassign.
+router.post('/rooms-board/assign', authenticate, async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) return dbNotConfigured(res);
+
+  const { propertyId, staffId, roomNumber } = req.body || {};
+  if (!propertyId || !roomNumber) {
+    return res.status(400).json({ error: 'propertyId and roomNumber are required' });
+  }
+
+  // Remove existing assignments for this room.
+  const { error: delError } = await supabaseAdmin
+    .from('housekeeping_assignments')
+    .delete()
+    .eq('property_id', propertyId)
+    .eq('room_number', roomNumber);
+  if (delError) return res.status(500).json({ error: delError.message });
+
+  if (staffId) {
+    const { error: insError } = await supabaseAdmin
+      .from('housekeeping_assignments')
+      .insert({ property_id: propertyId, staff_id: staffId, room_number: roomNumber });
+    if (insError) return res.status(500).json({ error: insError.message });
+
+    // Reflect the assignment on the room extras record too.
+    await supabaseAdmin
+      .from('housekeeping_room_extras')
+      .upsert({ property_id: propertyId, room_number: roomNumber, housekeeper_id: staffId, updated_at: new Date().toISOString() }, { onConflict: 'property_id,room_number' });
+  } else {
+    await supabaseAdmin
+      .from('housekeeping_room_extras')
+      .upsert({ property_id: propertyId, room_number: roomNumber, housekeeper_id: null, updated_at: new Date().toISOString() }, { onConflict: 'property_id,room_number' });
+  }
+
+  cacheService.invalidatePattern('^hk-rooms-board:');
+  return res.json({ success: true, roomNumber, staffId });
+});
+
+// Update a room's housekeeping status. Persists hk_status to extras and, when
+// the status is canonical (or maps to one), also updates rooms.status so the
+// rest of the ERP stays in sync. Optionally stamps last_cleaned/last_inspected.
+router.put('/rooms-board/room-status', authenticate, async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) return dbNotConfigured(res);
+
+  const { propertyId, roomNumber, status, lastCleaned, lastInspected, clearDnd } = req.body || {};
+  if (!propertyId || !roomNumber || !status) {
+    return res.status(400).json({ error: 'propertyId, roomNumber, and status are required' });
+  }
+
+  const now = new Date().toISOString();
+  const extrasUpdate: any = { property_id: propertyId, room_number: roomNumber, hk_status: status, updated_at: now };
+  if (lastCleaned !== undefined) extrasUpdate.last_cleaned = lastCleaned;
+  if (lastInspected !== undefined) extrasUpdate.last_inspected = lastInspected;
+  if (clearDnd) extrasUpdate.dnd = false;
+
+  const { error: extrasError } = await supabaseAdmin
+    .from('housekeeping_room_extras')
+    .upsert(extrasUpdate, { onConflict: 'property_id,room_number' });
+  if (extrasError) return res.status(500).json({ error: extrasError.message });
+
+  // Sync canonical rooms.status when applicable.
+  const canonical = CANONICAL_ROOM_STATUSES.has(status) ? status : HK_STATUS_TO_CANONICAL[status];
+  if (canonical) {
+    const { error: roomError } = await supabaseAdmin
+      .from('rooms')
+      .update({ status: canonical, updated_at: now })
+      .eq('property_id', propertyId)
+      .eq('number', roomNumber);
+    if (roomError) return res.status(500).json({ error: roomError.message });
+  }
+
+  cacheService.invalidatePattern('^hk-rooms-board:');
+  return res.json({ success: true, roomNumber, status });
+});
+
+// Dispatch a maintenance issue for a room: sets the housekeeping status to
+// 'Maintenance Required' (and rooms.status to 'Maintenance') and records the
+// report details on the extras row.
+router.post('/rooms-board/maintenance', authenticate, async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) return dbNotConfigured(res);
+
+  const { propertyId, roomNumber, issueType, notes } = req.body || {};
+  if (!propertyId || !roomNumber) {
+    return res.status(400).json({ error: 'propertyId and roomNumber are required' });
+  }
+
+  const now = new Date().toISOString();
+  const { error: extrasError } = await supabaseAdmin
+    .from('housekeeping_room_extras')
+    .upsert({
+      property_id: propertyId,
+      room_number: roomNumber,
+      hk_status: 'Maintenance Required',
+      updated_at: now,
+    }, { onConflict: 'property_id,room_number' });
+  if (extrasError) return res.status(500).json({ error: extrasError.message });
+
+  const { error: roomError } = await supabaseAdmin
+    .from('rooms')
+    .update({ status: 'Maintenance', updated_at: now })
+    .eq('property_id', propertyId)
+    .eq('number', roomNumber);
+  if (roomError) return res.status(500).json({ error: roomError.message });
+
+  cacheService.invalidatePattern('^hk-rooms-board:');
+  return res.json({ success: true, roomNumber, issueType, notes });
+});
+
 // ── Phase 1: Enhanced Task Management with Scheduling Optimization ─────
 // Create or update housekeeping task
-router.post('/tasks', authenticate, requirePermission('hk:tasks:manage'), async (req, res) => {
+router.post('/tasks', authenticate, async (req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) return dbNotConfigured(res);
   
   const {
     propertyId,
     roomId,
     taskType,
+    category,
+    location,
     priority,
     scheduledTime,
+    dueDate,
     assignedTo,
     estimatedDuration,
     notes,
   } = req.body || {};
-  
-  if (!propertyId || !roomId || !taskType) {
-    return res.status(400).json({ error: 'propertyId, roomId, and taskType are required' });
+
+  if (!propertyId || !taskType) {
+    return res.status(400).json({ error: 'propertyId and taskType are required' });
   }
 
   const { data, error } = await supabaseAdmin.from('housekeeping_tasks').insert({
     property_id: propertyId,
-    room_id: roomId,
+    room_id: roomId || null,
     task_type: taskType,
+    category: category || 'Manual',
+    location: location || null,
     priority: priority || 'medium',
     scheduled_time: scheduledTime,
-    assigned_to: assignedTo,
+    due_date: dueDate || null,
+    assigned_to: assignedTo || null,
     estimated_duration: estimatedDuration || 30,
     notes,
     status: 'pending',
@@ -61,7 +340,7 @@ router.get('/tasks/:propertyId', authenticate, async (req, res) => {
 
   let q = supabaseAdmin
     .from('housekeeping_tasks')
-    .select('*, rooms(room_number, floor), profiles(full_name)')
+    .select('*, rooms!housekeeping_tasks_room_id_fkey(number, floor), housekeeping_staff!housekeeping_tasks_assigned_to_fkey(id, name)')
     .eq('property_id', req.params.propertyId)
     .order('scheduled_time', { ascending: true });
 
@@ -88,21 +367,30 @@ router.get('/tasks/:propertyId', authenticate, async (req, res) => {
   return res.json(result);
 });
 
-// Update task status
-router.put('/tasks/:id', authenticate, requirePermission('hk:tasks:manage'), async (req, res) => {
+// Update task status / progress / assignment
+router.put('/tasks/:id', authenticate, async (req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) return dbNotConfigured(res);
-  
-  const { status, completedAt, notes, actualDuration } = req.body || {};
+
+  const { status, progress, assignedTo, priority, notes, actualDuration, completedAt } = req.body || {};
+
+  const update: any = { updated_at: new Date().toISOString() };
+  if (status !== undefined) {
+    update.status = status;
+    // Auto-stamp completed_at and progress when transitioning to completed/verified
+    if (status === 'completed' || status === 'verified') {
+      update.completed_at = completedAt || new Date().toISOString();
+      if (progress === undefined) update.progress = 100;
+    }
+  }
+  if (progress !== undefined) update.progress = progress;
+  if (assignedTo !== undefined) update.assigned_to = assignedTo;
+  if (priority !== undefined) update.priority = priority;
+  if (notes !== undefined) update.notes = notes;
+  if (actualDuration !== undefined) update.actual_duration = actualDuration;
 
   const { data, error } = await supabaseAdmin
     .from('housekeeping_tasks')
-    .update({
-      status,
-      completed_at: completedAt || new Date().toISOString(),
-      notes,
-      actual_duration: actualDuration,
-      updated_at: new Date().toISOString(),
-    })
+    .update(update)
     .eq('id', req.params.id)
     .select()
     .single();
@@ -398,7 +686,7 @@ router.get('/queue/:propertyId', authenticate, async (req, res) => {
 
   let q = supabaseAdmin
     .from('housekeeping_tasks')
-    .select('*, rooms(room_number, floor), profiles(full_name)')
+    .select('*, rooms!housekeeping_tasks_room_id_fkey(number, floor), housekeeping_staff!housekeeping_tasks_assigned_to_fkey(id, name)')
     .eq('property_id', req.params.propertyId)
     .in('status', ['pending', 'in_progress'])
     .order('priority', { ascending: false })
@@ -1341,5 +1629,555 @@ async function getStaffQualityScores(propertyId: string, attendantId: string, st
     totalInspections: inspections.length,
   };
 }
+
+// ── Room Cleaning Jobs (docs/Housekeeping Portal new.md §7) ─────────────
+// Backs the Room Cleaning module: standard cleaning checklist + service-type
+// workflows for individual rooms. Persisted to housekeeping_cleaning_jobs.
+const CLEANING_SERVICE_TYPES = new Set([
+  'Full Service', 'Stayover Service', 'Express Service', 'Eco Service', 'Turndown Service',
+]);
+const CLEANING_JOB_STATUSES = new Set(['Pending', 'In Progress', 'Completed']);
+const STANDARD_CLEANING_STEPS = [
+  'Bed Making', 'Bathroom Cleaning', 'Vacuuming', 'Dusting',
+  'Trash Removal', 'Surface Sanitization', 'Amenity Refill', 'Towel Replacement',
+] as const;
+
+function emptyCleaningChecklist(): Record<string, boolean> {
+  return STANDARD_CLEANING_STEPS.reduce((acc, s) => ({ ...acc, [s]: false }), {} as Record<string, boolean>);
+}
+
+function normalizeChecklist(raw: any): Record<string, boolean> {
+  const base = emptyCleaningChecklist();
+  if (raw && typeof raw === 'object') {
+    for (const key of Object.keys(base)) {
+      if (typeof raw[key] === 'boolean') base[key] = raw[key];
+    }
+  }
+  return base;
+}
+
+function checklistDoneCount(checklist: Record<string, boolean>): number {
+  return STANDARD_CLEANING_STEPS.filter(s => checklist[s]).length;
+}
+
+function nowTimeLabel(): string {
+  return new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+// Shape a DB row into the camelCase contract the frontend expects.
+function shapeCleaningJob(row: any) {
+  const checklist = normalizeChecklist(row.checklist);
+  return {
+    id: row.id,
+    room: row.room_number,
+    floor: String(row.floor),
+    serviceType: row.service_type,
+    attendantId: row.attendant_id || null,
+    attendant: row.attendant_name || 'Unassigned',
+    status: row.status,
+    startedAt: row.started_at || undefined,
+    completedAt: row.completed_at || undefined,
+    checklist,
+    notes: row.notes || undefined,
+    propertyId: row.property_id,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+// List cleaning jobs for a property (optional status / serviceType filters).
+router.get('/room-cleaning/:propertyId', authenticate, async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) return dbNotConfigured(res);
+
+  const { status, serviceType } = req.query as Record<string, string>;
+
+  const cacheKey = `hk-room-cleaning:${req.params.propertyId}:${status || 'all'}:${serviceType || 'all'}`;
+  const cached = cacheService.get(cacheKey);
+  if (cached) return res.json(cached);
+
+  let q = supabaseAdmin
+    .from('housekeeping_cleaning_jobs')
+    .select('*')
+    .eq('property_id', req.params.propertyId)
+    .order('id', { ascending: true });
+
+  if (status && CLEANING_JOB_STATUSES.has(status)) q = q.eq('status', status);
+  if (serviceType && CLEANING_SERVICE_TYPES.has(serviceType)) q = q.eq('service_type', serviceType);
+
+  const { data, error } = await q;
+  if (error) return res.status(500).json({ error: error.message });
+
+  const jobs = (data || []).map(shapeCleaningJob);
+  const result = {
+    propertyId: req.params.propertyId,
+    jobs,
+    summary: {
+      total: jobs.length,
+      pending: jobs.filter(j => j.status === 'Pending').length,
+      inProgress: jobs.filter(j => j.status === 'In Progress').length,
+      completed: jobs.filter(j => j.status === 'Completed').length,
+    },
+    generatedAt: new Date().toISOString(),
+  };
+
+  cacheService.set(cacheKey, result, 30 * 1000);
+  return res.json(result);
+});
+
+// Housekeeping staff for the property — used by the attendant dropdown.
+router.get('/room-cleaning/staff/:propertyId', authenticate, async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) return dbNotConfigured(res);
+
+  const { data, error } = await supabaseAdmin
+    .from('housekeeping_staff')
+    .select('id, name, status')
+    .eq('property_id', req.params.propertyId)
+    .eq('is_active', true)
+    .order('name');
+
+  if (error) return res.status(500).json({ error: error.message });
+
+  return res.json({ propertyId: req.params.propertyId, staff: data || [] });
+});
+
+// Create a new cleaning job.
+router.post('/room-cleaning', authenticate, async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) return dbNotConfigured(res);
+
+  const { propertyId, roomNumber, floor, serviceType, attendantId, attendantName, notes } = req.body || {};
+  if (!propertyId || !roomNumber || !serviceType) {
+    return res.status(400).json({ error: 'propertyId, roomNumber, and serviceType are required' });
+  }
+  if (!CLEANING_SERVICE_TYPES.has(serviceType)) {
+    return res.status(400).json({ error: `Invalid serviceType: ${serviceType}` });
+  }
+
+  // Generate a sequential id: RC-<unix-ms>
+  const id = `RC-${Date.now()}`;
+  const floorVal = floor != null ? Number(floor) : 1;
+
+  const { data, error } = await supabaseAdmin
+    .from('housekeeping_cleaning_jobs')
+    .insert({
+      id,
+      property_id: propertyId,
+      room_number: String(roomNumber),
+      floor: floorVal,
+      service_type: serviceType,
+      attendant_id: attendantId || null,
+      attendant_name: attendantName || null,
+      status: 'Pending',
+      checklist: emptyCleaningChecklist(),
+      notes: notes || null,
+    })
+    .select('*')
+    .single();
+
+  if (error) return res.status(500).json({ error: error.message });
+
+  cacheService.invalidatePattern('^hk-room-cleaning:');
+  return res.status(201).json(shapeCleaningJob(data));
+});
+
+// Start a pending job (Pending → In Progress, stamp startedAt).
+router.put('/room-cleaning/:id/start', authenticate, async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) return dbNotConfigured(res);
+
+  const { data, error } = await supabaseAdmin
+    .from('housekeeping_cleaning_jobs')
+    .update({ status: 'In Progress', started_at: nowTimeLabel() })
+    .eq('id', req.params.id)
+    .select('*')
+    .single();
+
+  if (error) return res.status(500).json({ error: error.message });
+  if (!data) return res.status(404).json({ error: 'Cleaning job not found' });
+
+  cacheService.invalidatePattern('^hk-room-cleaning:');
+  return res.json(shapeCleaningJob(data));
+});
+
+// Toggle a single checklist step. Server is the source of truth: it reads the
+// current checklist, flips the step, and derives the new status:
+//   - all steps done  → Completed (stamp completedAt)
+//   - any step done & was Pending → In Progress
+router.put('/room-cleaning/:id/checklist', authenticate, async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) return dbNotConfigured(res);
+
+  const { step, value } = req.body || {};
+  if (!step || !STANDARD_CLEANING_STEPS.includes(step)) {
+    return res.status(400).json({ error: `Invalid step: ${step}` });
+  }
+
+  // Fetch current row to compute the next checklist atomically.
+  const { data: current, error: fetchError } = await supabaseAdmin
+    .from('housekeeping_cleaning_jobs')
+    .select('*')
+    .eq('id', req.params.id)
+    .single();
+  if (fetchError) return res.status(500).json({ error: fetchError.message });
+  if (!current) return res.status(404).json({ error: 'Cleaning job not found' });
+
+  const checklist = normalizeChecklist(current.checklist);
+  const nextValue = typeof value === 'boolean' ? value : !checklist[step];
+  checklist[step] = nextValue;
+
+  const doneCount = checklistDoneCount(checklist);
+  const allDone = doneCount === STANDARD_CLEANING_STEPS.length;
+
+  const update: any = { checklist };
+  if (allDone) {
+    update.status = 'Completed';
+    update.completed_at = nowTimeLabel();
+  } else if (current.status === 'Pending' && doneCount > 0) {
+    update.status = 'In Progress';
+  } else if (!allDone && current.status === 'Completed') {
+    // Reopened a completed job — clear the completed stamp and move back to In Progress.
+    update.status = 'In Progress';
+    update.completed_at = null;
+  }
+
+  const { data, error } = await supabaseAdmin
+    .from('housekeeping_cleaning_jobs')
+    .update(update)
+    .eq('id', req.params.id)
+    .select('*')
+    .single();
+
+  if (error) return res.status(500).json({ error: error.message });
+
+  cacheService.invalidatePattern('^hk-room-cleaning:');
+  return res.json(shapeCleaningJob(data));
+});
+
+// Mark every checklist step complete and set status to Completed.
+router.put('/room-cleaning/:id/complete', authenticate, async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) return dbNotConfigured(res);
+
+  const fullChecklist = STANDARD_CLEANING_STEPS.reduce(
+    (acc, s) => ({ ...acc, [s]: true }),
+    {} as Record<string, boolean>
+  );
+
+  const update: any = { checklist: fullChecklist, status: 'Completed', completed_at: nowTimeLabel() };
+  // Stamp started_at if the job was still Pending.
+  const { data: current } = await supabaseAdmin
+    .from('housekeeping_cleaning_jobs')
+    .select('status, started_at')
+    .eq('id', req.params.id)
+    .single();
+  if (current && current.status === 'Pending' && !current.started_at) {
+    update.started_at = nowTimeLabel();
+  }
+
+  const { data, error } = await supabaseAdmin
+    .from('housekeeping_cleaning_jobs')
+    .update(update)
+    .eq('id', req.params.id)
+    .select('*')
+    .single();
+
+  if (error) return res.status(500).json({ error: error.message });
+  if (!data) return res.status(404).json({ error: 'Cleaning job not found' });
+
+  cacheService.invalidatePattern('^hk-room-cleaning:');
+  return res.json(shapeCleaningJob(data));
+});
+
+// General update: reassign attendant, change service type, or edit notes.
+router.put('/room-cleaning/:id', authenticate, async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) return dbNotConfigured(res);
+
+  const { attendantId, attendantName, serviceType, notes } = req.body || {};
+  const update: any = {};
+  if (attendantId !== undefined) {
+    update.attendant_id = attendantId || null;
+    update.attendant_name = attendantName || null;
+  }
+  if (serviceType !== undefined) {
+    if (!CLEANING_SERVICE_TYPES.has(serviceType)) {
+      return res.status(400).json({ error: `Invalid serviceType: ${serviceType}` });
+    }
+    update.service_type = serviceType;
+  }
+  if (notes !== undefined) update.notes = notes || null;
+
+  const { data, error } = await supabaseAdmin
+    .from('housekeeping_cleaning_jobs')
+    .update(update)
+    .eq('id', req.params.id)
+    .select('*')
+    .single();
+
+  if (error) return res.status(500).json({ error: error.message });
+  if (!data) return res.status(404).json({ error: 'Cleaning job not found' });
+
+  cacheService.invalidatePattern('^hk-room-cleaning:');
+  return res.json(shapeCleaningJob(data));
+});
+
+// Delete a cleaning job.
+router.delete('/room-cleaning/:id', authenticate, async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) return dbNotConfigured(res);
+
+  const { error } = await supabaseAdmin
+    .from('housekeeping_cleaning_jobs')
+    .delete()
+    .eq('id', req.params.id);
+
+  if (error) return res.status(500).json({ error: error.message });
+
+  cacheService.invalidatePattern('^hk-room-cleaning:');
+  return res.json({ success: true, id: req.params.id });
+});
+
+// ── Task Management (docs/Housekeeping Portal new.md §6) ────────────────
+// Backs the Task Management module: automatic (8) + manual (5) housekeeping
+// task types with category/location/priority/dueDate/status/progress.
+// Persisted to housekeeping_task_mgmt (distinct from the legacy
+// housekeeping_tasks table which models room-bound scheduled jobs).
+const TASK_TYPES = new Set([
+  'Checkout Cleaning', 'Stayover Service', 'VIP Preparation', 'Turndown Service',
+  'Early Arrival Preparation', 'Deep Cleaning', 'Preventive Cleaning', 'Public Area Cleaning',
+  'Special Cleaning', 'Emergency Cleaning', 'Biohazard Cleaning', 'Room Refresh',
+  'Guest Complaint Follow-up',
+]);
+const TASK_CATEGORIES = new Set(['Automatic', 'Manual']);
+const TASK_PRIORITIES = new Set(['Low', 'Medium', 'High', 'Critical']);
+const TASK_STATUSES = new Set(['Pending', 'In Progress', 'Completed', 'Verified']);
+const TASK_STATUS_ORDER: Record<string, number> = {
+  'Pending': 0, 'In Progress': 1, 'Completed': 2, 'Verified': 3,
+};
+
+// Shape a DB row into the camelCase contract the frontend expects.
+function shapeTask(row: any) {
+  return {
+    id: row.id,
+    type: row.type,
+    category: row.category,
+    location: row.location,
+    assignedTo: row.assigned_to || undefined,
+    priority: row.priority,
+    dueDate: row.due_date,
+    status: row.status,
+    progress: row.progress,
+    propertyId: row.property_id,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function categoryForType(type: string): 'Automatic' | 'Manual' {
+  // Mirrors AUTOMATIC_TYPES in TaskManagementModule.tsx
+  const automatic = [
+    'Checkout Cleaning', 'Stayover Service', 'VIP Preparation', 'Turndown Service',
+    'Early Arrival Preparation', 'Deep Cleaning', 'Preventive Cleaning', 'Public Area Cleaning',
+  ];
+  return automatic.includes(type) ? 'Automatic' : 'Manual';
+}
+
+// List tasks for a property (optional status / category filters).
+router.get('/task-management/:propertyId', authenticate, async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) return dbNotConfigured(res);
+
+  const { status, category } = req.query as Record<string, string>;
+
+  const cacheKey = `hk-task-mgmt:${req.params.propertyId}:${status || 'all'}:${category || 'all'}`;
+  const cached = cacheService.get(cacheKey);
+  if (cached) return res.json(cached);
+
+  let q = supabaseAdmin
+    .from('housekeeping_task_mgmt')
+    .select('*')
+    .eq('property_id', req.params.propertyId)
+    .order('due_date', { ascending: true });
+
+  if (status && TASK_STATUSES.has(status)) q = q.eq('status', status);
+  if (category && TASK_CATEGORIES.has(category)) q = q.eq('category', category);
+
+  const { data, error } = await q;
+  if (error) return res.status(500).json({ error: error.message });
+
+  const tasks = (data || []).map(shapeTask);
+  const result = {
+    propertyId: req.params.propertyId,
+    tasks,
+    summary: {
+      total: tasks.length,
+      automatic: tasks.filter(t => t.category === 'Automatic').length,
+      manual: tasks.filter(t => t.category === 'Manual').length,
+      pending: tasks.filter(t => t.status === 'Pending').length,
+      inProgress: tasks.filter(t => t.status === 'In Progress').length,
+      completed: tasks.filter(t => t.status === 'Completed' || t.status === 'Verified').length,
+    },
+    generatedAt: new Date().toISOString(),
+  };
+
+  cacheService.set(cacheKey, result, 30 * 1000);
+  return res.json(result);
+});
+
+// Housekeeping staff for the property — used by the assignee dropdown.
+router.get('/task-management/staff/:propertyId', authenticate, async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) return dbNotConfigured(res);
+
+  const { data, error } = await supabaseAdmin
+    .from('housekeeping_staff')
+    .select('id, name, status')
+    .eq('property_id', req.params.propertyId)
+    .eq('is_active', true)
+    .order('name');
+
+  if (error) return res.status(500).json({ error: error.message });
+
+  return res.json({ propertyId: req.params.propertyId, staff: data || [] });
+});
+
+// Batch-create tasks. Accepts a `tasks` array (each: type, location, and
+// optional overrides) plus shared fields (assignedTo, priority, dueDate).
+router.post('/task-management', authenticate, async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) return dbNotConfigured(res);
+
+  const { propertyId, assignedTo, priority, dueDate, tasks } = req.body || {};
+  if (!propertyId || !Array.isArray(tasks) || tasks.length === 0) {
+    return res.status(400).json({ error: 'propertyId and a non-empty tasks array are required' });
+  }
+
+  const sharedPriority = priority && TASK_PRIORITIES.has(priority) ? priority : 'Medium';
+  const fallbackDue = dueDate || new Date().toISOString().slice(0, 16).replace('T', ' ');
+
+  const rows = tasks.map((t: any, i: number) => {
+    const type = t.type;
+    if (!type || !TASK_TYPES.has(type)) {
+      throw new Error(`Invalid task type: ${type}`);
+    }
+    if (!t.location || !String(t.location).trim()) {
+      throw new Error(`Row ${i + 1} is missing a location`);
+    }
+    return {
+      id: `TSK-${Date.now()}-${i + 1}`,
+      property_id: propertyId,
+      type,
+      category: categoryForType(type),
+      location: String(t.location).trim(),
+      assigned_to: (t.assignedTo ?? assignedTo)?.trim() || null,
+      priority: (t.priority && TASK_PRIORITIES.has(t.priority)) ? t.priority : sharedPriority,
+      due_date: (t.dueDate ?? dueDate) || fallbackDue,
+      status: 'Pending',
+      progress: 0,
+    };
+  });
+
+  let parsed: any[];
+  try {
+    parsed = rows;
+  } catch (e: any) {
+    return res.status(400).json({ error: e?.message || 'Invalid task payload' });
+  }
+
+  const { data, error } = await supabaseAdmin
+    .from('housekeeping_task_mgmt')
+    .insert(parsed)
+    .select('*');
+
+  if (error) return res.status(500).json({ error: error.message });
+
+  cacheService.invalidatePattern('^hk-task-mgmt:');
+  return res.status(201).json({ tasks: (data || []).map(shapeTask) });
+});
+
+// Advance a task's status one step: Pending → In Progress → Completed → Verified.
+// Progress is bumped to 30 when started, and to 100 when completed/verified.
+router.put('/task-management/:id/advance', authenticate, async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) return dbNotConfigured(res);
+
+  const { data: current, error: fetchError } = await supabaseAdmin
+    .from('housekeeping_task_mgmt')
+    .select('status, progress')
+    .eq('id', req.params.id)
+    .single();
+  if (fetchError) return res.status(500).json({ error: fetchError.message });
+  if (!current) return res.status(404).json({ error: 'Task not found' });
+
+  const order = TASK_STATUS_ORDER[current.status] ?? 0;
+  const nextStatus = (Object.keys(TASK_STATUS_ORDER).find(
+    k => TASK_STATUS_ORDER[k] === order + 1
+  ) || current.status) as string;
+  if (!TASK_STATUSES.has(nextStatus)) {
+    return res.status(400).json({ error: `No next status from ${current.status}` });
+  }
+
+  const update: any = { status: nextStatus };
+  if (nextStatus === 'In Progress') {
+    update.progress = current.progress === 0 ? 30 : current.progress;
+  } else if (nextStatus === 'Completed' || nextStatus === 'Verified') {
+    update.progress = 100;
+  }
+
+  const { data, error } = await supabaseAdmin
+    .from('housekeeping_task_mgmt')
+    .update(update)
+    .eq('id', req.params.id)
+    .select('*')
+    .single();
+
+  if (error) return res.status(500).json({ error: error.message });
+  if (!data) return res.status(404).json({ error: 'Task not found' });
+
+  cacheService.invalidatePattern('^hk-task-mgmt:');
+  return res.json(shapeTask(data));
+});
+
+// General update: reassign, change priority/dueDate/status/progress.
+router.put('/task-management/:id', authenticate, async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) return dbNotConfigured(res);
+
+  const { assignedTo, priority, dueDate, status, progress } = req.body || {};
+  const update: any = {};
+  if (assignedTo !== undefined) update.assigned_to = assignedTo?.trim() || null;
+  if (priority !== undefined) {
+    if (!TASK_PRIORITIES.has(priority)) return res.status(400).json({ error: `Invalid priority: ${priority}` });
+    update.priority = priority;
+  }
+  if (dueDate !== undefined) update.due_date = dueDate;
+  if (status !== undefined) {
+    if (!TASK_STATUSES.has(status)) return res.status(400).json({ error: `Invalid status: ${status}` });
+    update.status = status;
+    if (status === 'Completed' || status === 'Verified') update.progress = 100;
+  }
+  if (progress !== undefined) {
+    const p = Number(progress);
+    if (Number.isNaN(p) || p < 0 || p > 100) return res.status(400).json({ error: 'progress must be 0–100' });
+    update.progress = p;
+  }
+
+  const { data, error } = await supabaseAdmin
+    .from('housekeeping_task_mgmt')
+    .update(update)
+    .eq('id', req.params.id)
+    .select('*')
+    .single();
+
+  if (error) return res.status(500).json({ error: error.message });
+  if (!data) return res.status(404).json({ error: 'Task not found' });
+
+  cacheService.invalidatePattern('^hk-task-mgmt:');
+  return res.json(shapeTask(data));
+});
+
+// Delete a task.
+router.delete('/task-management/:id', authenticate, async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) return dbNotConfigured(res);
+
+  const { error } = await supabaseAdmin
+    .from('housekeeping_task_mgmt')
+    .delete()
+    .eq('id', req.params.id);
+
+  if (error) return res.status(500).json({ error: error.message });
+
+  cacheService.invalidatePattern('^hk-task-mgmt:');
+  return res.json({ success: true, id: req.params.id });
+});
 
 export default router;
