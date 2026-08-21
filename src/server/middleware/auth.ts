@@ -8,7 +8,8 @@
 
 import { Request, Response, NextFunction } from 'express';
 import type { User } from '../../types/erp';
-import { getRequestUser, userCan, PermissionContext, setAuditContext, clearAuditContext } from '../authHelpers';
+import { userCan, PermissionContext, setAuditContext, clearAuditContext } from '../authHelpers';
+import { getRequestUser } from '../services/sessionService';
 
 // Extend Express Request type to include user
 declare global {

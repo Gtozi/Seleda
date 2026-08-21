@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { authenticate, requireActiveAccount } from '../middleware/auth';
-import { getRequestUser, userCan, verifyTotp, generateMfaSecret } from '../authHelpers';
+import { userCan, verifyTotp, generateMfaSecret } from '../authHelpers';
+import { getRequestUser } from '../services/sessionService';
 import { enrichUserWithDerivedPermissions, writeAuditEvent, hasSupabaseAdminConfig, supabaseAdmin, mapSystemUserFromDb } from '../services/sharedServices';
 import {
   authenticateUser, createSession, revokeRequestSession, clearSessionCookie,
