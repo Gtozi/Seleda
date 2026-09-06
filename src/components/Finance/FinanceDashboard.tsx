@@ -98,6 +98,22 @@ function parseCurrency(value?: string): number {
   return Number.isNaN(n) ? 0 : n;
 }
 
+// Empty snapshot used when the backend has no data yet, so the UI still renders.
+const EMPTY_SNAPSHOT: FinDashboardSnapshotFE = {
+  id: '',
+  property_id: null,
+  snapshot_date: new Date().toISOString().split('T')[0],
+  kpis: [],
+  revenue_expense_trend: [],
+  dept_revenue: [],
+  ar_aging: [],
+  alerts: [],
+  bank_accounts: [],
+  ratios: [],
+  created_at: new Date().toISOString(),
+  updated_at: new Date().toISOString(),
+};
+
 export default function FinanceDashboard() {
   const { currentPropertyId, addNotification } = useERP();
   const [snapshot, setSnapshot] = useState<FinDashboardSnapshotFE | null>(null);
@@ -115,7 +131,9 @@ export default function FinanceDashboard() {
       setSnapshot(data);
       setLastUpdated(new Date());
     } catch (err: any) {
-      addNotification(err.message || 'Failed to load finance dashboard', 'warning', 'Finance');
+      // Keep the UI rendered with empty state — don't blank out the page.
+      setSnapshot(prev => prev ?? EMPTY_SNAPSHOT);
+      addNotification(err.message || 'No finance dashboard snapshot found — showing empty state', 'warning', 'Finance');
     } finally {
       setLoading(false);
     }
@@ -198,31 +216,31 @@ export default function FinanceDashboard() {
         <div className="flex items-center justify-center min-h-[400px]">
           <Loader2 className="w-10 h-10 animate-spin text-[var(--color-accent-operations)]" />
         </div>
-      ) : !snapshot ? (
-        <SectionCard title="No Dashboard Data" icon={AlertCircle} tone="warning">
-          <div className="px-6 py-10 text-center text-gray-500">
-            No finance dashboard snapshot available for this property.
-          </div>
-        </SectionCard>
       ) : (
         <>
           {/* KPI grid */}
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-4">
-            {kpiTiles.map((kpi, i) => {
-              const Icon = ICON_MAP[kpi.icon] || DollarSign;
-              const { change } = parseTrend(kpi.trend);
-              return (
-                <StatCard
-                  key={i}
-                  title={kpi.label}
-                  value={kpi.value}
-                  icon={Icon}
-                  tone={toneFromColorClass(kpi.color_class)}
-                  change={change}
-                  changeLabel="vs prior period"
-                />
-              );
-            })}
+            {kpiTiles.length === 0 ? (
+              <div className="col-span-full text-center py-8 text-sm text-gray-400 dark:text-gray-500">
+                No KPI data available for this period.
+              </div>
+            ) : (
+              kpiTiles.map((kpi, i) => {
+                const Icon = ICON_MAP[kpi.icon] || DollarSign;
+                const { change } = parseTrend(kpi.trend);
+                return (
+                  <StatCard
+                    key={i}
+                    title={kpi.label}
+                    value={kpi.value}
+                    icon={Icon}
+                    tone={toneFromColorClass(kpi.color_class)}
+                    change={change}
+                    changeLabel="vs prior period"
+                  />
+                );
+              })
+            )}
           </div>
 
           {/* Charts */}
@@ -236,6 +254,11 @@ export default function FinanceDashboard() {
               pad="md"
             >
               <div className="h-72 w-full">
+                {trendData.length === 0 ? (
+                  <div className="h-full flex items-center justify-center text-sm text-gray-400 dark:text-gray-500">
+                    No revenue/expense trend data available.
+                  </div>
+                ) : (
                 <ResponsiveContainer width="100%" height="100%">
                   <AreaChart data={trendData}>
                     <defs>
@@ -251,6 +274,7 @@ export default function FinanceDashboard() {
                     <Area type="monotone" dataKey="expense" stroke="#cbd5e1" strokeWidth={2} strokeDasharray="5 5" fill="none" />
                   </AreaChart>
                 </ResponsiveContainer>
+                )}
               </div>
               <div className="flex items-center gap-4 mt-4">
                 <span className="flex items-center gap-1.5 text-[10px] font-bold text-slate-500">
@@ -271,6 +295,11 @@ export default function FinanceDashboard() {
               pad="md"
             >
               <div className="h-64 w-full">
+                {deptData.length === 0 ? (
+                  <div className="h-full flex items-center justify-center text-sm text-gray-400 dark:text-gray-500">
+                    No department revenue data available.
+                  </div>
+                ) : (
                 <ResponsiveContainer width="100%" height="100%">
                   <PieChart>
                     <Pie data={deptData} cx="50%" cy="50%" innerRadius={60} outerRadius={85} paddingAngle={5} dataKey="value">
@@ -281,6 +310,7 @@ export default function FinanceDashboard() {
                     <Tooltip contentStyle={{ borderRadius: '12px', fontSize: '12px' }} />
                   </PieChart>
                 </ResponsiveContainer>
+                )}
               </div>
               <div className="space-y-2 mt-4">
                 {deptData.map((dept, i) => (
@@ -307,7 +337,12 @@ export default function FinanceDashboard() {
               pad="md"
             >
               <div className="space-y-4">
-                {arAging.map((bucket, i) => {
+                {arAging.length === 0 ? (
+                  <div className="text-center py-6 text-sm text-gray-400 dark:text-gray-500">
+                    No AR aging data available.
+                  </div>
+                ) : (
+                arAging.map((bucket, i) => {
                   const pct = (bucket.amount / maxAr) * 100;
                   return (
                     <div key={i} className="space-y-1.5">
@@ -320,7 +355,8 @@ export default function FinanceDashboard() {
                       </div>
                     </div>
                   );
-                })}
+                })
+                )}
               </div>
               <div className="mt-6 p-4 bg-indigo-50 dark:bg-indigo-500/10 rounded-2xl border border-indigo-100 dark:border-indigo-500/20">
                 <div className="flex items-center gap-2 text-indigo-600 dark:text-indigo-400 mb-1">
@@ -383,23 +419,33 @@ export default function FinanceDashboard() {
             tone="success"
           >
             <div className="grid md:grid-cols-3 gap-4">
-              {bankAccounts.map((acc, i) => (
+              {bankAccounts.length === 0 ? (
+                <div className="col-span-full text-center py-6 text-sm text-gray-400 dark:text-gray-500">
+                  No bank account data available.
+                </div>
+              ) : (
+              bankAccounts.map((acc, i) => (
                 <div key={i} className={`p-4 bg-slate-50 dark:bg-slate-950/40 rounded-2xl border-l-[3px] ${acc.color}`}>
                   <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest leading-none mb-1">{acc.bank}</p>
                   <p className="text-[9px] text-slate-500 font-bold mb-3 uppercase tracking-tighter">{acc.acc} · {acc.type}</p>
                   <h4 className="text-sm font-black text-slate-900 dark:text-white leading-none">{acc.bal}</h4>
                 </div>
-              ))}
+              ))
+              )}
             </div>
 
             <div className="mt-6 border-t border-slate-100 dark:border-slate-800 pt-6 flex flex-col md:flex-row justify-between items-center gap-4">
               <div className="flex items-center gap-8">
-                {ratios.map((ratio, i) => (
+                {ratios.length === 0 ? (
+                  <span className="text-sm text-gray-400 dark:text-gray-500">No ratio data available.</span>
+                ) : (
+                ratios.map((ratio, i) => (
                   <div key={i}>
                     <span className="text-[10px] font-black text-slate-400 uppercase block mb-1">{ratio.name}</span>
                     <span className={`text-sm font-black ${ratio.name === 'Current Ratio' ? 'text-emerald-500' : ratio.name === 'Burn Rate' ? 'text-rose-500' : 'text-slate-900 dark:text-white'}`}>{ratio.value}</span>
                   </div>
-                ))}
+                ))
+                )}
               </div>
               <button className="bg-blue-600 hover:bg-blue-700 text-white text-[10px] font-black uppercase px-6 py-2.5 rounded-lg transition">
                 Download Exec. Summary
