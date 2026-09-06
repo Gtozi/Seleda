@@ -2009,3 +2009,73 @@ export const updateApprovalLevelConfig = (id: string, patch: Partial<{
 
 export const deleteApprovalLevelConfig = (id: string) =>
   apiRequest<{ success: boolean }>(`${API_BASE}/config/approval-levels/${id}`, { method: 'DELETE' });
+
+// ── Finance Dashboard ──────────────────────────────────────────────────────
+
+export interface FinDashboardKpiFE {
+  label: string;
+  value: string;
+  trend?: string;
+  is_positive: boolean;
+  icon: string;
+  color_class?: string;
+  bg_class?: string;
+}
+
+export interface FinDashboardTrendFE {
+  month: string;
+  revenue: number;
+  expense: number;
+}
+
+export interface FinDashboardDeptRevenueFE {
+  name: string;
+  value: number;
+  color: string;
+}
+
+export interface FinDashboardArAgingFE {
+  range: string;
+  amount: number;
+}
+
+export interface FinDashboardAlertFE {
+  type: string;
+  message: string;
+  severity: 'high' | 'medium' | 'low';
+  icon: string;
+  color: string;
+  bg: string;
+  border: string;
+}
+
+export interface FinDashboardBankAccountFE {
+  bank: string;
+  acc: string;
+  type: string;
+  bal: string;
+  color: string;
+}
+
+export interface FinDashboardRatioFE {
+  name: string;
+  value: string;
+}
+
+export interface FinDashboardSnapshotFE {
+  id: string;
+  property_id: string | null;
+  snapshot_date: string;
+  kpis: FinDashboardKpiFE[];
+  revenue_expense_trend: FinDashboardTrendFE[];
+  dept_revenue: FinDashboardDeptRevenueFE[];
+  ar_aging: FinDashboardArAgingFE[];
+  alerts: FinDashboardAlertFE[];
+  bank_accounts: FinDashboardBankAccountFE[];
+  ratios: FinDashboardRatioFE[];
+  created_at: string;
+  updated_at: string;
+}
+
+export const fetchFinanceDashboard = (params: { propertyId?: string } = {}) =>
+  apiRequest<FinDashboardSnapshotFE>(`${API_BASE}/dashboard${qs(params)}`);

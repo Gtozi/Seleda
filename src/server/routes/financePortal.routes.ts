@@ -3115,4 +3115,24 @@ router.delete('/config/approval-levels/:id', authenticate, async (req, res) => {
   return res.json({ success: true });
 });
 
+// ── Finance Dashboard (backs /erp/finance/dashboard) ──────────────────────
+// Returns the most recent fin_dashboard_snapshots row for the requested
+// property (or global when property_id is not provided).
+router.get('/dashboard', authenticate, async (req, res) => {
+  if (!ensureDb(res)) return;
+  const { propertyId } = req.query as Record<string, string>;
+  let q = supabaseAdmin!
+    .from('fin_dashboard_snapshots')
+    .select('*')
+    .order('snapshot_date', { ascending: false })
+    .limit(1);
+  q = withProperty(q, propertyId);
+  const { data, error } = await q.single();
+  if (error && error.code !== 'PGRST116') return res.status(500).json({ error: error.message });
+  if (!data) {
+    return res.status(404).json({ error: 'No finance dashboard snapshot found' });
+  }
+  return res.json(data);
+});
+
 export default router;
