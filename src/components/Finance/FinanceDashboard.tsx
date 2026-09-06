@@ -114,6 +114,24 @@ const EMPTY_SNAPSHOT: FinDashboardSnapshotFE = {
   updated_at: new Date().toISOString(),
 };
 
+// Default KPI tile definitions — always rendered as StatCards. When the DB
+// snapshot has data, matching labels are merged in; otherwise the cards show
+// a zero/— value so the dashboard layout is always visible.
+const DEFAULT_KPI_DEFS: { label: string; icon: LucideIcon; tone: Tone }[] = [
+  { label: 'Total Revenue', icon: DollarSign, tone: 'success' },
+  { label: 'Total Expenses', icon: Wallet, tone: 'danger' },
+  { label: 'Gross Profit', icon: TrendingUp, tone: 'info' },
+  { label: 'Operating Profit', icon: Activity, tone: 'info' },
+  { label: 'Net Profit', icon: Banknote, tone: 'success' },
+  { label: 'EBITDA', icon: Building2, tone: 'accent' },
+  { label: 'Cash Position', icon: Wallet, tone: 'success' },
+  { label: 'Bank Balance', icon: Banknote, tone: 'info' },
+  { label: 'AR Aging (0-30)', icon: Wallet, tone: 'info' },
+  { label: 'AP Aging (0-30)', icon: Wallet, tone: 'danger' },
+  { label: 'Daily Cash Flow', icon: TrendingUp, tone: 'success' },
+  { label: 'Budget vs Actual', icon: Activity, tone: 'warning' },
+];
+
 export default function FinanceDashboard() {
   const { currentPropertyId, addNotification } = useERP();
   const [snapshot, setSnapshot] = useState<FinDashboardSnapshotFE | null>(null);
@@ -151,6 +169,22 @@ export default function FinanceDashboard() {
   };
 
   const kpiTiles = useMemo(() => snapshot?.kpis || [], [snapshot]);
+  // Merge DB KPIs over the default definitions so StatCards always render.
+  const mergedKpis = useMemo(() => {
+    const byLabel = new Map(kpiTiles.map(k => [k.label, k]));
+    return DEFAULT_KPI_DEFS.map(def => {
+      const db = byLabel.get(def.label);
+      return {
+        label: def.label,
+        value: db?.value ?? '—',
+        trend: db?.trend,
+        is_positive: db?.is_positive ?? true,
+        icon: def.icon,
+        tone: def.tone,
+        change: db ? parseTrend(db.trend).change : undefined,
+      };
+    });
+  }, [kpiTiles]);
   const trendData = useMemo(() => snapshot?.revenue_expense_trend || [], [snapshot]);
   const deptData = useMemo(() => snapshot?.dept_revenue || [], [snapshot]);
   const arAging = useMemo(() => snapshot?.ar_aging || [], [snapshot]);
@@ -218,29 +252,19 @@ export default function FinanceDashboard() {
         </div>
       ) : (
         <>
-          {/* KPI grid */}
+          {/* KPI grid — always renders StatCards, even with zero data */}
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-4">
-            {kpiTiles.length === 0 ? (
-              <div className="col-span-full text-center py-8 text-sm text-gray-400 dark:text-gray-500">
-                No KPI data available for this period.
-              </div>
-            ) : (
-              kpiTiles.map((kpi, i) => {
-                const Icon = ICON_MAP[kpi.icon] || DollarSign;
-                const { change } = parseTrend(kpi.trend);
-                return (
-                  <StatCard
-                    key={i}
-                    title={kpi.label}
-                    value={kpi.value}
-                    icon={Icon}
-                    tone={toneFromColorClass(kpi.color_class)}
-                    change={change}
-                    changeLabel="vs prior period"
-                  />
-                );
-              })
-            )}
+            {mergedKpis.map((kpi, i) => (
+              <StatCard
+                key={i}
+                title={kpi.label}
+                value={kpi.value}
+                icon={kpi.icon}
+                tone={kpi.tone}
+                change={kpi.change}
+                changeLabel="vs prior period"
+              />
+            ))}
           </div>
 
           {/* Charts */}
