@@ -26,11 +26,14 @@ export interface BankAccount {
   status: string;
   created_at: string;
   updated_at: string;
+  property_id?: string;
+  property_name?: string;
 }
 
 export interface StatementLine {
   id: string;
   bank_account_id: string;
+  bank_account_name?: string;
   statement_date: string;
   transaction_date: string;
   description?: string;
@@ -41,6 +44,8 @@ export interface StatementLine {
   status: string;
   matched_journal_line_id?: string;
   created_at: string;
+  property_id?: string;
+  property_name?: string;
 }
 
 export interface ReconciliationBatch {
@@ -59,6 +64,30 @@ export interface ReconciliationBatch {
   bank_accounts?: { account_name: string; account_number: string };
 }
 
+export interface PettyCashFloat {
+  id: string;
+  department: string;
+  float_code?: string;
+  float_amount: number;
+  current_balance: number;
+  custodian?: string;
+  status: string;
+  property_id?: string;
+  property_name?: string;
+}
+
+export interface CashTransaction {
+  id: string;
+  type: 'Receipt' | 'Payment' | 'Transfer';
+  description?: string;
+  amount: number;
+  transaction_date: string;
+  reference?: string;
+  department?: string;
+  property_id?: string;
+  property_name?: string;
+}
+
 export function mapBankAccountFromDb(row: any): BankAccount {
   return {
     id: row.id,
@@ -71,6 +100,8 @@ export function mapBankAccountFromDb(row: any): BankAccount {
     status: row.status,
     created_at: row.created_at,
     updated_at: row.updated_at,
+    property_id: row.property_id,
+    property_name: row.property_name,
   };
 }
 
@@ -78,6 +109,7 @@ export function mapStatementLineFromDb(row: any): StatementLine {
   return {
     id: row.id,
     bank_account_id: row.bank_account_id,
+    bank_account_name: row.bank_account_name,
     statement_date: row.statement_date,
     transaction_date: row.transaction_date,
     description: row.description,
@@ -88,6 +120,8 @@ export function mapStatementLineFromDb(row: any): StatementLine {
     status: row.status,
     matched_journal_line_id: row.matched_journal_line_id,
     created_at: row.created_at,
+    property_id: row.property_id,
+    property_name: row.property_name,
   };
 }
 
@@ -109,12 +143,41 @@ export function mapReconciliationBatchFromDb(row: any): ReconciliationBatch {
   };
 }
 
-export async function fetchBankAccounts(): Promise<BankAccount[]> {
-  const data = await apiRequest<any[]>('/accounts');
+export function mapPettyCashFromDb(row: any): PettyCashFloat {
+  return {
+    id: row.id,
+    department: row.department,
+    float_code: row.float_code,
+    float_amount: Number(row.float_amount) || 0,
+    current_balance: Number(row.current_balance) || 0,
+    custodian: row.custodian,
+    status: row.status,
+    property_id: row.property_id,
+    property_name: row.property_name,
+  };
+}
+
+export function mapCashTransactionFromDb(row: any): CashTransaction {
+  return {
+    id: row.id,
+    type: row.type,
+    description: row.description,
+    amount: Number(row.amount) || 0,
+    transaction_date: row.transaction_date,
+    reference: row.reference,
+    department: row.department,
+    property_id: row.property_id,
+    property_name: row.property_name,
+  };
+}
+
+export async function fetchBankAccounts(propertyId?: string): Promise<BankAccount[]> {
+  const qs = propertyId ? `?propertyId=${encodeURIComponent(propertyId)}` : '';
+  const data = await apiRequest<any[]>(`/accounts${qs}`);
   return data.map(mapBankAccountFromDb);
 }
 
-export async function createBankAccount(account: Omit<BankAccount, 'id' | 'balance' | 'last_reconciled_date' | 'status' | 'created_at' | 'updated_at'>): Promise<BankAccount> {
+export async function createBankAccount(account: Omit<BankAccount, 'id' | 'balance' | 'last_reconciled_date' | 'status' | 'created_at' | 'updated_at'> & { propertyId?: string }): Promise<BankAccount> {
   const data = await apiRequest<any>('/accounts', {
     method: 'POST',
     body: JSON.stringify({
@@ -122,15 +185,17 @@ export async function createBankAccount(account: Omit<BankAccount, 'id' | 'balan
       accountName: account.account_name,
       bankName: account.bank_name,
       currency: account.currency,
+      propertyId: account.propertyId,
     }),
   });
   return mapBankAccountFromDb(data);
 }
 
-export async function fetchStatementLines(bankAccountId?: string, status?: string): Promise<StatementLine[]> {
+export async function fetchStatementLines(bankAccountId?: string, status?: string, propertyId?: string): Promise<StatementLine[]> {
   const params = new URLSearchParams();
   if (bankAccountId) params.set('bankAccountId', bankAccountId);
   if (status) params.set('status', status);
+  if (propertyId) params.set('propertyId', propertyId);
   const data = await apiRequest<any[]>(`/statement-lines?${params.toString()}`);
   return data.map(mapStatementLineFromDb);
 }
@@ -176,4 +241,46 @@ export async function createReconciliationBatch(batch: Omit<ReconciliationBatch,
     }),
   });
   return mapReconciliationBatchFromDb(data);
+}
+
+export async function fetchPettyCashFloats(propertyId?: string): Promise<PettyCashFloat[]> {
+  const qs = propertyId ? `?propertyId=${encodeURIComponent(propertyId)}` : '';
+  const data = await apiRequest<any[]>(`/petty-cash${qs}`);
+  return data.map(mapPettyCashFromDb);
+}
+
+export async function createPettyCashFloat(float: Partial<PettyCashFloat> & { propertyId?: string }): Promise<PettyCashFloat> {
+  const data = await apiRequest<any>('/petty-cash', {
+    method: 'POST',
+    body: JSON.stringify(float),
+  });
+  return mapPettyCashFromDb(data);
+}
+
+export async function updatePettyCashFloat(id: string, patch: Partial<PettyCashFloat>): Promise<PettyCashFloat> {
+  const data = await apiRequest<any>(`/petty-cash/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify(patch),
+  });
+  return mapPettyCashFromDb(data);
+}
+
+export async function deletePettyCashFloat(id: string): Promise<{ success: boolean }> {
+  return apiRequest<{ success: boolean }>(`/petty-cash/${id}`, { method: 'DELETE' });
+}
+
+export async function fetchCashTransactions(type?: string, propertyId?: string): Promise<CashTransaction[]> {
+  const params = new URLSearchParams();
+  if (type) params.set('type', type);
+  if (propertyId) params.set('propertyId', propertyId);
+  const data = await apiRequest<any[]>(`/cash-transactions?${params.toString()}`);
+  return data.map(mapCashTransactionFromDb);
+}
+
+export async function createCashTransaction(tx: Partial<CashTransaction> & { propertyId?: string }): Promise<CashTransaction> {
+  const data = await apiRequest<any>('/cash-transactions', {
+    method: 'POST',
+    body: JSON.stringify(tx),
+  });
+  return mapCashTransactionFromDb(data);
 }

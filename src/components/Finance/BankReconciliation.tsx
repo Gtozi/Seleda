@@ -19,6 +19,9 @@ import {
   Loader2,
   ServerCrash,
   Landmark,
+  Pencil,
+  Trash2,
+  AlertTriangle,
 } from 'lucide-react';
 import { ModalSystem } from '../Shared/ModalSystem';
 import { DataTable, Column } from '../Shared/DataTable';
@@ -35,9 +38,11 @@ import {
   matchStatementLine,
   createReconciliationBatch,
   fetchPettyCashFloats,
+  createPettyCashFloat,
   fetchCashTransactions,
   createCashTransaction,
   updatePettyCashFloat,
+  deletePettyCashFloat,
   type BankAccount,
   type StatementLine,
   type ReconciliationBatch,
@@ -71,6 +76,92 @@ const BankReconciliation = () => {
     bankName: '',
     currency: 'ETB',
   });
+
+  // Petty cash management modal state
+  const [pettyModal, setPettyModal] = useState<{ mode: 'create' | 'edit'; open: boolean; saving: boolean; id?: string }>({ mode: 'create', open: false, saving: false });
+  const [pettyForm, setPettyForm] = useState({
+    department: '',
+    floatCode: '',
+    floatAmount: '',
+    currentBalance: '',
+    custodian: '',
+    status: 'Active',
+  });
+  const [pettyDelete, setPettyDelete] = useState<{ id: string; department: string } | null>(null);
+  const [pettyDeleting, setPettyDeleting] = useState(false);
+
+  const openPettyCreate = () => {
+    setPettyForm({ department: '', floatCode: '', floatAmount: '', currentBalance: '', custodian: '', status: 'Active' });
+    setPettyModal({ mode: 'create', open: true, saving: false });
+  };
+
+  const openPettyEdit = (pc: PettyCashFloat) => {
+    setPettyForm({
+      department: pc.department || '',
+      floatCode: pc.float_code || '',
+      floatAmount: String(pc.float_amount || 0),
+      currentBalance: String(pc.current_balance || 0),
+      custodian: pc.custodian || '',
+      status: pc.status || 'Active',
+    });
+    setPettyModal({ mode: 'edit', open: true, saving: false, id: pc.id });
+  };
+
+  const closePettyModal = () => setPettyModal(prev => ({ ...prev, open: false, saving: false }));
+
+  const handlePettySave = async () => {
+    if (!pettyForm.department) {
+      addNotification('Department is required', 'warning', 'finance');
+      return;
+    }
+    setPettyModal(prev => ({ ...prev, saving: true }));
+    try {
+      const pid = currentPropertyId || undefined;
+      if (pettyModal.mode === 'create') {
+        await createPettyCashFloat({
+          department: pettyForm.department,
+          float_code: pettyForm.floatCode || undefined,
+          float_amount: Number(pettyForm.floatAmount) || 0,
+          current_balance: Number(pettyForm.currentBalance) || Number(pettyForm.floatAmount) || 0,
+          custodian: pettyForm.custodian || undefined,
+          status: pettyForm.status,
+          propertyId: pid,
+        });
+        addNotification('Petty cash float created', 'success', 'finance');
+      } else if (pettyModal.id) {
+        await updatePettyCashFloat(pettyModal.id, {
+          department: pettyForm.department,
+          float_code: pettyForm.floatCode || undefined,
+          float_amount: Number(pettyForm.floatAmount) || 0,
+          current_balance: Number(pettyForm.currentBalance) || 0,
+          custodian: pettyForm.custodian || undefined,
+          status: pettyForm.status,
+        });
+        addNotification('Petty cash float updated', 'success', 'finance');
+      }
+      await loadData();
+      closePettyModal();
+    } catch (err: any) {
+      addNotification(err.message || 'Failed to save petty cash float', 'warning', 'finance');
+    } finally {
+      setPettyModal(prev => ({ ...prev, saving: false }));
+    }
+  };
+
+  const handlePettyDelete = async () => {
+    if (!pettyDelete) return;
+    setPettyDeleting(true);
+    try {
+      await deletePettyCashFloat(pettyDelete.id);
+      addNotification('Petty cash float deleted', 'info', 'finance');
+      setPettyDelete(null);
+      await loadData();
+    } catch (err: any) {
+      addNotification(err.message || 'Failed to delete petty cash float', 'warning', 'finance');
+    } finally {
+      setPettyDeleting(false);
+    }
+  };
 
   // Cash action modal state
   type CashActionType = 'receipt' | 'payment' | 'transfer' | 'replenish';
@@ -521,6 +612,11 @@ const BankReconciliation = () => {
           icon={Wallet}
           pad="none"
           bodyClassName="divide-y divide-gray-100 dark:divide-slate-700"
+          actions={
+            <button onClick={openPettyCreate} className={button.primary + ' text-xs'}>
+              <Plus size={12} /> New Float
+            </button>
+          }
         >
           <div className="divide-y divide-gray-100 dark:divide-slate-700">
             {pettyCashFloats.map((pc) => (
@@ -540,11 +636,19 @@ const BankReconciliation = () => {
                     <p className="text-[9px] text-slate-400 uppercase font-medium">Float: {fmt(pc.float_amount)}</p>
                   </div>
                   <Badge tone={pc.status === 'Active' ? 'success' : pc.status === 'Replenished' ? 'info' : 'neutral'}>{pc.status}</Badge>
+                  <div className="flex gap-1">
+                    <button onClick={() => openPettyEdit(pc)} className="p-1 text-slate-400 hover:text-[var(--color-accent-operations)]" title="Edit">
+                      <Pencil size={12} />
+                    </button>
+                    <button onClick={() => setPettyDelete({ id: pc.id, department: pc.department })} className="p-1 text-slate-400 hover:text-[var(--color-danger)]" title="Delete">
+                      <Trash2 size={12} />
+                    </button>
+                  </div>
                 </div>
               </div>
             ))}
             {pettyCashFloats.length === 0 && (
-              <div className="p-8 text-center text-slate-500 text-xs font-medium">No petty cash floats configured.</div>
+              <div className="p-8 text-center text-slate-500 text-xs font-medium">No petty cash floats configured. Click "New Float" to create one.</div>
             )}
           </div>
         </SectionCard>
@@ -710,6 +814,105 @@ const BankReconciliation = () => {
           )}
         </div>
       </ModalSystem>
+
+      {/* Petty cash create/edit modal */}
+      <ModalSystem
+        isOpen={pettyModal.open}
+        onClose={closePettyModal}
+        onConfirm={handlePettySave}
+        title={pettyModal.mode === 'create' ? 'New Petty Cash Float' : 'Edit Petty Cash Float'}
+        subtitle="Configure a departmental petty cash float"
+        variant="form"
+        size="md"
+        loading={pettyModal.saving}
+        confirmLabel={pettyModal.mode === 'create' ? 'Create' : 'Save'}
+        confirmColor="indigo"
+      >
+        <div className="space-y-3">
+          <div>
+            <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Department *</label>
+            <input
+              type="text"
+              value={pettyForm.department}
+              onChange={e => setPettyForm({ ...pettyForm, department: e.target.value })}
+              className="w-full px-3 py-2 text-sm border border-gray-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-gray-900 dark:text-white"
+              placeholder="e.g. Front Office"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Float Code</label>
+            <input
+              type="text"
+              value={pettyForm.floatCode}
+              onChange={e => setPettyForm({ ...pettyForm, floatCode: e.target.value })}
+              className="w-full px-3 py-2 text-sm border border-gray-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-gray-900 dark:text-white"
+              placeholder="e.g. PC-FO-001"
+            />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Float Amount</label>
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                value={pettyForm.floatAmount}
+                onChange={e => setPettyForm({ ...pettyForm, floatAmount: e.target.value })}
+                className="w-full px-3 py-2 text-sm border border-gray-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-gray-900 dark:text-white"
+                placeholder="0.00"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Current Balance</label>
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                value={pettyForm.currentBalance}
+                onChange={e => setPettyForm({ ...pettyForm, currentBalance: e.target.value })}
+                className="w-full px-3 py-2 text-sm border border-gray-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-gray-900 dark:text-white"
+                placeholder="0.00"
+              />
+            </div>
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Custodian</label>
+            <input
+              type="text"
+              value={pettyForm.custodian}
+              onChange={e => setPettyForm({ ...pettyForm, custodian: e.target.value })}
+              className="w-full px-3 py-2 text-sm border border-gray-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-gray-900 dark:text-white"
+              placeholder="Person responsible"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Status</label>
+            <select
+              value={pettyForm.status}
+              onChange={e => setPettyForm({ ...pettyForm, status: e.target.value })}
+              className="w-full px-3 py-2 text-sm border border-gray-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-gray-900 dark:text-white"
+            >
+              <option value="Active">Active</option>
+              <option value="Replenished">Replenished</option>
+              <option value="Closed">Closed</option>
+            </select>
+          </div>
+        </div>
+      </ModalSystem>
+
+      {/* Petty cash delete confirmation */}
+      <ModalSystem
+        isOpen={!!pettyDelete}
+        onClose={() => setPettyDelete(null)}
+        onConfirm={handlePettyDelete}
+        title="Delete Petty Cash Float"
+        subtitle={`Delete "${pettyDelete?.department}"? This cannot be undone.`}
+        variant="confirm"
+        size="sm"
+        loading={pettyDeleting}
+        confirmLabel="Delete"
+        confirmColor="rose"
+      />
     </div>
   );
 
