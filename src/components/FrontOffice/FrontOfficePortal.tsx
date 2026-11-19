@@ -21,7 +21,6 @@ import {
   Car,
   Package,
   MessageSquare,
-  Headphones,
   Settings,
   BarChart3,
   Shield,
@@ -44,7 +43,7 @@ import RoomAssignment from './modules/RoomAssignment';
 import GuestProfiles from './modules/GuestProfiles';
 import CheckIn from './modules/CheckIn';
 import CheckOut from './modules/CheckOut';
-import FolioBilling from './modules/FolioBilling';
+import FolioManagementPage from '../FolioManagement/FolioManagementPage';
 import Reports from './modules/Reports';
 import StayManagement from './modules/StayManagement';
 import NightAudit from './modules/NightAudit';
@@ -55,13 +54,15 @@ import PackagesAddons from './modules/PackagesAddons';
 import OTAInterface from './modules/OTAInterface';
 import RevenueControls from './modules/RevenueControls';
 import Configuration from './modules/Configuration';
-import Concierge from './modules/Concierge';
 import BellDesk from './modules/BellDesk';
 import Transportation from './modules/Transportation';
 import LostFound from './modules/LostFound';
 import Loyalty from './modules/Loyalty';
 import GroupProfilesManagement from './modules/GroupProfilesManagement';
 import ConciergePortal from '../Concierge/ConciergePortal';
+import StaffManagement from './modules/StaffManagement';
+import DepartmentRequisitionForm from '../Inventory/DepartmentRequisitionForm';
+import DepartmentConsumptionPanel from '../Inventory/DepartmentConsumptionPanel';
 
 type PortalModule = 
   | 'dashboard'
@@ -77,7 +78,6 @@ type PortalModule =
   | 'folio-billing'
   | 'night-audit'
   | 'keys-access'
-  | 'concierge'
   | 'concierge-portal'
   | 'bell-desk'
   | 'transportation'
@@ -89,7 +89,8 @@ type PortalModule =
   | 'ota-interface'
   | 'revenue-controls'
   | 'reports'
-  | 'configuration';
+  | 'configuration'
+  | 'staff';
 
 interface ModuleConfig {
   id: PortalModule;
@@ -121,7 +122,6 @@ const MODULES: ModuleConfig[] = [
   
   // Operational
   { id: 'keys-access', label: 'Keys & Access', icon: Shield, description: 'Key encoding & access control', category: 'operational', priority: 'medium' },
-  { id: 'concierge', label: 'Concierge', icon: Headphones, description: 'Tour booking & guest services', category: 'operational', priority: 'low' },
   { id: 'concierge-portal', label: 'Concierge Portal', icon: Crown, description: 'Full concierge services portal', category: 'operational', priority: 'high' },
   { id: 'bell-desk', label: 'Bell Desk', icon: Package, description: 'Luggage handling & storage', category: 'operational', priority: 'low' },
   { id: 'transportation', label: 'Transportation', icon: Car, description: 'Airport transfers & shuttle', category: 'operational', priority: 'low' },
@@ -138,6 +138,7 @@ const MODULES: ModuleConfig[] = [
   { id: 'revenue-controls', label: 'Revenue Controls', icon: TrendingUp, description: 'Dynamic pricing & restrictions', category: 'admin', priority: 'medium' },
   { id: 'reports', label: 'Reports', icon: BarChart3, description: 'Daily, financial & operational reports', category: 'admin', priority: 'high' },
   { id: 'configuration', label: 'Configuration', icon: Settings, description: 'Hotel & front office setup', category: 'admin', priority: 'medium' },
+  { id: 'staff', label: 'Staff Management', icon: Users, description: 'Front office staff assignment & productivity', category: 'operational', priority: 'medium' },
 ];
 
 const FrontOfficePortal = ({ activeTab, onTabChange }: { activeTab: string; onTabChange?: (tab: string) => void }) => {
@@ -215,6 +216,7 @@ const FrontOfficePortal = ({ activeTab, onTabChange }: { activeTab: string; onTa
     >
       {activeTab === 'concierge-portal' ? (
         <ConciergePortal
+          embedded
           activeTab={conciergePortalTab as any}
           onTabChange={setConciergePortalTab}
         />
@@ -242,10 +244,9 @@ const FrontOfficePortal = ({ activeTab, onTabChange }: { activeTab: string; onTa
         {activeTab === 'stay-management' && <StayManagement />}
         {activeTab === 'check-in' && <CheckIn />}
         {activeTab === 'check-out' && <CheckOut onNavigateToFolio={handleNavigateToFolio} />}
-        {activeTab === 'folio-billing' && <FolioBilling />}
+        {activeTab === 'folio-billing' && <FolioManagementPage />}
         {activeTab === 'night-audit' && <NightAudit />}
         {activeTab === 'keys-access' && <KeysAccess />}
-        {activeTab === 'concierge' && <Concierge />}
         {activeTab === 'bell-desk' && <BellDesk />}
         {activeTab === 'transportation' && <Transportation />}
         {activeTab === 'guest-requests' && <GuestRequests />}
@@ -255,8 +256,11 @@ const FrontOfficePortal = ({ activeTab, onTabChange }: { activeTab: string; onTa
         {activeTab === 'loyalty' && <Loyalty />}
         {activeTab === 'ota-interface' && <OTAInterface />}
         {activeTab === 'revenue-controls' && <RevenueControls />}
+        {activeTab === 'requisitions' && <DepartmentRequisitionForm department="Front Office" />}
+        {activeTab === 'inventory-consumption' && <DepartmentConsumptionPanel department="Front Office" referenceType="Guest Amenity" />}
         {activeTab === 'reports' && <Reports />}
         {activeTab === 'configuration' && <Configuration />}
+        {activeTab === 'staff' && <StaffManagement />}
       </div>
       )}
     </div>

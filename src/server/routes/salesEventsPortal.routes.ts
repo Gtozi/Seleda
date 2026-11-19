@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { authenticate, requirePermission } from '../middleware/auth';
 import { hasSupabaseAdminConfig, supabaseAdmin } from '../supabaseAdmin';
 import { cacheService } from '../services/cacheService';
+import { twinWriteProcRequisition } from '../services/procurementIntegration';
 
 const router = Router();
 
@@ -20,7 +21,7 @@ router.get('/pipeline/:propertyId', authenticate, async (req, res) => {
 
   const { data: opportunities } = await supabaseAdmin
     .from('sales_opportunities')
-    .select('*, corporate_accounts(account_name)')
+    .select('*, corporate_accounts(company_name)')
     .eq('property_id', req.params.propertyId)
     .in('status', ['lead', 'qualified', 'proposal', 'negotiation', 'closed_won', 'closed_lost'])
     .order('created_at', { ascending: false });
@@ -80,11 +81,11 @@ router.get('/funnel/:propertyId', authenticate, async (req, res) => {
 
   const funnel = {
     leads: (leads || []).length,
-    qualified: (leads || []).filter(l => l.status === 'qualified').length,
-    proposals: (leads || []).filter(l => l.status === 'proposal').length,
-    negotiations: (leads || []).filter(l => l.status === 'negotiation').length,
-    won: (leads || []).filter(l => l.status === 'closed_won').length,
-    lost: (leads || []).filter(l => l.status === 'closed_lost').length,
+    qualified: (leads || []).filter(l => l.stage === 'Qualified').length,
+    proposals: (leads || []).filter(l => l.stage === 'Proposal').length,
+    negotiations: (leads || []).filter(l => l.stage === 'Negotiation').length,
+    won: (leads || []).filter(l => l.stage === 'Won').length,
+    lost: (leads || []).filter(l => l.stage === 'Lost').length,
   };
 
   const conversionRates = {
@@ -131,15 +132,15 @@ router.post('/proposals', authenticate, requirePermission('sales:proposals:creat
 
   const { data, error } = await supabaseAdmin.from('sales_proposals').insert({
     property_id: propertyId,
-    opportunity_id: opportunityId,
+    lead_id: opportunityId,
     corporate_account_id: corporateAccountId,
     proposal_number: proposalNumber || `PROP-${Date.now()}`,
     title,
-    description,
-    value,
+    notes: description,
+    proposed_revenue: value,
     valid_until: validUntil || new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
-    terms,
-    status: 'draft',
+    terms_conditions: terms,
+    status: 'Draft',
     created_by: createdBy || req.user?.id,
     created_at: new Date().toISOString(),
   }).select().single();
@@ -158,7 +159,7 @@ router.get('/proposals/:propertyId', authenticate, async (req, res) => {
   
   let q = supabaseAdmin
     .from('sales_proposals')
-    .select('*, corporate_accounts(account_name)')
+    .select('*, corporate_accounts(company_name)')
     .eq('property_id', req.params.propertyId)
     .order('created_at', { ascending: false });
 
@@ -183,9 +184,8 @@ router.put('/proposals/:id/send', authenticate, requirePermission('sales:proposa
   const { data, error } = await supabaseAdmin
     .from('sales_proposals')
     .update({
-      status: 'sent',
-      sent_by: sentBy || req.user?.id,
-      sent_at: new Date().toISOString(),
+      status: 'Sent',
+      sent_date: new Date().toISOString().split('T')[0],
       notes,
     })
     .eq('id', req.params.id)
@@ -207,10 +207,8 @@ router.put('/proposals/:id/accept', authenticate, requirePermission('sales:propo
   const { data, error } = await supabaseAdmin
     .from('sales_proposals')
     .update({
-      status: 'accepted',
-      accepted_by: acceptedBy,
-      signature,
-      accepted_at: new Date().toISOString(),
+      status: 'Accepted',
+      accepted_date: new Date().toISOString().split('T')[0],
     })
     .eq('id', req.params.id)
     .select()
@@ -237,10 +235,11 @@ async function generateContractFromProposal(proposalId: string) {
     proposal_id: proposalId,
     corporate_account_id: proposal?.corporate_account_id,
     contract_number: `CTR-${Date.now()}`,
-    value: proposal?.value,
-    start_date: new Date().toISOString(),
-    end_date: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(),
-    status: 'active',
+    title: proposal?.title || 'Contract',
+    total_value: proposal?.proposed_revenue || 0,
+    start_date: new Date().toISOString().split('T')[0],
+    end_date: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+    status: 'Active',
     created_at: new Date().toISOString(),
   });
 }
@@ -260,9 +259,9 @@ router.get('/corporate-accounts/:propertyId', authenticate, async (req, res) => 
     .from('corporate_accounts')
     .select('*')
     .eq('property_id', req.params.propertyId)
-    .order('account_name', { ascending: true });
+    .order('company_name', { ascending: true });
 
-  if (status) q = q.eq('status', status);
+  if (status) q = q.eq('credit_terms', status);
 
   const { data, error } = await q;
   if (error) return res.status(500).json({ error: error.message });
@@ -322,17 +321,16 @@ router.post('/corporate-accounts', authenticate, requirePermission('sales:corpor
 
   const { data, error } = await supabaseAdmin.from('corporate_accounts').insert({
     property_id: propertyId,
-    account_name: accountName,
+    company_name: accountName,
     industry,
-    contact_name: contactName,
-    email,
-    phone,
-    address,
+    contact_person: contactName,
+    contact_email: email,
+    contact_phone: phone,
+    billing_address: address,
     tax_id: taxId,
-    credit_limit: creditLimit,
-    payment_terms: paymentTerms,
+    credit_limit: creditLimit || 0,
+    credit_terms: paymentTerms || 'Net 30',
     notes,
-    status: 'active',
     created_at: new Date().toISOString(),
   }).select().single();
 
@@ -423,7 +421,7 @@ router.get('/opportunities/:propertyId', authenticate, async (req, res) => {
   
   let q = supabaseAdmin
     .from('sales_opportunities')
-    .select('*, corporate_accounts(account_name), profiles(full_name)')
+    .select('*, corporate_accounts(company_name)')
     .eq('property_id', req.params.propertyId)
     .order('created_at', { ascending: false });
 
@@ -515,25 +513,25 @@ router.get('/events/calendar/:propertyId', authenticate, async (req, res) => {
   if (cached) return res.json(cached);
 
   let q = supabaseAdmin
-    .from('events')
+    .from('event_bookings')
     .select('*')
     .eq('property_id', req.params.propertyId)
-    .order('event_date', { ascending: true });
+    .order('start_date', { ascending: true });
 
-  if (startDate) q = q.gte('event_date', startDate);
-  if (endDate) q = q.lte('event_date', endDate);
+  if (startDate) q = q.gte('start_date', startDate);
+  if (endDate) q = q.lte('start_date', endDate);
 
   const { data, error } = await q;
   if (error) return res.status(500).json({ error: error.message });
 
   const calendar = (data || []).map(event => ({
     id: event.id,
-    title: event.name,
-    start: event.event_date,
-    end: event.end_date || event.event_date,
+    title: event.event_name,
+    start: event.start_date,
+    end: event.end_date || event.start_date,
     status: event.status,
-    expectedAttendees: event.expected_attendees,
-    revenue: event.estimated_revenue,
+    expectedAttendees: event.expected_attendance,
+    revenue: Number(event.grand_total || event.quoted_amount || 0),
   }));
 
   const result = {
@@ -541,8 +539,8 @@ router.get('/events/calendar/:propertyId', authenticate, async (req, res) => {
     calendar,
     summary: {
       totalEvents: calendar.length,
-      confirmedEvents: calendar.filter(e => e.status === 'confirmed').length,
-      pendingEvents: calendar.filter(e => e.status === 'pending').length,
+      confirmedEvents: calendar.filter(e => e.status === 'Confirmed').length,
+      pendingEvents: calendar.filter(e => e.status === 'Inquiry' || e.status === 'Tentative').length,
       totalExpectedRevenue: calendar.reduce((sum, e) => sum + (e.revenue || 0), 0),
     },
   };
@@ -552,55 +550,66 @@ router.get('/events/calendar/:propertyId', authenticate, async (req, res) => {
 });
 
 // ── BEO Handoff Automation to F&B ─────────────────────────────────────────
+// BEO creation is delegated to generate_beo_for_event() (migration 444), the
+// same RPC the Banquet portal uses. This eliminates the old shadow-row hack
+// that inserted a throwaway banquet_events row just to satisfy a FK, and
+// guarantees one canonical BEO per canonical event_bookings row.
 // Generate BEO
 router.post('/events/:eventId/beo', authenticate, requirePermission('sales:events:beo'), async (req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) return dbNotConfigured(res);
-  
+
   const { data: event } = await supabaseAdmin
-    .from('events')
+    .from('event_bookings')
     .select('*')
     .eq('id', req.params.eventId)
     .single();
 
   if (!event) return res.status(404).json({ error: 'Event not found' });
 
-  const { data, error } = await supabaseAdmin.from('banquet_event_orders').insert({
-    property_id: event.property_id,
-    event_id: req.params.eventId,
-    beo_number: `BEO-${Date.now()}`,
-    event_date: event.event_date,
-    event_type: event.event_type,
-    expected_attendees: event.expected_attendees,
-    setup_time: event.setup_time,
-    service_style: event.service_style,
-    special_requirements: event.special_requirements,
-    status: 'draft',
-    created_by: req.user?.id,
-    created_at: new Date().toISOString(),
-  }).select().single();
-
+  const { data, error } = await supabaseAdmin.rpc('generate_beo_for_event', {
+    p_event_id: req.params.eventId,
+    p_user_id: req.user?.id || null,
+  });
   if (error) return res.status(500).json({ error: error.message });
+  if (!data?.success) return res.status(409).json({ error: data?.error });
 
-  // Update event status
-  await supabaseAdmin
-    .from('events')
-    .update({ beo_generated: true, beo_generated_at: new Date().toISOString() })
-    .eq('id', req.params.eventId);
+  const beoId = data.beo_id;
+
+  // Twin-write into unified proc_requisitions so Procurement can source event
+  // supplies. Best-effort — the BEO itself is already created.
+  const attendees = Number(event.expected_attendance) || 0;
+  twinWriteProcRequisition({
+    sourceSystem: 'event_bookings',
+    sourceRef: beoId,
+    sourcePoNumber: data.beo_number || `BEO-${beoId.slice(0, 8)}`,
+    propertyId: event.property_id,
+    department: 'Banquet & Events',
+    requester: req.user?.id || 'Events System',
+    priority: 'high',
+    notes: `BEO for ${event.event_type || 'event'} with ${attendees} attendees. Service: ${event.service_style || 'N/A'}. Requirements: ${event.special_requirements || 'None'}`,
+    requiredDate: event.start_date || null,
+    estimatedTotal: attendees * 50,
+    items: [
+      { itemName: 'Event Supplies Package', category: 'Event Supplies', quantity: attendees, unit: 'pcs', estimatedCost: 50 },
+    ],
+    createdBy: req.user?.id,
+  }).catch(() => { /* twin-write is best-effort */ });
 
   cacheService.invalidate('sales-*');
   cacheService.invalidate('fb-*');
-  return res.status(201).json(data);
+  return res.status(data.created ? 201 : 200).json(data);
 });
 
-// Get BEOs
+// Get BEOs — reads from the canonical banquet_beos table (owned by
+// banquetEvents.routes.ts) so both portals see the same BEOs.
 router.get('/events/beos/:propertyId', authenticate, async (req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) return dbNotConfigured(res);
   
   const { status } = req.query as Record<string, string>;
   
   let q = supabaseAdmin
-    .from('banquet_event_orders')
-    .select('*, events(name, event_date)')
+    .from('banquet_beos')
+    .select('*')
     .eq('property_id', req.params.propertyId)
     .order('created_at', { ascending: false });
 
@@ -616,6 +625,12 @@ router.get('/events/beos/:propertyId', authenticate, async (req, res) => {
 });
 
 // ── Resource Scheduling for Events ────────────────────────────────────────
+// NOTE: BEO ownership has been unified into banquet_beos (owned by
+// banquetEvents.routes.ts). Resource scheduling here uses a pool+booking
+// model (event_resources / event_resource_bookings) that is intentionally
+// distinct from banquet_events' per-event banquet_resources/banquet_equipment
+// tables. Unifying these requires schema/model alignment and is tracked as a
+// follow-up; for now both coexist with no overlapping frontend consumers.
 // Get resource availability
 router.get('/events/resources/:propertyId', authenticate, async (req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) return dbNotConfigured(res);
@@ -704,7 +719,7 @@ router.get('/events/analysis/:eventId', authenticate, async (req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) return dbNotConfigured(res);
   
   const { data: event } = await supabaseAdmin
-    .from('events')
+    .from('event_bookings')
     .select('*')
     .eq('id', req.params.eventId)
     .single();
@@ -718,16 +733,16 @@ router.get('/events/analysis/:eventId', authenticate, async (req, res) => {
 
   const analysis = {
     eventId: req.params.eventId,
-    eventName: event.name,
-    eventDate: event.event_date,
-    expectedAttendees: event.expected_attendees,
+    eventName: event.event_name,
+    eventDate: event.start_date,
+    expectedAttendees: event.expected_attendance,
     actualAttendees: actuals?.[0]?.actual_attendees || 0,
-    attendanceRate: event.expected_attendees > 0 ? ((actuals?.[0]?.actual_attendees || 0) / event.expected_attendees) * 100 : 0,
-    estimatedRevenue: event.estimated_revenue,
-    actualRevenue: actuals?.[0]?.actual_revenue || 0,
-    revenueVariance: (actuals?.[0]?.actual_revenue || 0) - (event.estimated_revenue || 0),
-    satisfactionScore: actuals?.[0]?.satisfaction_score || 0,
-    feedback: actuals?.[0]?.feedback,
+    attendanceRate: event.expected_attendance > 0 ? ((actuals?.[0]?.actual_attendees || 0) / event.expected_attendance) * 100 : 0,
+    estimatedRevenue: Number(event.grand_total || event.quoted_amount || 0),
+    actualRevenue: actuals?.[0]?.actual_revenue || Number(event.actual_revenue || 0),
+    revenueVariance: (actuals?.[0]?.actual_revenue || Number(event.actual_revenue || 0)) - Number(event.grand_total || event.quoted_amount || 0),
+    satisfactionScore: actuals?.[0]?.satisfaction_score || event.satisfaction_score || 0,
+    feedback: actuals?.[0]?.feedback || event.feedback,
   };
 
   return res.json(analysis);
@@ -777,18 +792,18 @@ router.get('/events/revenue/:propertyId', authenticate, async (req, res) => {
   startDate.setDate(startDate.getDate() - days);
 
   const { data: events } = await supabaseAdmin
-    .from('events')
+    .from('event_bookings')
     .select('*')
     .eq('property_id', req.params.propertyId)
-    .gte('event_date', startDate.toISOString());
+    .gte('start_date', startDate.toISOString());
 
   const revenue = (events || []).map(event => ({
     eventId: event.id,
-    eventName: event.name,
-    eventDate: event.event_date,
-    estimatedRevenue: event.estimated_revenue,
-    actualRevenue: event.actual_revenue || 0,
-    variance: (event.actual_revenue || 0) - (event.estimated_revenue || 0),
+    eventName: event.event_name,
+    eventDate: event.start_date,
+    estimatedRevenue: Number(event.grand_total || event.quoted_amount || 0),
+    actualRevenue: Number(event.actual_revenue || 0),
+    variance: Number(event.actual_revenue || 0) - Number(event.grand_total || event.quoted_amount || 0),
     status: event.status,
   }));
 
@@ -831,18 +846,24 @@ router.get('/crm/guests/:propertyId', authenticate, async (req, res) => {
 
   const guestsWithLinks = await Promise.all(
     (data || []).map(async (guest) => {
-      const { data: reservations } = await supabaseAdmin
-        .from('reservations')
-        .select('*')
-        .eq('guest_id', guest.guest_id)
-        .order('check_in_date', { ascending: false })
-        .limit(5);
+      let reservations: any[] = [];
+      try {
+        const { data: resData, error: resErr } = await supabaseAdmin
+          .from('reservations')
+          .select('*')
+          .eq('guest_id', guest.guest_id)
+          .order('check_in_date', { ascending: false })
+          .limit(5);
+        if (!resErr) reservations = resData || [];
+      } catch {
+        // reservations table may not exist in all deployments
+      }
 
       return {
         ...guest,
-        linkedReservations: reservations || [],
-        totalStays: (reservations || []).length,
-        totalRevenue: (reservations || []).reduce((sum, r) => sum + (r.total_amount || 0), 0),
+        linkedReservations: reservations,
+        totalStays: reservations.length,
+        totalRevenue: reservations.reduce((sum, r) => sum + (r.total_amount || 0), 0),
       };
     })
   );
@@ -876,7 +897,21 @@ router.post('/crm/link-guest', authenticate, requirePermission('sales:crm:link')
 
   if (error) return res.status(500).json({ error: error.message });
 
+  // Twin-write into Front Office guests table for cross-department visibility
+  try {
+    await supabaseAdmin.from('guests').upsert({
+      id: guestId,
+      first_name: firstName,
+      last_name: lastName,
+      email,
+      phone,
+    }, { onConflict: 'id' });
+  } catch {
+    // best-effort sync
+  }
+
   cacheService.invalidate('sales-*');
+  cacheService.invalidate('fo-*');
   return res.status(201).json(data);
 });
 
@@ -992,14 +1027,14 @@ router.get('/activities/:propertyId', authenticate, async (req, res) => {
   
   let q = supabaseAdmin
     .from('sales_activities')
-    .select('*, profiles(full_name)')
+    .select('*')
     .eq('property_id', req.params.propertyId)
-    .order('activity_date', { ascending: false });
+    .order('due_date', { ascending: false });
 
-  if (salespersonId) q = q.eq('salesperson_id', salespersonId);
+  if (salespersonId) q = q.eq('assigned_to', salespersonId);
   if (activityType) q = q.eq('activity_type', activityType);
-  if (startDate) q = q.gte('activity_date', startDate);
-  if (endDate) q = q.lte('activity_date', endDate);
+  if (startDate) q = q.gte('due_date', startDate);
+  if (endDate) q = q.lte('due_date', endDate);
 
   const { data, error } = await q;
   if (error) return res.status(500).json({ error: error.message });
@@ -1030,13 +1065,15 @@ router.post('/activities', authenticate, requirePermission('sales:activities:log
 
   const { data, error } = await supabaseAdmin.from('sales_activities').insert({
     property_id: propertyId,
-    salesperson_id: salespersonId,
+    assigned_to: salespersonId,
     activity_type: activityType,
-    opportunity_id: opportunityId,
-    description,
+    related_to: opportunityId,
+    title: description,
     outcome,
     duration,
-    activity_date: new Date().toISOString(),
+    due_date: new Date().toISOString().split('T')[0],
+    status: 'Pending',
+    created_by: req.user?.id,
     created_at: new Date().toISOString(),
   }).select().single();
 
@@ -1139,10 +1176,10 @@ router.get('/analytics/dashboard/:propertyId', authenticate, async (req, res) =>
       .eq('property_id', req.params.propertyId)
       .gte('created_at', startDate.toISOString()),
     supabaseAdmin
-      .from('events')
+      .from('event_bookings')
       .select('*')
       .eq('property_id', req.params.propertyId)
-      .gte('event_date', startDate.toISOString()),
+      .gte('start_date', startDate.toISOString()),
   ]);
 
   const dashboard = {
@@ -1155,15 +1192,15 @@ router.get('/analytics/dashboard/:propertyId', authenticate, async (req, res) =>
     },
     proposals: {
       total: (proposals.data || []).length,
-      sent: (proposals.data || []).filter(p => p.status === 'sent').length,
-      accepted: (proposals.data || []).filter(p => p.status === 'accepted').length,
-      acceptanceRate: (proposals.data || []).length > 0 ? ((proposals.data || []).filter(p => p.status === 'accepted').length / (proposals.data || []).length) * 100 : 0,
+      sent: (proposals.data || []).filter(p => p.status === 'Sent').length,
+      accepted: (proposals.data || []).filter(p => p.status === 'Accepted').length,
+      acceptanceRate: (proposals.data || []).length > 0 ? ((proposals.data || []).filter(p => p.status === 'Accepted').length / (proposals.data || []).length) * 100 : 0,
     },
     events: {
       total: (events.data || []).length,
-      confirmed: (events.data || []).filter(e => e.status === 'confirmed').length,
-      completed: (events.data || []).filter(e => e.status === 'completed').length,
-      totalRevenue: (events.data || []).reduce((sum, e) => sum + (e.estimated_revenue || 0), 0),
+      confirmed: (events.data || []).filter(e => e.status === 'Confirmed').length,
+      completed: (events.data || []).filter(e => e.status === 'Completed').length,
+      totalRevenue: (events.data || []).reduce((sum, e) => sum + Number(e.grand_total || e.quoted_amount || 0), 0),
     },
   };
 
@@ -1200,10 +1237,10 @@ router.get('/analytics/conversion/:propertyId', authenticate, async (req, res) =
     .gte('created_at', startDate.toISOString());
 
   const conversionRates = {
-    leadToQualified: calculateConversionRate(leads || [], 'qualified'),
-    qualifiedToProposal: calculateConversionRate(leads || [], 'proposal'),
-    proposalToNegotiation: calculateConversionRate(leads || [], 'negotiation'),
-    negotiationToWon: calculateConversionRate(leads || [], 'closed_won'),
+    leadToQualified: calculateConversionRate(leads || [], 'Qualified'),
+    qualifiedToProposal: calculateConversionRate(leads || [], 'Proposal'),
+    proposalToNegotiation: calculateConversionRate(leads || [], 'Negotiation'),
+    negotiationToWon: calculateConversionRate(leads || [], 'Won'),
     overall: calculateOverallConversion(leads || []),
   };
 
@@ -1218,14 +1255,14 @@ router.get('/analytics/conversion/:propertyId', authenticate, async (req, res) =
   return res.json(result);
 });
 
-function calculateConversionRate(leads: any[], targetStatus: string): number {
+function calculateConversionRate(leads: any[], targetStage: string): number {
   if (leads.length === 0) return 0;
-  const targetCount = leads.filter(l => l.status === targetStatus).length;
+  const targetCount = leads.filter(l => l.stage === targetStage).length;
   return (targetCount / leads.length) * 100;
 }
 
 function calculateOverallConversion(leads: any[]): number {
-  const won = leads.filter(l => l.status === 'closed_won').length;
+  const won = leads.filter(l => l.stage === 'Won').length;
   return leads.length > 0 ? (won / leads.length) * 100 : 0;
 }
 
@@ -1348,6 +1385,52 @@ function groupSpendByChannel(spend: any[]) {
   return Object.entries(grouped).map(([channel, amount]) => ({ channel, amount }));
 }
 
+// Record marketing spend
+router.post('/analytics/marketing-spend', authenticate, requirePermission('sales:write'), async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) return dbNotConfigured(res);
+
+  const { propertyId, channel, amount, spendDate, campaign, notes } = req.body || {};
+  if (!propertyId || !channel || amount === undefined || amount === null) {
+    return res.status(400).json({ error: 'propertyId, channel, and amount are required' });
+  }
+
+  const { data, error } = await supabaseAdmin.from('marketing_spend').insert({
+    property_id: propertyId,
+    channel,
+    amount,
+    spend_date: spendDate,
+    campaign,
+    notes,
+  }).select().single();
+
+  if (error) return res.status(500).json({ error: error.message });
+
+  // Twin-write into Finance expense_requests so finance sees marketing spend
+  try {
+    await supabaseAdmin.from('expense_requests').insert({
+      id: data.id,
+      request_date: spendDate || new Date().toISOString().split('T')[0],
+      department: 'Sales',
+      category: 'marketing',
+      subcategory: channel,
+      description: [campaign, notes].filter(Boolean).join(' — ') || 'Marketing spend',
+      amount,
+      status: 'Approved',
+      requested_by: req.user?.id || 'Sales System',
+      attachments: 0,
+      priority: 'Medium',
+      is_grn: false,
+      supplier_name: channel,
+      property_id: propertyId,
+    });
+  } catch {
+    // twin-write is best-effort
+  }
+
+  cacheService.invalidate('sales-*');
+  return res.status(201).json(data);
+});
+
 // ── Market Segmentation Analysis ────────────────────────────────────────────
 // Get market segmentation
 router.get('/analytics/segmentation/:propertyId', authenticate, async (req, res) => {
@@ -1360,8 +1443,7 @@ router.get('/analytics/segmentation/:propertyId', authenticate, async (req, res)
   const { data: accounts } = await supabaseAdmin
     .from('corporate_accounts')
     .select('*')
-    .eq('property_id', req.params.propertyId)
-    .eq('is_active', true);
+    .eq('property_id', req.params.propertyId);
 
   const { data: opportunities } = await supabaseAdmin
     .from('sales_opportunities')
@@ -1410,7 +1492,7 @@ function groupByDealSize(opportunities: any[]) {
 function groupByGeography(accounts: any[]) {
   const grouped: Record<string, number> = {};
   accounts.forEach(a => {
-    const location = a.address?.city || a.address?.country || 'other';
+    const location = a.billing_address || 'other';
     grouped[location] = (grouped[location] || 0) + 1;
   });
 

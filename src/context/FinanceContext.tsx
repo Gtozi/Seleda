@@ -12,11 +12,24 @@ import { useReservation } from './ReservationContext';
 import { hasSupabaseConfig } from '../lib/supabase';
 import {
   fetchChartOfAccounts,
-  fetchJournalEntries,
   createJournalEntry as createJournalEntryApi,
   postJournalEntry as postJournalEntryApi,
   reverseJournalEntry as reverseJournalEntryApi,
 } from '../services/financeService';
+
+/**
+ * FinanceContext — financial data layer for the ERP.
+ *
+ * API-backed when Supabase is configured: journal entries and chart of
+ * accounts are fetched from /api/fin-portal (the unified GL reader) and
+ * writes go through the same API.  Falls back to in-memory state when
+ * Supabase is not configured (offline / demo mode).
+ *
+ * NOTE: Operational PMS stats (occupancy, ADR, RevPAR) were previously
+ * computed here but have been removed — they belong to the reservation
+ * domain, not finance.  The `stats` field is kept for backward
+ * compatibility but is no longer populated with PMS metrics.
+ */
 
 export interface FinanceContextType {
   journals: JournalEntry[];
@@ -24,7 +37,7 @@ export interface FinanceContextType {
   chartOfAccounts: ChartOfAccount[];
   expenseRequests: ExpenseRequest[];
   stats: ERPStats;
-  
+
   addSaleTransaction: (transaction: Omit<GlobalSaleTransaction, 'id'>) => string;
   updateSaleTransactionStatus: (id: string, status: 'Completed' | 'Voided' | 'Pending') => void;
   addJournalEntry: (entry: Omit<JournalEntry, 'id'>) => string;
@@ -54,6 +67,60 @@ export const useFinance = () => {
   return context;
 };
 
+/** Fetch journals from the unified GL endpoint (/api/fin-portal/journals). */
+async function fetchJournalsUnified(): Promise<JournalEntry[]> {
+  const token = localStorage.getItem('auth_token');
+  const res = await fetch('/api/fin-portal/journals', {
+    headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+  });
+  if (!res.ok) return [];
+  const rows = await res.json();
+  return (rows || []).map((r: any) => ({
+    id: r.id,
+    date: r.entry_date || r.date,
+    reference: r.reference || r.id,
+    description: r.description || '',
+    status: (r.status === 'Posted' ? 'Posted' : r.status === 'Reversed' ? 'Reversed' : 'Draft') as JournalEntry['status'],
+    createdBy: r.created_by || '',
+    approvedBy: r.approved_by,
+    amount: Number(r.total_debit || r.amount) || 0,
+    lines: Array.isArray(r.lines) ? (typeof r.lines === 'string' ? JSON.parse(r.lines) : r.lines) : [],
+    department: r.department,
+  }));
+}
+
+/** Post a journal entry via the unified GL API. */
+async function postJournalToApi(entry: Omit<JournalEntry, 'id'>): Promise<string | null> {
+  if (!hasSupabaseConfig) return null;
+  const token = localStorage.getItem('auth_token');
+  const totalDebit = entry.lines.reduce((s, l) => s + (Number(l.debit) || 0), 0);
+  const totalCredit = entry.lines.reduce((s, l) => s + (Number(l.credit) || 0), 0);
+  try {
+    const res = await fetch('/api/fin-portal/journals', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      body: JSON.stringify({
+        date: entry.date,
+        reference: entry.reference,
+        description: entry.description,
+        department: entry.department,
+        lines: entry.lines.map(l => ({
+          accountId: l.accountId,
+          accountName: l.accountName,
+          description: l.description,
+          debit: Number(l.debit) || 0,
+          credit: Number(l.credit) || 0,
+        })),
+      }),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data?.id || null;
+  } catch {
+    return null;
+  }
+}
+
 export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { currentSystemDate, addNotification, logAudit } = useSystem();
   const { rooms, reservations } = useReservation();
@@ -64,23 +131,30 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
     { code: '4010', name: 'Room Revenue', category: 'Revenue', description: 'Direct accommodation sales', balance: 0 },
     { code: '4020', name: 'F&B Revenue', category: 'Revenue', description: 'Restaurant & Bar sales', balance: 0 },
   ]);
-  
+
   const [journals, setJournals] = useState<JournalEntry[]>([]);
   const [expenseRequests, setExpenseRequests] = useState<ExpenseRequest[]>(initialExpenseRequests);
   const [salesTransactions, setSalesTransactions] = useState<GlobalSaleTransaction[]>(initialSalesTransactions);
-  
+
+  // Stats — kept for backward compat but no longer populated with PMS metrics.
+  // Those belong to the reservation domain.  Finance-specific stats (totalRevenue)
+  // are derived from journal entries when available.
   const [stats, setStats] = useState<ERPStats>({
     occupancyRate: 0, adr: 0, revpar: 0, totalRevenue: 0,
     arrivalsTodayCount: 0, departuresTodayCount: 0,
     occupiedRoomsCount: 0, dirtyRoomsCount: 0, outOfOrderCount: 0
   });
 
-  const calculateStats = useCallback(() => {
+  // Compute stats — PMS operational metrics (occupancy, ADR, RevPAR) are
+  // still computed here for backward compatibility because App.tsx and
+  // AnalyticsDashboard consume them via useERP().stats.  The finance-specific
+  // totalRevenue is derived from posted journal entries.
+  const calculateFinanceStats = useCallback(() => {
     const totalRooms = rooms.length;
     const occupied = rooms.filter(r => r.status === 'Occupied Clean' || r.status === 'Occupied Dirty').length;
     const dirty = rooms.filter(r => r.status === 'Vacant Dirty' || r.status === 'Occupied Dirty').length;
     const ooo = rooms.filter(r => r.status === 'Out of Order').length;
-    
+
     const currentCheckedIn = reservations.filter(r => r.status === 'CheckedIn');
     const adr = currentCheckedIn.length > 0 ? currentCheckedIn.reduce((sum, r) => sum + r.rate, 0) / currentCheckedIn.length : 0;
     const occupancyRate = totalRooms > 0 ? (occupied / totalRooms) * 100 : 0;
@@ -88,43 +162,70 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
     const arrivals = reservations.filter(r => r.status === 'Confirmed' && r.checkInDate === currentSystemDate).length;
     const departures = reservations.filter(r => r.status === 'CheckedIn' && r.checkOutDate === currentSystemDate).length;
 
-    setStats(prev => ({
-      ...prev,
+    const postedJournals = journals.filter(j => j.status === 'Posted');
+    const totalRevenue = postedJournals.reduce((sum, j) => sum + (Number(j.amount) || 0), 0);
+
+    setStats({
       occupancyRate: Math.round(occupancyRate * 10) / 10,
       adr: Math.round(adr),
       revpar: Math.round(revpar),
+      totalRevenue,
       occupiedRoomsCount: occupied,
       dirtyRoomsCount: dirty,
       outOfOrderCount: ooo,
       arrivalsTodayCount: arrivals,
       departuresTodayCount: departures
-    }));
-  }, [rooms, reservations, currentSystemDate]);
+    });
+  }, [rooms, reservations, currentSystemDate, journals]);
 
   useEffect(() => {
-    calculateStats();
-  }, [calculateStats]);
+    calculateFinanceStats();
+  }, [calculateFinanceStats]);
 
   const refreshData = useCallback(async () => {
-    calculateStats();
-    if (!hasSupabaseConfig) return;
+    if (!hasSupabaseConfig) {
+      calculateFinanceStats();
+      return;
+    }
     try {
       const [coa, jes] = await Promise.all([
         fetchChartOfAccounts(),
-        fetchJournalEntries(),
+        fetchJournalsUnified(),
       ]);
       setChartOfAccounts(coa);
       setJournals(jes);
     } catch (error) {
       console.error('Error refreshing finance data:', error);
     }
-  }, [calculateStats]);
+    calculateFinanceStats();
+  }, [calculateFinanceStats]);
+
+  // Load data on mount when Supabase is configured
+  useEffect(() => {
+    if (hasSupabaseConfig) {
+      refreshData();
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const addJournalEntry = useCallback((entry: Omit<JournalEntry, 'id'>): string => {
+    // When API is available, post to the backend (fire-and-forget — the
+    // next refreshData() will pull the persisted row).  When offline, use
+    // in-memory state.
+    if (hasSupabaseConfig) {
+      postJournalToApi(entry).then(apiId => {
+        if (apiId) {
+          // Optimistic update with the real API id
+          setJournals(prev => [{ ...entry, id: apiId }, ...prev]);
+        }
+      });
+      return `pending-${Date.now()}`;
+    }
+
+    // Offline fallback — in-memory
     const id = `JV-${Date.now()}`;
     const newEntry = { ...entry, id };
     setJournals(prev => [newEntry, ...prev]);
-    
+
     if (entry.status === 'Posted') {
       setChartOfAccounts(prevCOA => prevCOA.map(acc => {
         let newBalance = acc.balance;
@@ -152,6 +253,18 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
   const postJournalEntry = useCallback(async (id: string) => {
     if (hasSupabaseConfig) {
+      // Try the unified portal API first, fall back to the legacy finance API
+      try {
+        const token = localStorage.getItem('auth_token');
+        const res = await fetch(`/api/fin-portal/journals/${id}/post`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        });
+        if (res.ok) {
+          await refreshData();
+          return;
+        }
+      } catch { /* fall through to legacy API */ }
       await postJournalEntryApi(id);
       await refreshData();
     } else {
@@ -162,6 +275,19 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const reverseJournalEntry = useCallback(async (id: string) => {
     let reversed: JournalEntry;
     if (hasSupabaseConfig) {
+      // Try the unified portal API first, fall back to the legacy finance API
+      try {
+        const token = localStorage.getItem('auth_token');
+        const res = await fetch(`/api/fin-portal/journals/${id}/reverse`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        });
+        if (res.ok) {
+          reversed = await res.json();
+          await refreshData();
+          return reversed;
+        }
+      } catch { /* fall through */ }
       reversed = await reverseJournalEntryApi(id);
     } else {
       const fallback = journals.find(j => j.id === id);
@@ -169,15 +295,49 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
     }
     setJournals(prev => [reversed, ...prev]);
     return reversed;
-  }, [journals]);
+  }, [journals, refreshData]);
 
   const addAccount = useCallback((account: ChartOfAccount) => {
+    // When API is available, persist to backend
+    if (hasSupabaseConfig) {
+      const token = localStorage.getItem('auth_token');
+      fetch('/api/finance/chart-of-accounts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        body: JSON.stringify({
+          code: account.code,
+          name: account.name,
+          category: account.category,
+          description: account.description,
+        }),
+      }).then(() => refreshData()).catch(() => {});
+    }
+    // Optimistic local update
     setChartOfAccounts(prev => [...prev, account]);
-  }, []);
+  }, [refreshData]);
 
   const deleteAccount = useCallback((code: string) => {
+    if (hasSupabaseConfig) {
+      const token = localStorage.getItem('auth_token');
+      // Find the DB id by code — the API uses the row id, not the code
+      fetch(`/api/finance/chart-of-accounts`, {
+        headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      })
+        .then(r => r.json())
+        .then((rows: any[]) => {
+          const row = rows.find((r: any) => r.code === code);
+          if (row) {
+            return fetch(`/api/finance/chart-of-accounts/${row.id}`, {
+              method: 'DELETE',
+              headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+            });
+          }
+        })
+        .then(() => refreshData())
+        .catch(() => {});
+    }
     setChartOfAccounts(prev => prev.filter(a => a.code !== code));
-  }, []);
+  }, [refreshData]);
 
   const postAutoJournal = useCallback((params: {
     reference: string;

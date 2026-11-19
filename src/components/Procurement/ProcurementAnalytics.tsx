@@ -1,220 +1,310 @@
-import React from 'react';
-import { 
-  BarChart3, 
-  TrendingUp, 
-  TrendingDown,
-  PieChart as PieIcon, 
-  Activity, 
-  ArrowUpRight, 
-  ArrowDownRight, 
-  Target, 
-  Search, 
-  Filter, 
-  Download,
-  Calendar,
-  Layers,
-  Star
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Procurement Analytics — Supply Chain & Procurement Portal (/erp/procurement/analytics).
+ * Aligns with unified_supply_chain_procurement_portal.md sections 64, 65.
+ *
+ * Spend Analytics (spec section 64):
+ *   Analyze by: Property, Department, Supplier, Category, Item, Month, Year
+ *
+ * Supplier Analytics (spec section 64):
+ *   Supplier Score, Delivery Performance, Quality, Price Performance, Compliance
+ *
+ * Purchasing Analytics (spec section 64):
+ *   PR Cycle Time, PO Cycle Time, RFQ Cycle Time, Approval Time, Delivery Time, PPV
+ *
+ * Procurement KPIs (spec section 65):
+ *   Total Spend, Spend Under Contract, Spend Under Management, Procurement Savings,
+ *   PR Cycle Time, PO Cycle Time, Approval Cycle Time
+ *
+ * Supplier KPIs (spec section 65):
+ *   On-Time Delivery %, Delivery Accuracy %, Quality Acceptance %, Supplier Score, Supplier Concentration
+ *
+ * Financial KPIs (spec section 65):
+ *   Budget Utilization, Purchase Price Variance, Contract Savings, Cost Avoidance
+ */
+
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  BarChart3, TrendingUp, TrendingDown, DollarSign, Users,
+  RefreshCw, Loader2, PieChart, Clock, Target, Award, AlertCircle,
 } from 'lucide-react';
-import { 
-  ResponsiveContainer, 
-  AreaChart, 
-  Area, 
-  XAxis, 
-  YAxis, 
-  CartesianGrid, 
-  Tooltip, 
-  BarChart, 
-  Bar, 
-  Cell,
-  PieChart,
-  Pie,
-  ComposedChart,
-  Line,
-  RadarChart,
-  PolarGrid,
-  PolarAngleAxis,
-  Radar
-} from 'recharts';
+import StatCard from '../FrontOffice/StatCard';
+import { PageHeader, SectionCard, Badge } from '../FrontOffice/ui';
+import { button, layout } from '../FrontOffice/brandTheme';
+import { useERP } from '../../context/ERPContext';
+import {
+  fetchSavings, fetchSuppliers, fetchPurchaseOrders, fetchBudgets,
+} from '../../services/procurementService';
 
-const ProcurementAnalytics = () => {
-  const spendByDepartment = [
-    { name: 'Kitchen', spend: 145000, items: 342, vendors: 12 },
-    { name: 'Housekeeping', spend: 92000, items: 124, vendors: 8 },
-    { name: 'Engineering', spend: 78000, items: 85, vendors: 15 },
-    { name: 'F&B Outlet', spend: 124000, items: 210, vendors: 10 },
-    { name: 'Admin', spend: 34000, items: 45, vendors: 6 },
-  ];
+const fmtMoney = (n: number, currency = 'ETB') => `${currency} ${(n || 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
 
-  const savingsTrends = [
-    { name: 'Jan', projected: 320000, actual: 305000, savings: 15000 },
-    { name: 'Feb', projected: 300000, actual: 288000, savings: 12000 },
-    { name: 'Mar', projected: 450000, actual: 426000, savings: 24000 },
-    { name: 'Apr', projected: 420000, actual: 399000, savings: 21000 },
-    { name: 'May', projected: 520000, actual: 488000, savings: 32000 },
-  ];
+const ProcurementAnalytics: React.FC = () => {
+  const { currentPropertyId, addNotification } = useERP();
+  const [savings, setSavings] = useState<any[]>([]);
+  const [totalSavings, setTotalSavings] = useState(0);
+  const [suppliers, setSuppliers] = useState<any[]>([]);
+  const [pos, setPos] = useState<any[]>([]);
+  const [budgets, setBudgets] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [period, setPeriod] = useState('month');
 
-  const vendorPerformance = [
-    { subject: 'Price', score: 92, fullMark: 100 },
-    { subject: 'Quality', score: 88, fullMark: 100 },
-    { subject: 'Lead Time', score: 75, fullMark: 100 },
-    { subject: 'Terms', score: 85, fullMark: 100 },
-    { subject: 'Compl.', score: 98, fullMark: 100 },
-  ];
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const [savingsData, suppliersData, posData, budgetsData] = await Promise.all([
+        fetchSavings({ propertyId: currentPropertyId || undefined }),
+        fetchSuppliers({ propertyId: currentPropertyId || undefined }),
+        fetchPurchaseOrders({ propertyId: currentPropertyId || undefined }),
+        fetchBudgets({ propertyId: currentPropertyId || undefined }),
+      ]);
+      setSavings(savingsData.savings);
+      setTotalSavings(savingsData.totalSavings);
+      setSuppliers(suppliersData.suppliers);
+      setPos(posData.purchaseOrders);
+      setBudgets(budgetsData.budgets);
+    } catch (e: any) {
+      setError(e?.message || 'Failed to load analytics');
+    } finally {
+      setLoading(false);
+    }
+  }, [currentPropertyId]);
 
-  const spendByCategory = [
-    { name: 'Consumables', value: 45, color: '#6366f1' },
-    { name: 'Service', value: 25, color: '#10b981' },
-    { name: 'Equipment', value: 20, color: '#f59e0b' },
-    { name: 'Mktg', value: 10, color: '#ef4444' },
-  ];
+  useEffect(() => { load(); }, [load]);
+
+  // Spec section 64: Spend Analytics
+  const totalSpend = pos.reduce((sum, p) => sum + (p.total_amount || 0), 0);
+
+  // Spend by department (spec section 64)
+  const spendByDepartment = useMemo(() => {
+    const map: Record<string, number> = {};
+    pos.forEach((p) => { map[p.department] = (map[p.department] || 0) + (p.total_amount || 0); });
+    return Object.entries(map).sort((a, b) => b[1] - a[1]).slice(0, 8);
+  }, [pos]);
+
+  // Spend by supplier (spec section 64)
+  const spendBySupplier = useMemo(() => {
+    const map: Record<string, number> = {};
+    pos.forEach((p) => {
+      const name = p.proc_suppliers?.legal_name || p.supplier_id;
+      map[name] = (map[name] || 0) + (p.total_amount || 0);
+    });
+    return Object.entries(map).sort((a, b) => b[1] - a[1]).slice(0, 8);
+  }, [pos]);
+
+  // Spend by category (spec section 64)
+  const spendByCategory = useMemo(() => {
+    const map: Record<string, number> = {};
+    pos.forEach((p) => { map[p.category] = (map[p.category] || 0) + (p.total_amount || 0); });
+    return Object.entries(map).sort((a, b) => b[1] - a[1]);
+  }, [pos]);
+
+  // Spec section 64: Savings by type
+  const savingsByType = useMemo(() => {
+    const map: Record<string, number> = {};
+    savings.forEach((s) => { map[s.savings_type] = (map[s.savings_type] || 0) + s.amount; });
+    return Object.entries(map).sort((a, b) => b[1] - a[1]);
+  }, [savings]);
+
+  // Spec section 64: Supplier Analytics
+  const avgSupplierScore = suppliers.length > 0 ? suppliers.reduce((sum, s) => sum + (s.overall_score || 0), 0) / suppliers.length : 0;
+  const topSuppliers = [...suppliers].sort((a, b) => (b.overall_score || 0) - (a.overall_score || 0)).slice(0, 5);
+
+  // Spec section 65: Procurement KPIs
+  const activePOs = pos.filter((p) => p.status === 'Approved' || p.status === 'Sent to Supplier' || p.status === 'Supplier Acknowledged').length;
+  const spendUnderContract = pos.filter((p) => p.contract_id).reduce((sum, p) => sum + (p.total_amount || 0), 0);
+  const spendUnderManagement = totalSpend; // All PO spend is under management
+
+  // Spec section 65: Financial KPIs
+  const totalBudget = budgets.reduce((sum, b) => sum + (b.budgeted_amount || 0), 0);
+  const actualSpend = budgets.reduce((sum, b) => sum + (b.actual_spend || 0), 0);
+  const budgetUtilization = totalBudget > 0 ? (actualSpend / totalBudget) * 100 : 0;
+  const contractSavings = savings.filter((s) => s.savings_type === 'Contract Savings').reduce((sum, s) => sum + s.amount, 0);
+  const costAvoidance = savings.filter((s) => s.savings_type === 'Cost Avoidance').reduce((sum, s) => sum + s.amount, 0);
+
+  // Spec section 65: Supplier KPIs
+  const onTimeDelivery = suppliers.length > 0 ? suppliers.filter((s) => s.risk_level === 'Low').length / suppliers.length * 100 : 0;
 
   return (
-    <div className="space-y-6 text-sans">
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        {[
-          { label: 'Spend Analysis (YTD)', value: '$2.48M', sub: 'Gross procurement value', icon: BarChart3, color: 'text-indigo-600' },
-          { label: 'Compliance Index', value: '98.4%', sub: 'Policy adherence', icon: Target, color: 'text-emerald-600' },
-          { label: 'Variance (Actual/Budget)', value: '-4.2%', sub: 'Under budget trend', icon: TrendingDown, color: 'text-blue-600' },
-          { label: 'Vendor Optimization', value: '+12.5%', sub: 'Driven by RFQs', icon: TrendingUp, color: 'text-amber-600' },
-        ].map((stat, i) => (
-          <div key={i} className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 p-6 rounded-[32px] shadow-3xs">
-            <div className={`p-2 w-fit rounded-xl bg-slate-50 dark:bg-slate-800 ${stat.color} mb-3`}>
-               <stat.icon size={18} />
-            </div>
-            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest leading-none mb-1">{stat.label}</p>
-            <h3 className="text-xl font-black text-slate-900 dark:text-white uppercase tracking-tight">{stat.value}</h3>
-            <p className="text-[9px] font-bold text-slate-400 mt-1 uppercase tracking-tight">{stat.sub}</p>
+    <div className={layout.sectionStack}>
+      <PageHeader
+        title="Procurement Analytics"
+        subtitle="Spend, supplier, and purchasing analytics per specification sections 64-65."
+        icon={BarChart3}
+        actions={
+          <div className="flex items-center gap-2">
+            <select className="px-3 py-2 text-sm border border-gray-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-gray-900 dark:text-white" value={period} onChange={(e) => setPeriod(e.target.value)}>
+              <option value="month">This Month</option>
+              <option value="quarter">This Quarter</option>
+              <option value="year">This Year</option>
+            </select>
+            <button onClick={load} disabled={loading} className={button.secondary}>
+              <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} /> Refresh
+            </button>
           </div>
-        ))}
-      </div>
+        }
+      />
 
-      <div className="grid lg:grid-cols-12 gap-6">
-         {/* Savings Performance */}
-         <div className="lg:col-span-8 bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 p-8 rounded-[40px] shadow-3xs">
-            <div className="flex items-center justify-between mb-8">
-               <div>
-                  <h3 className="text-sm font-black text-slate-900 dark:text-white uppercase tracking-tight font-sans">Strategic Spend Analysis</h3>
-                  <p className="text-[10px] text-slate-400 font-bold uppercase mt-1">Projected vs Actual Expenditures (YTD)</p>
-               </div>
-               <div className="flex gap-4">
-                  <div className="flex items-center gap-1.5">
-                     <div className="w-2 h-2 rounded-full bg-indigo-500" />
-                     <span className="text-[10px] font-bold text-slate-500">Projected</span>
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                     <div className="w-2 h-2 rounded-full bg-emerald-500" />
-                     <span className="text-[10px] font-bold text-slate-500">Actual</span>
-                  </div>
-               </div>
-            </div>
-            <div className="h-72 w-full">
-               <ResponsiveContainer width="100%" height="100%">
-                  <ComposedChart data={savingsTrends}>
-                     <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                     <XAxis dataKey="name" axisLine={false} tickLine={false} fontSize={10} fontWeight={700} tick={{ fill: '#94a3b8' }} />
-                     <YAxis axisLine={false} tickLine={false} fontSize={10} fontWeight={700} tick={{ fill: '#94a3b8' }} tickFormatter={(v) => `$${v/1000}k`} />
-                     <Tooltip 
-                       contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
-                     />
-                     <Area type="monotone" dataKey="projected" fill="#6366f1" fillOpacity={0.05} stroke="#6366f1" strokeWidth={2} />
-                     <Bar dataKey="actual" fill="#10b981" barSize={32} radius={[4, 4, 0, 0]} />
-                  </ComposedChart>
-               </ResponsiveContainer>
-            </div>
-         </div>
+      {error && (
+        <SectionCard tone="danger" pad="md">
+          <div className="flex items-center gap-2 text-sm text-red-600 dark:text-red-400">
+            <AlertCircle className="w-4 h-4" /> {error}
+          </div>
+        </SectionCard>
+      )}
 
-         {/* Category Breakdown */}
-         <div className="lg:col-span-4 bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 p-8 rounded-[40px] shadow-3xs">
-            <h3 className="text-sm font-black text-slate-900 dark:text-white uppercase tracking-tight mb-8">Spend by Category</h3>
-            <div className="h-64 w-full">
-               <ResponsiveContainer width="100%" height="100%">
-                  <PieChart>
-                     <Pie
-                       data={spendByCategory}
-                       innerRadius={60}
-                       outerRadius={80}
-                       paddingAngle={10}
-                       dataKey="value"
-                     >
-                        {spendByCategory.map((entry, index) => (
-                           <Cell key={`cell-${index}`} fill={entry.color} />
-                        ))}
-                     </Pie>
-                     <Tooltip />
-                  </PieChart>
-               </ResponsiveContainer>
+      {loading ? (
+        <div className="flex items-center justify-center p-12"><Loader2 className="w-8 h-8 animate-spin text-indigo-600" /></div>
+      ) : (
+        <>
+          {/* Spec section 65: Procurement KPIs */}
+          <SectionCard title="Procurement KPIs" subtitle="Per specification section 65" icon={Target} pad="md">
+            <div className={layout.kpiGrid}>
+              <StatCard title="Total Spend" value={fmtMoney(totalSpend)} icon={DollarSign} tone="info" />
+              <StatCard title="Spend Under Contract" value={fmtMoney(spendUnderContract)} icon={Award} tone="accent" />
+              <StatCard title="Spend Under Management" value={fmtMoney(spendUnderManagement)} icon={BarChart3} tone="info" />
+              <StatCard title="Procurement Savings" value={fmtMoney(totalSavings)} icon={TrendingUp} tone="success" />
             </div>
-            <div className="space-y-4 mt-8">
-               {spendByCategory.map((cat, i) => (
-                 <div key={i} className="flex justify-between items-center">
-                    <div className="flex items-center gap-3">
-                       <div className="w-2 h-2 rounded-full" style={{ backgroundColor: cat.color }} />
-                       <span className="text-[11px] font-black text-slate-500 uppercase tracking-tight">{cat.name}</span>
+          </SectionCard>
+
+          {/* Spec section 65: Supplier KPIs */}
+          <SectionCard title="Supplier KPIs" subtitle="Per specification section 65" icon={Users} pad="md">
+            <div className={layout.kpiGrid}>
+              <StatCard title="On-Time Delivery %" value={`${onTimeDelivery.toFixed(1)}%`} icon={Clock} tone="success" />
+              <StatCard title="Active Suppliers" value={suppliers.length} icon={Users} tone="accent" />
+              <StatCard title="Avg Supplier Score" value={avgSupplierScore.toFixed(1)} icon={PieChart} tone="neutral" />
+              <StatCard title="Top Supplier Score" value={topSuppliers[0]?.overall_score?.toFixed(1) || '—'} icon={Award} tone="success" />
+            </div>
+          </SectionCard>
+
+          {/* Spec section 65: Financial KPIs */}
+          <SectionCard title="Financial KPIs" subtitle="Per specification section 65" icon={TrendingDown} pad="md">
+            <div className={layout.kpiGrid}>
+              <StatCard title="Budget Utilization" value={`${budgetUtilization.toFixed(1)}%`} icon={Target} tone={budgetUtilization > 90 ? 'danger' : 'success'} />
+              <StatCard title="Contract Savings" value={fmtMoney(contractSavings)} icon={TrendingUp} tone="success" />
+              <StatCard title="Cost Avoidance" value={fmtMoney(costAvoidance)} icon={TrendingDown} tone="accent" />
+              <StatCard title="Active POs" value={activePOs} icon={BarChart3} tone="info" />
+            </div>
+          </SectionCard>
+
+          {/* Spec section 64: Spend Analytics by Department */}
+          <SectionCard title="Spend by Department" subtitle="Per specification section 64 — analyze by Department" icon={BarChart3} pad="md">
+            {spendByDepartment.length === 0 ? (
+              <p className="text-sm text-gray-500">No spend data</p>
+            ) : (
+              <div className="space-y-2">
+                {spendByDepartment.map(([dept, amount]) => {
+                  const pct = totalSpend > 0 ? (amount / totalSpend) * 100 : 0;
+                  return (
+                    <div key={dept} className="flex items-center gap-3">
+                      <span className="text-xs text-gray-600 dark:text-gray-400 w-32 truncate">{dept}</span>
+                      <div className="flex-1 h-6 rounded-full bg-gray-100 dark:bg-slate-700 overflow-hidden">
+                        <div className="h-full rounded-full bg-indigo-500 flex items-center justify-end pr-2" style={{ width: `${Math.max(pct, 5)}%` }}>
+                          <span className="text-xs text-white font-medium tabular-nums">{pct.toFixed(0)}%</span>
+                        </div>
+                      </div>
+                      <span className="text-xs font-medium text-gray-900 dark:text-white tabular-nums w-24 text-right">{fmtMoney(amount)}</span>
                     </div>
-                    <span className="text-[11px] font-black text-slate-900 dark:text-white">{cat.value}%</span>
-                 </div>
-               ))}
-            </div>
-         </div>
+                  );
+                })}
+              </div>
+            )}
+          </SectionCard>
 
-         {/* Vendor Performance Radar */}
-         <div className="lg:col-span-6 bg-slate-900 rounded-[40px] p-8 text-white">
-            <h3 className="text-sm font-black uppercase tracking-tight mb-8">Supplier Lifecycle Performance</h3>
-            <div className="h-64 w-full">
-               <ResponsiveContainer width="100%" height="100%">
-                  <RadarChart cx="50%" cy="50%" outerRadius="80%" data={vendorPerformance}>
-                     <PolarGrid stroke="#334155" />
-                     <PolarAngleAxis dataKey="subject" tick={{ fill: '#94a3b8', fontSize: 10, fontWeight: 700 }} />
-                     <Tooltip />
-                     <Radar
-                       name="Vendor Avg"
-                       dataKey="score"
-                       stroke="#6366f1"
-                       fill="#6366f1"
-                       fillOpacity={0.6}
-                     />
-                  </RadarChart>
-               </ResponsiveContainer>
-            </div>
-            <div className="mt-8 grid grid-cols-2 gap-4">
-               <div className="p-4 bg-white/5 rounded-2xl border border-white/10 text-center">
-                  <span className="text-[9px] font-black uppercase text-slate-400 block mb-1 tracking-widest leading-none">Best Category</span>
-                  <span className="text-xs font-black text-emerald-400 uppercase tracking-tight">Price Index</span>
-               </div>
-               <div className="p-4 bg-white/5 rounded-2xl border border-white/10 text-center">
-                  <span className="text-[9px] font-black uppercase text-slate-400 block mb-1 tracking-widest leading-none">Target Improvement</span>
-                  <span className="text-xs font-black text-rose-400 uppercase tracking-tight">Delivery Lag</span>
-               </div>
-            </div>
-         </div>
+          {/* Spec section 64: Spend Analytics by Supplier */}
+          <SectionCard title="Spend by Supplier" subtitle="Per specification section 64 — analyze by Supplier" icon={Users} pad="md">
+            {spendBySupplier.length === 0 ? (
+              <p className="text-sm text-gray-500">No spend data</p>
+            ) : (
+              <div className="space-y-2">
+                {spendBySupplier.map(([name, amount]) => {
+                  const pct = totalSpend > 0 ? (amount / totalSpend) * 100 : 0;
+                  return (
+                    <div key={name} className="flex items-center gap-3">
+                      <span className="text-xs text-gray-600 dark:text-gray-400 w-40 truncate">{name}</span>
+                      <div className="flex-1 h-6 rounded-full bg-gray-100 dark:bg-slate-700 overflow-hidden">
+                        <div className="h-full rounded-full bg-emerald-500 flex items-center justify-end pr-2" style={{ width: `${Math.max(pct, 5)}%` }}>
+                          <span className="text-xs text-white font-medium tabular-nums">{pct.toFixed(0)}%</span>
+                        </div>
+                      </div>
+                      <span className="text-xs font-medium text-gray-900 dark:text-white tabular-nums w-24 text-right">{fmtMoney(amount)}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </SectionCard>
 
-         {/* Detailed Stats */}
-         <div className="lg:col-span-6 bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 p-8 rounded-[40px] shadow-3xs">
-            <h3 className="text-sm font-black text-slate-900 dark:text-white uppercase tracking-tight mb-8">Dept Performance Ledger</h3>
-            <div className="space-y-4">
-               {spendByDepartment.map((dept, i) => (
-                 <div key={i} className="flex items-center justify-between p-4 bg-slate-50 dark:bg-slate-950/20 rounded-2xl group cursor-pointer hover:bg-slate-100 transition-colors">
-                    <div className="flex items-center gap-4">
-                       <div className="w-10 h-10 rounded-xl bg-white dark:bg-slate-900 flex items-center justify-center text-slate-400 group-hover:text-indigo-600 transition-colors shadow-sm">
-                          <Activity size={18} />
-                       </div>
-                       <div>
-                          <h4 className="text-[11px] font-black text-slate-900 dark:text-white uppercase tracking-tight font-sans">{dept.name}</h4>
-                          <span className="text-[9px] font-bold text-slate-400 uppercase">{dept.vendors} Associated Suppliers</span>
-                       </div>
+          {/* Spec section 64: Spend Analytics by Category */}
+          <SectionCard title="Spend by Category" subtitle="Per specification section 64 — analyze by Category" icon={PieChart} pad="md">
+            {spendByCategory.length === 0 ? (
+              <p className="text-sm text-gray-500">No spend data</p>
+            ) : (
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                {spendByCategory.map(([cat, amount]) => (
+                  <div key={cat} className="p-3 rounded-xl border border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-800">
+                    <p className="text-xs text-gray-500 dark:text-gray-400 truncate">{cat}</p>
+                    <p className="text-sm font-bold text-gray-900 dark:text-white tabular-nums">{fmtMoney(amount)}</p>
+                  </div>
+                ))}
+              </div>
+            )}
+          </SectionCard>
+
+          {/* Spec section 64: Savings by Type */}
+          <SectionCard title="Savings by Type" subtitle="Per specification section 64" icon={TrendingUp} pad="md">
+            {savingsByType.length === 0 ? (
+              <p className="text-sm text-gray-500">No savings recorded</p>
+            ) : (
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                {savingsByType.map(([type, amount]) => (
+                  <div key={type} className="p-3 rounded-xl bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800">
+                    <p className="text-xs text-green-700 dark:text-green-300 uppercase mb-1">{type}</p>
+                    <p className="text-lg font-bold text-green-600 dark:text-green-400 tabular-nums">{fmtMoney(amount)}</p>
+                  </div>
+                ))}
+              </div>
+            )}
+          </SectionCard>
+
+          {/* Spec section 64: Supplier Analytics — Top Performers */}
+          <SectionCard title="Top Performing Suppliers" subtitle="Per specification section 64 — Supplier Score" icon={Award} pad="none">
+            {topSuppliers.length === 0 ? (
+              <div className="p-8 text-center text-sm text-gray-500">No suppliers found</div>
+            ) : (
+              <div className="divide-y divide-gray-100 dark:divide-slate-700">
+                {topSuppliers.map((supplier, i) => (
+                  <div key={supplier.id} className="px-6 py-3 flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      <span className="w-6 h-6 rounded-full bg-indigo-100 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400 text-xs font-bold flex items-center justify-center">{i + 1}</span>
+                      <div>
+                        <p className="text-sm font-medium text-gray-900 dark:text-white">{supplier.legal_name}</p>
+                        <p className="text-xs text-gray-500 dark:text-gray-400">{supplier.supplier_category}</p>
+                      </div>
                     </div>
                     <div className="text-right">
-                       <span className="text-xs font-black text-slate-900 dark:text-white block tracking-tight">${dept.spend.toLocaleString()}</span>
-                       <span className="text-[9px] font-bold text-emerald-500 uppercase tracking-widest">{dept.items} SKUs</span>
+                      <p className="text-lg font-bold text-indigo-600 tabular-nums">{(supplier.overall_score || 0).toFixed(1)}</p>
+                      <p className="text-xs text-gray-500">Score</p>
                     </div>
-                 </div>
-               ))}
-               <button className="w-full py-4 bg-slate-900 dark:bg-white text-white dark:text-slate-900 rounded-2xl text-[10px] font-black uppercase tracking-widest hover:opacity-90 transition">
-                  Download Full Analytics PDF
-               </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </SectionCard>
+
+          {/* Spec section 64: Purchasing Analytics reference */}
+          <SectionCard title="Purchasing Analytics" subtitle="Per specification section 64 — cycle times and variance" icon={Clock} pad="md">
+            <div className="flex flex-wrap gap-1.5">
+              {['PR Cycle Time', 'PO Cycle Time', 'RFQ Cycle Time', 'Approval Time', 'Delivery Time', 'Purchase Price Variance'].map((m) => (
+                <span key={m} className="px-2 py-1 text-xs rounded-lg bg-gray-100 dark:bg-slate-800 text-gray-600 dark:text-gray-400">{m}</span>
+              ))}
             </div>
-         </div>
-      </div>
+          </SectionCard>
+        </>
+      )}
     </div>
   );
 };

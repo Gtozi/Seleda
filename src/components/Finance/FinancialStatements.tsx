@@ -12,8 +12,14 @@ import {
 } from 'lucide-react';
 import { fetchProfitLoss, fetchBalanceSheet, fetchCashFlow, type ProfitLossResponse, type BalanceSheetResponse, type CashFlowResponse } from '../../services/financialStatementsService';
 
-const FinancialStatements = () => {
-  const [activeTab, setActiveTab] = useState<'profit-loss' | 'balance-sheet' | 'cash-flow'>('profit-loss');
+interface FinancialStatementsProps {
+  /** Optional initial tab — lets callers (e.g. FinancialReports catalog) open
+   *  the component directly on a specific statement. Defaults to 'profit-loss'. */
+  initialTab?: 'profit-loss' | 'balance-sheet' | 'cash-flow';
+}
+
+const FinancialStatements = ({ initialTab = 'profit-loss' }: FinancialStatementsProps = {}) => {
+  const [activeTab, setActiveTab] = useState<'profit-loss' | 'balance-sheet' | 'cash-flow'>(initialTab);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 

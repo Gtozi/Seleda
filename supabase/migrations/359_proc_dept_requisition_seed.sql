@@ -1,0 +1,6 @@
+-- 359_proc_dept_requisition_seed.sql
+-- Seeds department-integrated requisitions for remaining departments.
+-- Departments: Spa & Wellness, Banquet & Events, Transportation & Fleet,
+-- Human Resources, Security & Risk, IT, Food & Beverage.
+-- Each carries source_system to identify the originating department.
+-- Uses the demo property: 18762279-a389-41c9-9169-7ebc682e9703

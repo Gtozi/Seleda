@@ -53,6 +53,7 @@ import {
 } from 'lucide-react';
 import TermsAndConditionsModal from './TermsAndConditionsModal';
 import AirportShuttleModal, { AirportShuttleDetails } from './AirportShuttleModal';
+import { ModuleHeader, HERO } from './PublicPortal/shared';
 
 interface PublicRoom {
   type: string;
@@ -301,7 +302,7 @@ const getCategoryMeta = (cat: string) => {
   };
 };
 
-export default function BookingPage() {
+export default function BookingPage({ embedded = false }: { embedded?: boolean } = {}) {
   const [settings, setSettings] = useState<PublicSettings | null>(null);
   const [rooms, setRooms] = useState<PublicRoom[]>([]);
   const [packages, setPackages] = useState<PublicPackage[]>([]);
@@ -312,10 +313,21 @@ export default function BookingPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>('');
 
-  const [checkIn, setCheckIn] = useState<string>(getTomorrowStr());
-  const [checkOut, setCheckOut] = useState<string>(getFourDaysLaterStr());
-  const [adults, setAdults] = useState<number>(2);
-  const [children, setChildren] = useState<number>(0);
+  // Prefill from the public portal search (/booking?checkIn=&checkOut=&adults=&children=)
+  const [initialSearch] = useState(() => {
+    const q = new URLSearchParams(window.location.search);
+    const iso = /^\d{4}-\d{2}-\d{2}$/;
+    const today = new Date().toISOString().split('T')[0];
+    const ci = q.get('checkIn') || '';
+    const co = q.get('checkOut') || '';
+    const valid = iso.test(ci) && iso.test(co) && ci >= today && co > ci;
+    const num = (k: string, min: number, max: number, d: number) => { const n = parseInt(q.get(k) || '', 10); return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : d; };
+    return { checkIn: valid ? ci : getTomorrowStr(), checkOut: valid ? co : getFourDaysLaterStr(), adults: num('adults', 1, 10, 2), children: num('children', 0, 10, 0) };
+  });
+  const [checkIn, setCheckIn] = useState<string>(initialSearch.checkIn);
+  const [checkOut, setCheckOut] = useState<string>(initialSearch.checkOut);
+  const [adults, setAdults] = useState<number>(initialSearch.adults);
+  const [children, setChildren] = useState<number>(initialSearch.children);
   const [selectedItems, setSelectedItems] = useState<SelectedItem[]>([]);
   const [selectedPackageQuantities, setSelectedPackageQuantities] = useState<Record<string, number>>({});
   const [selectedGuestServiceQuantities, setSelectedGuestServiceQuantities] = useState<Record<string, number>>({});
@@ -348,6 +360,7 @@ export default function BookingPage() {
   const [showTermsModal, setShowTermsModal] = useState(false);
   const [showShuttleModal, setShowShuttleModal] = useState(false);
   const wasShuttleSelectedRef = useRef(false);
+  const idempotencyKeyRef = useRef<string | null>(null);
 
   // Add-ons page filters and search states
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
@@ -541,13 +554,13 @@ export default function BookingPage() {
     setApplyingVoucher(true);
     setVoucherError('');
     try {
-      const res = await fetch('/api/b2b/vouchers/redeem', {
+      const res = await fetch('/api/public/vouchers/validate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ voucher_number: voucherCode })
+        body: JSON.stringify({ voucher_no: voucherCode.trim() })
       });
       if (!res.ok) {
-        const err = await res.json();
+        const err = await res.json().catch(() => ({}));
         setVoucherError(err.error || 'Invalid voucher');
         setVoucherDiscount(0);
       } else {
@@ -792,6 +805,14 @@ export default function BookingPage() {
     }
   }, [canProceedToStep2, canProceedToStep3]);
 
+  useEffect(() => {
+    if (currentStep > 1) document.getElementById('booking-main')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, [currentStep]);
+
+  useEffect(() => {
+    if (error) document.getElementById('booking-error')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }, [error]);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (selectedItems.length === 0 || nights === 0 || !agreed) return;
@@ -846,8 +867,7 @@ export default function BookingPage() {
         })),
         // B2B fields
         operator_id: selectedOperatorId || null,
-        voucher_code: voucherCode || null,
-        voucher_discount: voucherDiscount,
+        voucher_code: voucherDiscount > 0 ? voucherCode.trim() : null,
         ratePlanId: selectedRatePlanId || null
       };
       if (shuttleService) {
@@ -868,13 +888,17 @@ export default function BookingPage() {
         }
         requestBody.airportShuttleRequests = shuttleRequests;
       }
+      if (!idempotencyKeyRef.current) idempotencyKeyRef.current = crypto.randomUUID();
       const res = await fetch('/api/public/bookings', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKeyRef.current },
         body: JSON.stringify(requestBody)
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Booking failed');
+      if (!res.ok) {
+        idempotencyKeyRef.current = null;
+        throw new Error(data.error || 'Booking failed');
+      }
       
       // Broadcast to admin dashboard tabs for immediate update
       try {
@@ -889,6 +913,7 @@ export default function BookingPage() {
         console.log('BroadcastChannel not supported or error:', e);
       }
       
+      idempotencyKeyRef.current = null;
       setConfirmation({
         reservationIds: data.reservationIds,
         totalAmount: data.totalAmount,
@@ -928,6 +953,7 @@ export default function BookingPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           reservationIds: confirmation.reservationIds,
+          guestEmail,
           paymentMethod: paymentMethod === 'card' ? 'Credit Card' : paymentMethod === 'telebirr' ? 'Mobile Money (Telebirr)' : 'Direct Bank Transfer',
           paymentDetails: details
         })
@@ -998,7 +1024,8 @@ export default function BookingPage() {
     // If waitlisted and they haven't bypassed checkout, show the Payment Checkout page
     if (isWaitlisted && !showWaitlistedReceipt) {
       return (
-        <div className="min-h-screen bg-stone-50 py-12 px-4 sm:px-6 lg:px-8">
+        <div className={`relative min-h-screen bg-stone-50 px-4 sm:px-6 lg:px-8 ${embedded ? 'pt-28 pb-12' : 'py-12'}`}>
+          {embedded && <div aria-hidden className="absolute inset-x-0 top-0 h-16 bg-stone-950 print:hidden" />}
           <motion.div 
             initial={{ opacity: 0, y: 15 }} 
             animate={{ opacity: 1, y: 0 }} 
@@ -1252,6 +1279,7 @@ export default function BookingPage() {
                           headers: { 'Content-Type': 'application/json' },
                           body: JSON.stringify({
                             reservationIds: confirmation.reservationIds,
+                            guestEmail,
                             paymentMethod: 'Direct Bank Transfer',
                             paymentDetails: { method: 'Bank Transfer' }
                           })
@@ -1372,7 +1400,8 @@ export default function BookingPage() {
 
     // Otherwise, show the Receipt Confirmation Page (either Confirmed Paid or Waitlisted Unpaid)
     return (
-      <div className="min-h-screen bg-stone-50 py-12 px-4 sm:px-6 lg:px-8 print:bg-white print:py-0">
+      <div className={`relative min-h-screen bg-stone-50 px-4 sm:px-6 lg:px-8 print:bg-white print:py-0 ${embedded ? 'pt-28 pb-12' : 'py-12'}`}>
+        {embedded && <div aria-hidden className="absolute inset-x-0 top-0 h-16 bg-stone-950 print:hidden" />}
         <motion.div 
           initial={{ opacity: 0, y: 15 }} 
           animate={{ opacity: 1, y: 0 }} 
@@ -2066,9 +2095,9 @@ export default function BookingPage() {
   }
 
   return (
-    <div className="min-h-screen font-sans text-stone-900">
+    <div className={`font-sans text-stone-900 ${embedded ? '' : 'min-h-screen'}`}>
       {/* Header */}
-      <header className="sticky top-0 z-50 px-6 lg:px-10 py-4">
+      {!embedded && <header className="sticky top-0 z-50 px-6 lg:px-10 py-3 bg-white/80 backdrop-blur-md border-b border-stone-200/60">
         <div className="max-w-[1400px] mx-auto flex items-center justify-between">
           <div className="flex items-center gap-3">
             {settings?.hotelLogo ? (
@@ -2113,7 +2142,7 @@ export default function BookingPage() {
             )}
           </div>
         </div>
-      </header>
+      </header>}
 
       {/* Maintenance Mode / Booking Disabled Screen */}
       {settings && (settings.maintenanceMode || !settings.publicBookingEnabled) && (
@@ -2143,6 +2172,9 @@ export default function BookingPage() {
       )}
 
       {/* Hero */}
+      {embedded ? (
+        <ModuleHeader title={settings?.bookingHeroTitle || 'Find your perfect stay'} subtitle={settings?.bookingHeroDescription || 'Book directly with us for the best available rates and instant confirmation.'} gradient="from-amber-700 to-stone-900" eyebrow={settings?.bookingHeaderSubtitle || 'Direct reservations'} image={rooms.find(r => r.imageUrl)?.imageUrl || HERO.booking} />
+      ) : (
       <section
         role="banner"
         className="relative h-[60vh] min-h-[480px] w-full overflow-hidden bg-transparent"
@@ -2153,28 +2185,30 @@ export default function BookingPage() {
           backgroundRepeat: 'no-repeat'
         }}
       >
+        {settings?.heroImageUrl && <div className="absolute inset-0 bg-gradient-to-t from-stone-950/75 via-stone-950/30 to-stone-950/10 z-10" />}
         <div className="absolute inset-0 flex flex-col justify-end pb-28 md:pb-32 px-6 lg:px-10 z-20 bg-transparent">
           <div className="max-w-[1400px] mx-auto w-full">
             <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.6 }}>
-              <h1 className="text-4xl md:text-6xl font-bold text-stone-900 tracking-tight leading-[1.1] max-w-2xl">
+              <h1 className={`text-4xl md:text-6xl font-bold tracking-tight leading-[1.1] max-w-2xl ${settings?.heroImageUrl ? 'text-white drop-shadow-lg' : 'text-stone-900'}`}>
                 {settings?.bookingHeroTitle || 'Find your perfect stay'}
               </h1>
-              <p className="text-stone-700 text-sm md:text-base mt-4 max-w-lg leading-relaxed">
+              <p className={`text-sm md:text-base mt-4 max-w-lg leading-relaxed ${settings?.heroImageUrl ? 'text-stone-100' : 'text-stone-700'}`}>
                 {settings?.bookingHeroDescription || 'Book directly with us for the best available rates, personalized service, and instant confirmation.'}
               </p>
             </motion.div>
           </div>
         </div>
       </section>
+      )}
 
       {/* Floating Search Bar */}
-      <div className="relative z-30 -mt-16 px-4 lg:px-10">
+      <div className={`relative z-30 px-4 lg:px-10 ${embedded ? '-mt-36 md:-mt-44' : '-mt-16'}`}>
         <div className="max-w-[1400px] mx-auto">
           <motion.div
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: 0.2, duration: 0.5 }}
-            className="rounded-2xl p-4 md:p-6"
+            className="rounded-3xl p-4 md:p-6 bg-white/95 backdrop-blur-xl border border-stone-200/70 shadow-2xl shadow-stone-900/20"
           >
             <div className="grid grid-cols-1 md:grid-cols-12 gap-4 md:gap-6">
               <div className="md:col-span-4 space-y-1.5">
@@ -2185,13 +2219,22 @@ export default function BookingPage() {
                   type="date"
                   value={checkIn}
                   min={new Date().toISOString().split('T')[0]}
-                  onChange={e => setCheckIn(e.target.value)}
+                  onChange={e => {
+                    const v = e.target.value;
+                    setCheckIn(v);
+                    if (v && (!checkOut || checkOut <= v)) {
+                      const d = new Date(v);
+                      d.setDate(d.getDate() + 1);
+                      setCheckOut(d.toISOString().split('T')[0]);
+                    }
+                  }}
                   className="w-full px-3 py-2.5 bg-stone-50 border border-stone-200 rounded-xl text-sm font-medium text-stone-900 focus:ring-2 focus:ring-amber-400 focus:border-amber-400 outline-none transition"
                 />
               </div>
               <div className="md:col-span-4 space-y-1.5">
                 <label className="text-[10px] font-bold uppercase tracking-widest text-stone-400 flex items-center gap-1.5">
                   <Calendar size={12} /> Check-out
+                  {nights > 0 && <span className="ml-auto normal-case tracking-normal text-amber-600 font-semibold">{nights} night{nights > 1 ? 's' : ''}</span>}
                 </label>
                 <input
                   type="date"
@@ -2245,9 +2288,11 @@ export default function BookingPage() {
 
       {/* Main */}
       <div>
-      <main className="max-w-[1400px] mx-auto px-4 lg:px-10 py-12 md:py-16">
+      <main id="booking-main" className="max-w-[1400px] mx-auto px-4 lg:px-10 py-12 md:py-16 scroll-mt-20">
         {error && (
           <motion.div
+            id="booking-error"
+            role="alert"
             initial={{ opacity: 0, y: -8 }}
             animate={{ opacity: 1, y: 0 }}
             className="mb-6 p-4 bg-rose-50 border border-rose-200 text-rose-700 text-sm rounded-2xl flex items-center gap-3"
@@ -2263,6 +2308,7 @@ export default function BookingPage() {
               <React.Fragment key={step}>
                 <button
                   onClick={() => goToStep(step)}
+                  aria-current={currentStep === step ? 'step' : undefined}
                   disabled={(step === 2 && !canProceedToStep2) || (step === 3 && !canProceedToStep3)}
                   className={`flex flex-col items-center gap-2 ${
                     (step === 2 && !canProceedToStep2) || (step === 3 && !canProceedToStep3)
@@ -2303,7 +2349,7 @@ export default function BookingPage() {
                 {/* Rooms */}
                 <section>
                   <div className="flex items-center justify-between mb-5">
-                    <h2 className="text-lg font-semibold text-stone-900 flex items-center gap-2">
+                    <h2 className="font-serif text-2xl md:text-3xl font-bold tracking-tight text-stone-900 flex items-center gap-3">
                       <Bed size={18} className="text-amber-500" /> {settings?.bookingRoomsSectionTitle || 'Select your room'}
                     </h2>
                     <span className="text-xs text-stone-500 font-medium">{nights} night{nights > 1 ? 's' : ''}</span>
@@ -2341,13 +2387,13 @@ export default function BookingPage() {
                               initial={{ opacity: 0, y: 12 }}
                               animate={{ opacity: 1, y: 0 }}
                               transition={{ delay: index * 0.05 }}
-                              className={`group relative bg-white border rounded-2xl overflow-hidden transition-all cursor-pointer flex flex-col ${
+                              className={`group relative bg-white border rounded-3xl overflow-hidden transition-all cursor-pointer flex flex-col ${
                                 quantity > 0 ? 'border-amber-400 ring-1 ring-amber-400 shadow-lg shadow-amber-900/5' : 'border-stone-200 hover:border-amber-300 hover:shadow-md'
                               } ${soldOut ? 'opacity-60' : ''}`}
                               onClick={() => !soldOut && quantity === 0 && setRoomQuantity(room.type, 1)}
                             >
                               <div className="relative w-full h-52 shrink-0">
-                                <img src={room.imageUrl} alt={room.title} className="w-full h-full object-cover" />
+                                <img src={room.imageUrl} alt={room.title} loading="lazy" onError={e => { e.currentTarget.style.visibility = 'hidden'; }} className="w-full h-full object-cover bg-stone-100 group-hover:scale-[1.03] transition-transform duration-500" />
                                 {quantity > 0 && (
                                   <div className="absolute top-3 left-3 px-2.5 py-1 bg-amber-400 text-stone-900 text-[10px] font-bold uppercase tracking-wider rounded-full">
                                     {quantity} selected
@@ -2401,7 +2447,7 @@ export default function BookingPage() {
                                     <button
                                       disabled={soldOut}
                                       onClick={(e) => { e.stopPropagation(); setRoomQuantity(room.type, 1); }}
-                                      className="w-full px-5 py-2.5 bg-stone-900 disabled:bg-stone-300 text-white rounded-xl text-sm font-semibold hover:bg-stone-800 transition flex items-center justify-center gap-2"
+                                      className="w-full px-5 py-2.5 bg-stone-900 disabled:bg-stone-300 text-white rounded-full text-sm font-semibold hover:bg-stone-800 transition flex items-center justify-center gap-2"
                                     >
                                       Add room <Plus size={16} />
                                     </button>
@@ -3180,7 +3226,7 @@ export default function BookingPage() {
                     </button>
                     <button
                       disabled={submitting || !agreed}
-                      className="w-full py-3.5 bg-stone-900 disabled:bg-stone-300 text-white rounded-xl font-semibold text-sm hover:bg-stone-800 transition flex items-center justify-center gap-2"
+                      className="w-full py-3.5 bg-stone-900 disabled:bg-stone-300 text-white rounded-full font-semibold text-sm hover:bg-stone-800 transition flex items-center justify-center gap-2"
                     >
                       {submitting ? <><Loader2 className="animate-spin" size={18} /> Processing...</> : <><CreditCard size={18} /> {settings?.bookingConfirmButtonText || 'Confirm booking'}</>}
                     </button>
@@ -3316,7 +3362,7 @@ export default function BookingPage() {
             <button
               onClick={nextStep}
               disabled={!canProceedToStep2}
-              className="w-full md:w-auto px-6 py-3 bg-stone-900 disabled:bg-stone-300 text-white rounded-xl font-semibold text-sm hover:bg-stone-800 transition flex items-center justify-center gap-2"
+              className="w-full md:w-auto px-6 py-3 bg-stone-900 disabled:bg-stone-300 text-white rounded-full font-semibold text-sm hover:bg-stone-800 transition flex items-center justify-center gap-2"
             >
               Continue <ChevronRight size={18} />
             </button>
@@ -3327,12 +3373,12 @@ export default function BookingPage() {
       </div>
 
       {/* Footer */}
-      <footer className="border-t border-stone-200 bg-white mt-12">
+      {!embedded && <footer className="border-t border-stone-200 bg-white mt-12">
         <div className="max-w-[1400px] mx-auto px-4 lg:px-10 py-8 flex flex-col md:flex-row justify-between items-center gap-4 text-xs text-stone-500">
           <p>{settings?.customHotelName || 'Grand Hotel'} &copy; {new Date().getFullYear()}</p>
           {settings?.customHotelAddress && <p className="flex items-center gap-1"><MapPin size={12} /> {settings.customHotelAddress}</p>}
         </div>
-      </footer>
+      </footer>}
 
       {/* Terms & Conditions Modal */}
       <TermsAndConditionsModal

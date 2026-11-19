@@ -76,6 +76,9 @@ export interface ChartOfAccountFE {
   category?: string;
   subcategory?: string | null;
   department?: string | null;
+  cost_center?: string | null;
+  profit_center?: string | null;
+  project?: string | null;
   normal_balance?: string;
   parent_code?: string | null;
   balance?: number;
@@ -253,6 +256,7 @@ export const createChartOfAccount = (body: {
   department?: string; accountType?: string; parentCode?: string;
   description?: string; normalBalance?: string; currency?: string;
   isControlAccount?: boolean; propertyId?: string;
+  costCenter?: string; profitCenter?: string; project?: string;
 }) => apiRequest<ChartOfAccountFE>(`${API_BASE}/chart-of-accounts`, {
   method: 'POST', body: JSON.stringify(body),
 });
@@ -261,6 +265,7 @@ export const updateChartOfAccount = (id: string, patch: Partial<{
   name: string; subcategory: string; department: string; description: string;
   normalBalance: string; currency: string; isControlAccount: boolean;
   isActive: boolean; propertyId: string; balance: number;
+  costCenter: string; profitCenter: string; project: string;
 }>) => apiRequest<ChartOfAccountFE>(`${API_BASE}/chart-of-accounts/${id}`, {
   method: 'PATCH', body: JSON.stringify(patch),
 });
@@ -1266,15 +1271,37 @@ export const fetchDocuments = (params: { propertyId?: string; status?: string; t
 
 export const createDocument = (payload: {
   documentNumber?: string; name: string; type?: string; category?: string;
-  entity?: string; filePath?: string; fileUrl?: string; fileSize?: number;
+  entity?: string; referenceNumber?: string; filePath?: string; fileUrl?: string; fileSize?: number;
   mimeType?: string; status?: string; uploadedBy?: string; notes?: string; propertyId?: string;
 }) => apiRequest<DocumentFE>(`${API_BASE}/documents`, {
   method: 'POST', body: JSON.stringify(payload),
 });
 
+export const uploadDocumentFile = async (file: File): Promise<{ fileUrl: string; filePath: string; fileName: string }> => {
+  const fileBase64 = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result as string;
+      const base64 = result.split(',')[1] || result;
+      resolve(base64);
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+  const res = await fetch(`${API_BASE}/documents/upload`, {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ fileBase64, fileName: file.name, mimeType: file.type }),
+  });
+  const data = await res.json().catch(() => null);
+  if (!res.ok || !data) throw new Error(data?.error || `Upload failed: ${res.status}`);
+  return data as { fileUrl: string; filePath: string; fileName: string };
+};
+
 export const updateDocument = (id: string, patch: {
   documentNumber?: string; name?: string; type?: string; category?: string;
-  entity?: string; filePath?: string; fileUrl?: string; fileSize?: number;
+  entity?: string; referenceNumber?: string; filePath?: string; fileUrl?: string; fileSize?: number;
   mimeType?: string; status?: string; uploadedBy?: string; notes?: string;
 }) => apiRequest<DocumentFE>(`${API_BASE}/documents/${id}`, {
   method: 'PATCH', body: JSON.stringify(patch),
@@ -2070,6 +2097,7 @@ export interface FinDashboardSnapshotFE {
   revenue_expense_trend: FinDashboardTrendFE[];
   dept_revenue: FinDashboardDeptRevenueFE[];
   ar_aging: FinDashboardArAgingFE[];
+  ap_aging?: FinDashboardArAgingFE[];
   alerts: FinDashboardAlertFE[];
   bank_accounts: FinDashboardBankAccountFE[];
   ratios: FinDashboardRatioFE[];

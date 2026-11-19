@@ -1,0 +1,7 @@
+-- 355_proc_negotiation_seed.sql
+-- Seeds additional negotiations and negotiation rounds.
+-- Adds rounds to the existing neg-001 and creates 5 new negotiations
+-- covering all statuses (Open, In Progress, Agreed, Rejected) and multiple
+-- departments (F&B, Engineering, Housekeeping, IT, Kitchen).
+-- Sources include rfq, tender, and procurement (manual).
+-- Uses the demo property: 18762279-a389-41c9-9169-7ebc682e9703

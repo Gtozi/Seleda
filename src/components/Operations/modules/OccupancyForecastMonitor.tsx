@@ -1,9 +1,17 @@
 /**
- * Occupancy & Forecast Monitor
- * Monitor occupancy and forecast data
+ * Occupancy & Forecast Monitor — Operations Portal (/erp/operations/occupancy-forecast).
+ *
+ * Live forecast computed server-side from real data — reservations (booked
+ * room-nights, arrivals, departures, per-night rate revenue), rooms (sellable
+ * inventory minus OOO/OOS/Maintenance), and group_blocks (blocked rooms).
+ * Today view shows actual-vs-yesterday deltas; 7-day / 30-day views show the
+ * forward pickup curve plus upcoming group blocks.
+ *
+ * UI follows the shared portal design language (PageHeader, SectionCard,
+ * StatCard, Badge, brandTheme) — same as HK / Engineering / F&B modules.
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   TrendingUp,
   Calendar,
@@ -11,151 +19,194 @@ import {
   Bed,
   ArrowUp,
   ArrowDown,
-  RefreshCw
+  RefreshCw,
+  Loader2,
+  AlertTriangle,
+  Building,
 } from 'lucide-react';
+import StatCard from '../../FrontOffice/StatCard';
+import { PageHeader, SectionCard, Badge } from '../../FrontOffice/ui';
+import { button, layout } from '../../FrontOffice/brandTheme';
+import { useERP } from '../../../context/ERPContext';
+import {
+  fetchOccupancyForecast,
+  type OccupancyForecastOverview,
+} from '../../../services/operationsService';
 
-interface OccupancyData {
-  date: string;
-  occupancy: number;
-  arrivals: number;
-  departures: number;
-  revenue: number;
-}
+const delta = (n: number, label: string) => (
+  <span className={`flex items-center gap-1 text-sm ${n >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>
+    {n >= 0 ? <ArrowUp size={14} /> : <ArrowDown size={14} />}
+    {Math.abs(n)} {label}
+  </span>
+);
+
+const occTone = (occ: number) =>
+  occ >= 85 ? 'bg-emerald-500' : occ >= 60 ? 'bg-[var(--color-accent-operations)]' : occ >= 30 ? 'bg-amber-500' : 'bg-slate-400';
 
 const OccupancyForecastMonitor: React.FC = () => {
-  const [selectedView, setSelectedView] = useState<'current' | '7-day' | '30-day'>('current');
-  const [occupancyData, setOccupancyData] = useState<OccupancyData[]>([]);
+  const { currentPropertyId, formatAmount } = useERP();
 
-  const mockOccupancyData: OccupancyData[] = [
-    { date: '2026-07-31', occupancy: 78, arrivals: 124, departures: 98, revenue: 45230 },
-    { date: '2026-08-01', occupancy: 82, arrivals: 98, departures: 112, revenue: 48500 },
-    { date: '2026-08-02', occupancy: 85, arrivals: 115, departures: 95, revenue: 51200 },
-    { date: '2026-08-03', occupancy: 88, arrivals: 132, departures: 105, revenue: 54100 },
-    { date: '2026-08-04', occupancy: 90, arrivals: 145, departures: 118, revenue: 57800 },
-    { date: '2026-08-05', occupancy: 87, arrivals: 108, departures: 135, revenue: 52300 },
-    { date: '2026-08-06', occupancy: 84, arrivals: 95, departures: 122, revenue: 48900 }
-  ];
+  const [view, setView] = useState<'current' | '7-day' | '30-day'>('7-day');
+  const [data, setData] = useState<OccupancyForecastOverview | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    setOccupancyData(mockOccupancyData);
-  }, []);
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      setData(await fetchOccupancyForecast(currentPropertyId, view === '30-day' ? 30 : 7));
+    } catch (e: any) {
+      setError(e?.message || 'Failed to load forecast');
+    } finally {
+      setLoading(false);
+    }
+  }, [currentPropertyId, view]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const today = data?.today;
+  const forecast = useMemo(
+    () => (view === 'current' ? (data?.forecast || []).slice(0, 3) : data?.forecast || []),
+    [data, view],
+  );
 
   return (
-    <div className="p-6 space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-slate-900 dark:text-white flex items-center gap-3">
-            <TrendingUp size={28} />
-            Occupancy & Forecast Monitor
-          </h1>
-          <p className="text-slate-600 dark:text-slate-400 mt-1">Monitor occupancy and forecast data</p>
+    <div className={layout.sectionStack}>
+      <PageHeader
+        icon={TrendingUp}
+        title="Occupancy & Forecast Monitor"
+        subtitle="Live booking pace, arrivals/departures and revenue forecast across all sources"
+        actions={
+          <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1 bg-slate-100 dark:bg-slate-700 p-1 rounded-lg">
+              {(['current', '7-day', '30-day'] as const).map((v) => (
+                <button
+                  key={v}
+                  onClick={() => setView(v)}
+                  className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                    view === v
+                      ? 'bg-white dark:bg-slate-600 text-slate-900 dark:text-white shadow-sm'
+                      : 'text-slate-600 dark:text-slate-400'
+                  }`}
+                >
+                  {v === 'current' ? 'Today' : v === '7-day' ? '7-Day' : '30-Day'}
+                </button>
+              ))}
+            </div>
+            <button className={button.ghost} onClick={load} disabled={loading}>
+              <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
+            </button>
+          </div>
+        }
+      />
+
+      {error && (
+        <div className="flex items-center gap-2 p-3 rounded-lg bg-[var(--color-danger)]/10 text-[var(--color-danger)] text-sm">
+          <AlertTriangle size={16} /> {error}
         </div>
-        <div className="flex items-center gap-3">
-          <div className="flex items-center gap-1 bg-slate-100 dark:bg-slate-700 p-1 rounded-lg">
-            {(['current', '7-day', '30-day'] as const).map(view => (
-              <button
-                key={view}
-                onClick={() => setSelectedView(view)}
-                className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
-                  selectedView === view
-                    ? 'bg-white dark:bg-slate-600 text-slate-900 dark:text-white shadow-sm'
-                    : 'text-slate-600 dark:text-slate-400'
-                }`}
-              >
-                {view === 'current' ? 'Today' : view === '7-day' ? '7-Day' : '30-Day'}
-              </button>
+      )}
+
+      {/* KPI cards — today's actuals vs yesterday */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <StatCard
+          title="Current Occupancy" icon={Users} tone="accent"
+          value={today ? `${today.occupancy}%` : '—'}
+          caption={today ? `${today.bookedRooms} of ${data!.sellableRooms} sellable` : undefined}
+        />
+        <StatCard
+          title="Available Rooms" icon={Bed} tone="success"
+          value={today?.availableRooms ?? '—'}
+          caption={today ? deltaLabel(today.availableDelta, 'vs yesterday') : undefined}
+        />
+        <StatCard
+          title="Today's Arrivals" icon={Calendar} tone="info"
+          value={today?.arrivals ?? '—'}
+          caption={today ? deltaLabel(today.arrivalsDelta, 'vs yesterday') : undefined}
+        />
+        <StatCard
+          title="Today's Departures" icon={TrendingUp} tone="warning"
+          value={today?.departures ?? '—'}
+          caption={today ? deltaLabel(today.departuresDelta, 'vs yesterday') : undefined}
+        />
+      </div>
+
+      {/* Delta strip (compact yesterday comparison) */}
+      {today && (
+        <div className="flex items-center gap-6 flex-wrap text-sm text-slate-600 dark:text-slate-400">
+          <span className="flex items-center gap-1">Occupancy {delta(today.occupancyDelta, 'pts vs yesterday')}</span>
+          <span className="flex items-center gap-1">Available {delta(today.availableDelta, 'vs yesterday')}</span>
+          <span className="flex items-center gap-1">Est. revenue today: <strong className="text-slate-900 dark:text-white">{formatAmount(today.revenue)}</strong></span>
+          <span className="text-xs text-slate-400">Avg rate {formatAmount(data!.avgRate)} · {data!.blockedRooms} room{data!.blockedRooms === 1 ? '' : 's'} OOO/OOS</span>
+        </div>
+      )}
+
+      {/* Upcoming group blocks */}
+      {(data?.upcomingGroups.length || 0) > 0 && (
+        <SectionCard title="Upcoming Group Blocks" icon={Building} tone="info" pad="md">
+          <div className="flex flex-wrap gap-2">
+            {data!.upcomingGroups.map((g) => (
+              <Badge key={g.id} tone="info" icon={Building}>
+                {g.name} · {g.rooms} rooms · {g.arrival} → {g.departure}
+              </Badge>
             ))}
           </div>
-          <button className="p-2 bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors">
-            <RefreshCw size={20} className="text-slate-600 dark:text-slate-400" />
-          </button>
-        </div>
-      </div>
+        </SectionCard>
+      )}
 
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <div className="bg-white dark:bg-slate-800 rounded-xl p-4 border border-slate-200 dark:border-slate-700">
-          <div className="flex items-center gap-2 mb-2">
-            <Users size={18} className="text-indigo-600" />
-            <span className="text-xs font-mono uppercase text-slate-500 font-bold">Current Occupancy</span>
+      {/* Forecast rows */}
+      <SectionCard
+        title={`Occupancy Forecast — next ${view === '30-day' ? 30 : 7} days`}
+        subtitle="Booked room-nights (transient + group blocks) vs sellable inventory"
+        icon={Calendar}
+        pad="none"
+      >
+        {loading && !data ? (
+          <div className="flex items-center justify-center py-16 text-slate-400 gap-2">
+            <Loader2 size={20} className="animate-spin" /> Computing forecast…
           </div>
-          <p className="text-3xl font-bold text-slate-900 dark:text-white">78%</p>
-          <div className="flex items-center gap-1 mt-2 text-sm text-emerald-600">
-            <ArrowUp size={14} />
-            <span>5% vs yesterday</span>
-          </div>
-        </div>
-
-        <div className="bg-white dark:bg-slate-800 rounded-xl p-4 border border-slate-200 dark:border-slate-700">
-          <div className="flex items-center gap-2 mb-2">
-            <Bed size={18} className="text-emerald-600" />
-            <span className="text-xs font-mono uppercase text-slate-500 font-bold">Available Rooms</span>
-          </div>
-          <p className="text-3xl font-bold text-slate-900 dark:text-white">45</p>
-          <div className="flex items-center gap-1 mt-2 text-sm text-rose-600">
-            <ArrowDown size={14} />
-            <span>8 vs yesterday</span>
-          </div>
-        </div>
-
-        <div className="bg-white dark:bg-slate-800 rounded-xl p-4 border border-slate-200 dark:border-slate-700">
-          <div className="flex items-center gap-2 mb-2">
-            <Calendar size={18} className="text-blue-600" />
-            <span className="text-xs font-mono uppercase text-slate-500 font-bold">Today's Arrivals</span>
-          </div>
-          <p className="text-3xl font-bold text-slate-900 dark:text-white">124</p>
-          <div className="flex items-center gap-1 mt-2 text-sm text-emerald-600">
-            <ArrowUp size={14} />
-            <span>12 vs yesterday</span>
-          </div>
-        </div>
-
-        <div className="bg-white dark:bg-slate-800 rounded-xl p-4 border border-slate-200 dark:border-slate-700">
-          <div className="flex items-center gap-2 mb-2">
-            <TrendingUp size={18} className="text-amber-600" />
-            <span className="text-xs font-mono uppercase text-slate-500 font-bold">Today's Departures</span>
-          </div>
-          <p className="text-3xl font-bold text-slate-900 dark:text-white">98</p>
-          <div className="flex items-center gap-1 mt-2 text-sm text-rose-600">
-            <ArrowDown size={14} />
-            <span>5 vs yesterday</span>
-          </div>
-        </div>
-      </div>
-
-      <div className="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 p-4">
-        <h3 className="font-bold text-slate-900 dark:text-white mb-4">Occupancy Forecast</h3>
-        <div className="space-y-3">
-          {occupancyData.map((data, index) => (
-            <div key={index} className="flex items-center gap-4 p-3 bg-slate-50 dark:bg-slate-900/50 rounded-lg">
-              <div className="w-24">
-                <p className="text-sm font-medium text-slate-900 dark:text-white">
-                  {new Date(data.date).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}
-                </p>
-              </div>
-              <div className="flex-1">
-                <div className="flex items-center gap-2 mb-1">
-                  <span className="text-sm text-slate-600 dark:text-slate-400">Occupancy</span>
-                  <span className="text-sm font-bold text-slate-900 dark:text-white">{data.occupancy}%</span>
+        ) : (
+          <div className="divide-y divide-gray-100 dark:divide-slate-800">
+            {forecast.map((d) => (
+              <div key={d.date} className={`flex items-center gap-4 px-4 py-3 ${d.isToday ? 'bg-[var(--color-accent-operations)]/5' : ''}`}>
+                <div className="w-28 shrink-0">
+                  <p className="text-sm font-medium text-slate-900 dark:text-white">
+                    {new Date(`${d.date}T00:00:00`).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}
+                  </p>
+                  {d.isToday && <Badge tone="accent" className="mt-0.5">Today</Badge>}
                 </div>
-                <div className="w-full bg-slate-200 dark:bg-slate-700 rounded-full h-2">
-                  <div
-                    className="bg-indigo-600 h-2 rounded-full transition-all"
-                    style={{ width: `${data.occupancy}%` }}
-                  />
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 mb-1 text-sm">
+                    <span className="text-slate-600 dark:text-slate-400">Occupancy</span>
+                    <span className="font-bold text-slate-900 dark:text-white">{d.occupancy}%</span>
+                    {d.groupRooms > 0 && <Badge tone="info">+{d.groupRooms} group</Badge>}
+                  </div>
+                  <div className="w-full bg-slate-200 dark:bg-slate-700 rounded-full h-2">
+                    <div className={`h-2 rounded-full transition-all ${occTone(d.occupancy)}`} style={{ width: `${d.occupancy}%` }} />
+                  </div>
+                </div>
+                <div className="text-right shrink-0">
+                  <p className="text-sm">
+                    <span className="text-emerald-600 dark:text-emerald-400">+{d.arrivals} arr</span>
+                    <span className="text-slate-400"> / </span>
+                    <span className="text-rose-600 dark:text-rose-400">−{d.departures} dep</span>
+                  </p>
+                  <p className="text-xs text-slate-500">{formatAmount(d.revenue)} · {d.bookedRooms} rooms</p>
                 </div>
               </div>
-              <div className="text-right">
-                <p className="text-sm text-slate-600 dark:text-slate-400">
-                  <span className="text-emerald-600">+{data.arrivals}</span> / <span className="text-rose-600">-{data.departures}</span>
-                </p>
-                <p className="text-xs text-slate-500 dark:text-slate-500">${data.revenue.toLocaleString()}</p>
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
+            ))}
+            {forecast.length === 0 && (
+              <p className="text-sm text-slate-500 text-center py-10">No booking data in this window</p>
+            )}
+          </div>
+        )}
+      </SectionCard>
     </div>
   );
 };
+
+function deltaLabel(n: number, label: string) {
+  return `${n >= 0 ? '+' : ''}${n} ${label}`;
+}
 
 export default OccupancyForecastMonitor;

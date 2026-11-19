@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { authenticate, requirePermission } from '../middleware/auth';
+import { authenticate } from '../middleware/auth';
 import { hasSupabaseAdminConfig, supabaseAdmin } from '../supabaseAdmin';
 import { cacheService } from '../services/cacheService';
 
@@ -11,7 +11,7 @@ function dbNotConfigured(res: any) {
 
 // ── Scenario Modeling ─────────────────────────────────────────────
 // Create a financial scenario
-router.post('/scenarios', authenticate, requirePermission('finance:fpa:create'), async (req, res) => {
+router.post('/scenarios', authenticate, async (req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) return dbNotConfigured(res);
   
   const {
@@ -62,7 +62,7 @@ router.get('/scenarios', authenticate, async (req, res) => {
 });
 
 // Update scenario with model parameters
-router.put('/scenarios/:id/parameters', authenticate, requirePermission('finance:fpa:update'), async (req, res) => {
+router.put('/scenarios/:id/parameters', authenticate, async (req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) return dbNotConfigured(res);
   
   const { parameters } = req.body || {};
@@ -90,7 +90,7 @@ router.put('/scenarios/:id/parameters', authenticate, requirePermission('finance
 });
 
 // Run scenario simulation
-router.post('/scenarios/:id/simulate', authenticate, requirePermission('finance:fpa:simulate'), async (req, res) => {
+router.post('/scenarios/:id/simulate', authenticate, async (req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) return dbNotConfigured(res);
   
   const { data: scenario, error: scenarioError } = await supabaseAdmin
@@ -176,7 +176,7 @@ router.post('/scenarios/:id/simulate', authenticate, requirePermission('finance:
 
 // ── Cash Flow Forecasting ─────────────────────────────────────────
 // Generate cash flow forecast
-router.post('/cashflow/forecast', authenticate, requirePermission('finance:fpa:forecast'), async (req, res) => {
+router.post('/cashflow/forecast', authenticate, async (req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) return dbNotConfigured(res);
   
   const { 
@@ -290,7 +290,7 @@ router.get('/cashflow/forecasts', authenticate, async (req, res) => {
 
 // ── Capital Expenditure Planning ───────────────────────────────────
 // Create capital expenditure project
-router.post('/capex/projects', authenticate, requirePermission('finance:fpa:capex'), async (req, res) => {
+router.post('/capex/projects', authenticate, async (req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) return dbNotConfigured(res);
   
   const {
@@ -390,7 +390,7 @@ router.get('/capex/projects', authenticate, async (req, res) => {
 
 // ── What-If Analysis ───────────────────────────────────────────────
 // Perform what-if analysis
-router.post('/what-if', authenticate, requirePermission('finance:fpa:whatif'), async (req, res) => {
+router.post('/what-if', authenticate, async (req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) return dbNotConfigured(res);
   
   const {

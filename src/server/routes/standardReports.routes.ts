@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { authenticate } from '../middleware/auth';
 import { hasSupabaseAdminConfig, supabaseAdmin } from '../supabaseAdmin';
+import { ENG_STORE_ID } from '../config/storeIds';
 
 const router = Router();
 
@@ -56,7 +57,7 @@ const REPORT_DEFS: Record<string, Array<{ id: string; title: string; category: s
     { id: 'staff-performance', title: 'Staff Performance', category: 'HR', description: 'Server productivity and sales per staff.', format: 'PDF', table: 'orders', qtype: 'staff_perf' },
     { id: 'outlet-performance', title: 'Outlet Performance', category: 'Sales', description: 'Revenue and KPIs by outlet.', format: 'PDF/XLS', table: 'orders', qtype: 'outlet_perf' },
     { id: 'food-inventory', title: 'Food Inventory Report', category: 'Inventory', description: 'Food stock levels, par values, variances.', format: 'XLS', table: 'stock_transactions', qtype: 'food_inventory' },
-    { id: 'banquet-events', title: 'Banquet & Events Report', category: 'Operations', description: 'Banquet event revenue and covers.', format: 'PDF', table: 'banquet_events', qtype: 'banquet' },
+    { id: 'banquet-events', title: 'Banquet & Events Report', category: 'Operations', description: 'Banquet event revenue and covers.', format: 'PDF', table: 'event_bookings', qtype: 'banquet' },
     { id: 'recipe-costing', title: 'Recipe Costing Analysis', category: 'Financial', description: 'Standard vs actual recipe cost variance.', format: 'XLS', table: 'recipes', qtype: 'recipe_cost' },
     { id: 'supplier-performance', title: 'Supplier Performance', category: 'Procurement', description: 'Delivery timeliness and quality by supplier.', format: 'PDF', table: 'fb_suppliers', qtype: 'supplier_perf' },
     { id: 'po-analysis', title: 'Purchase Order Analysis', category: 'Procurement', description: 'PO volume, spend, and fulfillment.', format: 'XLS', table: 'fb_purchase_orders', qtype: 'po_analysis' },
@@ -449,15 +450,15 @@ async function fetchReportData(table: string, qtype: string, start: string, end:
     return { summary: { total: (data || []).length, totalSpend: (data || []).reduce((s, p) => s + (p.total_amount || 0), 0) }, data: data || [] };
   }
 
-  // Banquet events
-  if (table === 'banquet_events') {
+  // Banquet events (canonical event_bookings table, migration 444)
+  if (table === 'event_bookings') {
     const { data, error } = await supabaseAdmin
-      .from('banquet_events')
+      .from('event_bookings')
       .select('*')
-      .gte('event_date', start)
-      .lte('event_date', end);
+      .gte('start_date', start)
+      .lte('start_date', end);
     if (error) return { error: error.message, data: [] };
-    return { summary: { total: (data || []).length, totalRevenue: (data || []).reduce((s, e) => s + (e.estimated_revenue || 0), 0) }, data: data || [] };
+    return { summary: { total: (data || []).length, totalRevenue: (data || []).reduce((s, e) => s + Number(e.grand_total || e.quoted_amount || 0), 0) }, data: data || [] };
   }
 
   // Recipes
@@ -474,11 +475,41 @@ async function fetchReportData(table: string, qtype: string, start: string, end:
     return { summary: { total: (data || []).length }, data: data || [] };
   }
 
-  // Spare parts
+  // Spare parts (unified inventory — Engineering items)
   if (table === 'spare_parts') {
-    const { data, error } = await supabaseAdmin.from('spare_parts').select('*');
-    if (error) return { error: error.message, data: [] };
-    return { summary: { total: (data || []).length, totalValue: (data || []).reduce((s, p) => s + ((p.unit_cost || 0) * (p.quantity || 0)), 0) }, data: data || [] };
+    const { data: items, error: itemsErr } = await supabaseAdmin
+      .from('uinv_items')
+      .select('id, item_name, item_code, subcategory, unit_of_measure, last_cost, reorder_point, min_stock, property_id')
+      .eq('category', 'Engineering')
+      .eq('is_active', true);
+    if (itemsErr) return { error: itemsErr.message, data: [] };
+    // Fetch ENG store balances
+    const itemIds = (items || []).map((i: any) => i.id);
+    let balanceMap = new Map<string, number>();
+    if (itemIds.length > 0) {
+      const { data: balances } = await supabaseAdmin
+        .from('uinv_stock_balances')
+        .select('item_id, on_hand')
+        .eq('store_id', ENG_STORE_ID)
+        .in('item_id', itemIds);
+      for (const b of (balances || [])) {
+        balanceMap.set(b.item_id, (balanceMap.get(b.item_id) || 0) + Number(b.on_hand));
+      }
+    }
+    const shaped = (items || []).map((i: any) => ({
+      id: i.id,
+      part_name: i.item_name,
+      part_number: i.item_code,
+      category: i.subcategory,
+      unit: i.unit_of_measure,
+      unit_cost: i.last_cost || 0,
+      quantity: balanceMap.get(i.id) || 0,
+      current_stock: balanceMap.get(i.id) || 0,
+      reorder_point: i.reorder_point || 0,
+      min_stock: i.min_stock || 0,
+      property_id: i.property_id,
+    }));
+    return { summary: { total: shaped.length, totalValue: shaped.reduce((s, p) => s + ((p.unit_cost || 0) * (p.quantity || 0)), 0) }, data: shaped };
   }
 
   // Guest requests

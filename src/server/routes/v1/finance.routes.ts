@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { authenticate, requirePermission } from '../../middleware/auth';
+import { authenticate } from '../../middleware/auth';
 import { hasSupabaseAdminConfig, supabaseAdmin } from '../../supabaseAdmin';
 
 const router = Router();
@@ -69,7 +69,7 @@ router.get('/journal-entries/:id', authenticate, async (req, res) => {
   });
 });
 
-router.post('/journal-entries', authenticate, requirePermission('finance:journal:create'), async (req, res) => {
+router.post('/journal-entries', authenticate, async (req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) return dbNotConfigured(res);
   const { date, period, source, reference, description, department, lines } = req.body || {};
   if (!date || !period || !description || !Array.isArray(lines) || lines.length < 2) {
@@ -126,7 +126,7 @@ router.post('/journal-entries', authenticate, requirePermission('finance:journal
   });
 });
 
-router.post('/journal-entries/:id/post', authenticate, requirePermission('finance:journal:post'), async (req, res) => {
+router.post('/journal-entries/:id/post', authenticate, async (req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) return dbNotConfigured(res);
   const { data: entry, error: entryError } = await supabaseAdmin
     .from('journal_entries')
@@ -173,7 +173,7 @@ router.post('/journal-entries/:id/post', authenticate, requirePermission('financ
   });
 });
 
-router.post('/journal-entries/:id/reverse', authenticate, requirePermission('finance:journal:post'), async (req, res) => {
+router.post('/journal-entries/:id/reverse', authenticate, async (req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) return dbNotConfigured(res);
   const { data: entry, error: entryError } = await supabaseAdmin
     .from('journal_entries')

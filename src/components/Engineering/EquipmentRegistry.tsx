@@ -1,489 +1,857 @@
-import React, { useState } from 'react';
-import {
-  Search, Filter, Plus, QrCode, Barcode, FileText, ShieldCheck,
-  MapPin, Calendar, Box, Zap, Droplets, Thermometer, Factory,
-  ArrowUpDown, Utensils, Car, Coffee, Sparkles, MoreVertical,
-  Download, Upload, Camera, CheckCircle2, AlertTriangle
-} from 'lucide-react';
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Equipment Registry — Engineering Portal
+ * (/erp/maintenance/equipment-registry).
+ *
+ * DB-integrated: fetches and persists via /api/eng-portal/assets (fixed_assets table).
+ * UI aligned with WorkOrderManagement — PageHeader, SectionCard, StatCard, Badge,
+ * brandTheme tokens, list rows, detail/create modal, loading/error/retry.
+ * Multi-property scoping via useERP(). ERP notifications on create/update/delete.
+ */
 
-interface Equipment {
-  id: string;
-  assetCode: string;
-  name: string;
-  category: string;
-  qrCode: string;
-  barcode: string;
-  location: string;
-  specifications: {
-    manufacturer: string;
-    model: string;
-    serialNumber: string;
-    capacity?: string;
-    powerRating?: string;
-    dimensions?: string;
-    weight?: string;
-  };
-  warranty: {
-    startDate: string;
-    endDate: string;
-    provider: string;
-    type: string;
-  };
-  documentation: {
-    manual?: string;
-    schematics?: string;
-    certificates?: string[];
-  };
-  registrationDate: string;
-  status: 'Active' | 'Under Maintenance' | 'Retired' | 'Warranty Expired';
-  lastInspection?: string;
-  nextInspection?: string;
+import React, { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import {
+  Box, Plus, Search, ArrowRight, Loader2, ServerCrash, MoreVertical,
+  Eye, Trash2, X, Zap, Thermometer, Droplets, ArrowUpDown, Utensils,
+  Car, Factory, MapPin, ShieldCheck, AlertTriangle, QrCode, Barcode,
+  Wrench, Calendar, FileText,
+} from 'lucide-react';
+import StatCard from '../FrontOffice/StatCard';
+import { PageHeader, SectionCard, Badge } from '../FrontOffice/ui';
+import { button, layout, statusTone, type StatusTone } from '../FrontOffice/brandTheme';
+import { ModalSystem } from '../Shared/ModalSystem';
+import { useERP } from '../../context/ERPContext';
+import {
+  fetchAssets, createAsset, updateAsset, deleteAsset,
+  type Asset,
+} from '../../services/engineeringService';
+
+// ── Static registries ────────────────────────────────────────────────────
+const CATEGORY_OPTIONS = [
+  'Power Systems', 'HVAC', 'Water Systems', 'Vertical Transport',
+  'Kitchen Equipment', 'Laundry Equipment', 'IT Equipment', 'Other',
+] as const;
+
+const STATUS_OPTIONS = [
+  'Active', 'Under Maintenance', 'Disposal Pending', 'Disposed', 'Written Off',
+] as const;
+
+const CRITICALITY_OPTIONS = ['Low', 'Medium', 'High', 'Critical'] as const;
+
+const CATEGORY_ICON: Record<string, React.ComponentType<{ className?: string; size?: number }>> = {
+  'Power Systems': Zap,
+  'HVAC': Thermometer,
+  'Water Systems': Droplets,
+  'Vertical Transport': ArrowUpDown,
+  'Kitchen Equipment': Utensils,
+  'Laundry Equipment': Car,
+  'IT Equipment': Factory,
+  'Other': Box,
+};
+
+const STATUS_TONE: Record<string, StatusTone> = {
+  'Active': 'success',
+  'Under Maintenance': 'warning',
+  'Disposal Pending': 'warning',
+  'Disposed': 'neutral',
+  'Written Off': 'danger',
+};
+
+const CRITICALITY_TONE: Record<string, StatusTone> = {
+  Low: 'neutral',
+  Medium: 'info',
+  High: 'warning',
+  Critical: 'danger',
+};
+
+// ── Field helper ─────────────────────────────────────────────────────────
+const inputClass =
+  'w-full px-3 py-2 text-sm border border-gray-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-gray-900 dark:text-white outline-none focus:ring-1 focus:ring-[var(--color-accent-operations)]';
+
+function Field({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <label className="block">
+      <span className="block text-xs font-bold text-gray-500 uppercase tracking-wide mb-1.5">{label}</span>
+      {children}
+    </label>
+  );
 }
 
+function fmtDate(s: string | null): string {
+  if (!s) return '—';
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? s : d.toLocaleDateString([], { year: 'numeric', month: 'short', day: 'numeric' });
+}
+
+function fmtCost(n: number | null | undefined): string {
+  if (n === null || n === undefined) return '—';
+  return `$${Number(n).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
+}
+
+function isWarrantyValid(a: Asset): boolean {
+  if (!a.warranty_end) return false;
+  return new Date(a.warranty_end) > new Date();
+}
+
+// ── Component ────────────────────────────────────────────────────────────
 const EquipmentRegistry: React.FC = () => {
-  const [equipment, setEquipment] = useState<Equipment[]>([
-    {
-      id: 'EQ-001',
-      assetCode: 'GEN-01',
-      name: 'Backup Generator 500kVA',
-      category: 'Power Systems',
-      qrCode: 'QR-GEN-001',
-      barcode: 'BC-GEN-001',
-      location: 'Plant Room 1',
-      specifications: {
-        manufacturer: 'Cummins Power',
-        model: 'C500D5',
-        serialNumber: 'CUM-2022-GEN-001',
-        capacity: '500 kVA',
-        powerRating: '400V, 720A',
-        dimensions: '3.5m x 1.8m x 2.2m',
-        weight: '4500 kg',
-      },
-      warranty: {
-        startDate: '2022-03-15',
-        endDate: '2027-03-15',
-        provider: 'Cummins Power Systems',
-        type: 'Comprehensive',
-      },
-      documentation: {
-        manual: 'manual_gen_001.pdf',
-        schematics: 'schematics_gen_001.pdf',
-        certificates: ['iso_9001.pdf', 'ce_cert.pdf'],
-      },
-      registrationDate: '2022-03-15',
-      status: 'Active',
-      lastInspection: '2026-06-15',
-      nextInspection: '2026-09-15',
-    },
-    {
-      id: 'EQ-002',
-      assetCode: 'AC-LOBBY-01',
-      name: 'Central Chiller Unit',
-      category: 'HVAC',
-      qrCode: 'QR-AC-001',
-      barcode: 'BC-AC-001',
-      location: 'Rooftop South',
-      specifications: {
-        manufacturer: 'Daikin Industries',
-        model: 'VRV IV',
-        serialNumber: 'DAI-2023-AC-001',
-        capacity: '1200 kW',
-        powerRating: '380V, 3-phase',
-        dimensions: '2.8m x 1.5m x 1.8m',
-        weight: '1200 kg',
-      },
-      warranty: {
-        startDate: '2023-01-20',
-        endDate: '2028-01-20',
-        provider: 'Daikin Middle East',
-        type: 'Parts & Labor',
-      },
-      documentation: {
-        manual: 'manual_ac_001.pdf',
-        schematics: 'schematics_ac_001.pdf',
-        certificates: ['energy_star.pdf'],
-      },
-      registrationDate: '2023-01-20',
-      status: 'Under Maintenance',
-      lastInspection: '2026-05-20',
-      nextInspection: '2026-08-20',
-    },
-    {
-      id: 'EQ-003',
-      assetCode: 'EV-A',
-      name: 'Service Elevator Alpha',
-      category: 'Vertical Transport',
-      qrCode: 'QR-EV-A',
-      barcode: 'BC-EV-A',
-      location: 'Back of House',
-      specifications: {
-        manufacturer: 'Otis Worldwide',
-        model: 'Gen2',
-        serialNumber: 'OTI-2022-EV-A',
-        capacity: '1000 kg',
-        powerRating: '15 kW',
-        dimensions: '2.1m x 1.5m x 2.4m',
-        weight: '2500 kg',
-      },
-      warranty: {
-        startDate: '2022-11-10',
-        endDate: '2032-11-10',
-        provider: 'Otis Ethiopia',
-        type: 'Extended 10-Year',
-      },
-      documentation: {
-        manual: 'manual_ev_a.pdf',
-        schematics: 'schematics_ev_a.pdf',
-        certificates: ['safety_cert.pdf', 'iso_9001.pdf'],
-      },
-      registrationDate: '2022-11-10',
-      status: 'Active',
-      lastInspection: '2026-06-10',
-      nextInspection: '2026-09-10',
-    },
-    {
-      id: 'EQ-004',
-      assetCode: 'BOILER-02',
-      name: 'Steam Boiler 02',
-      category: 'HVAC',
-      qrCode: 'QR-BOILER-02',
-      barcode: 'BC-BOILER-02',
-      location: 'Boiler Room',
-      specifications: {
-        manufacturer: 'Bosch',
-        model: 'Uni 3000 T',
-        serialNumber: 'BOS-2021-BOILER-02',
-        capacity: '2000 kg/h',
-        powerRating: '1500 kW',
-        dimensions: '3.2m x 2.0m x 2.5m',
-        weight: '3800 kg',
-      },
-      warranty: {
-        startDate: '2021-08-01',
-        endDate: '2024-08-01',
-        provider: 'Bosch Thermotechnology',
-        type: 'Standard',
-      },
-      documentation: {
-        manual: 'manual_boiler_02.pdf',
-        schematics: 'schematics_boiler_02.pdf',
-        certificates: ['pressure_vessel.pdf', 'iso_9001.pdf'],
-      },
-      registrationDate: '2021-08-01',
-      status: 'Warranty Expired',
-      lastInspection: '2026-05-01',
-      nextInspection: '2026-08-01',
-    },
-  ]);
+  const { currentPropertyId, addNotification } = useERP();
 
-  const [activeCategory, setActiveCategory] = useState<string>('All');
-  const [activeStatus, setActiveStatus] = useState<string>('All');
+  const [assets, setAssets] = useState<Asset[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [actingOn, setActingOn] = useState<string | null>(null);
 
-  const categories = ['All', 'Power Systems', 'HVAC', 'Water Systems', 'Vertical Transport', 'Kitchen Equipment', 'Laundry Equipment', 'IT Equipment'];
-  const statuses = ['All', 'Active', 'Under Maintenance', 'Retired', 'Warranty Expired'];
+  const [categoryFilter, setCategoryFilter] = useState<'All' | string>('All');
+  const [statusFilter, setStatusFilter] = useState<'All' | string>('All');
+  const [search, setSearch] = useState('');
+  const [menuOpen, setMenuOpen] = useState<string | null>(null);
 
-  const getCategoryIcon = (category: string) => {
-    switch (category) {
-      case 'Power Systems': return Zap;
-      case 'HVAC': return Thermometer;
-      case 'Water Systems': return Droplets;
-      case 'Vertical Transport': return ArrowUpDown;
-      case 'Kitchen Equipment': return Utensils;
-      case 'Laundry Equipment': return Car;
-      case 'IT Equipment': return Factory;
-      default: return Box;
-    }
-  };
+  const [showCreate, setShowCreate] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
 
-  const getStatusColor = (status: string) => {
-    switch (status) {
-      case 'Active': return 'bg-emerald-500';
-      case 'Under Maintenance': return 'bg-amber-500';
-      case 'Retired': return 'bg-slate-500';
-      case 'Warranty Expired': return 'bg-rose-500';
-      default: return 'bg-slate-400';
-    }
-  };
-
-  const isWarrantyValid = (warranty: Equipment['warranty']) => {
-    return new Date(warranty.endDate) > new Date();
-  };
-
-  const filteredEquipment = equipment.filter(eq => {
-    if (activeCategory !== 'All' && eq.category !== activeCategory) return false;
-    if (activeStatus !== 'All' && eq.status !== activeStatus) return false;
-    return true;
+  const [form, setForm] = useState<{
+    assetCode: string;
+    assetName: string;
+    assetCategory: string;
+    description: string;
+    location: string;
+    manufacturer: string;
+    modelNumber: string;
+    serialNumber: string;
+    purchaseDate: string;
+    purchaseCost: string;
+    salvageValue: string;
+    usefulLifeYears: string;
+    warrantyStart: string;
+    warrantyEnd: string;
+    warrantyProvider: string;
+    criticality: string;
+  }>({
+    assetCode: '', assetName: '', assetCategory: 'Other', description: '', location: '',
+    manufacturer: '', modelNumber: '', serialNumber: '',
+    purchaseDate: new Date().toISOString().split('T')[0],
+    purchaseCost: '0', salvageValue: '0', usefulLifeYears: '10',
+    warrantyStart: '', warrantyEnd: '', warrantyProvider: '',
+    criticality: 'Medium',
   });
 
+  const [detailId, setDetailId] = useState<string | null>(null);
+  const detailAsset = assets.find(a => a.id === detailId) || null;
+
+  // ── Load ──────────────────────────────────────────────────────────────
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const data = await fetchAssets({ propertyId: currentPropertyId || undefined });
+      setAssets(data);
+    } catch (e: any) {
+      setError(e?.message || 'Failed to load equipment');
+    } finally {
+      setLoading(false);
+    }
+  }, [currentPropertyId]);
+
+  useEffect(() => { load(); }, [load]);
+
+  // ── Derived lists ─────────────────────────────────────────────────────
+  const filtered = useMemo(
+    () =>
+      assets.filter(a => {
+        const matchesCategory = categoryFilter === 'All' || a.asset_category === categoryFilter;
+        const matchesStatus = statusFilter === 'All' || a.status === statusFilter;
+        const q = search.trim().toLowerCase();
+        const matchesSearch =
+          !q ||
+          (a.asset_code || '').toLowerCase().includes(q) ||
+          (a.asset_name || '').toLowerCase().includes(q) ||
+          (a.manufacturer || '').toLowerCase().includes(q) ||
+          (a.serial_number || '').toLowerCase().includes(q) ||
+          (a.location || '').toLowerCase().includes(q);
+        return matchesCategory && matchesStatus && matchesSearch;
+      }),
+    [assets, categoryFilter, statusFilter, search]
+  );
+
+  const counts = {
+    total: assets.length,
+    active: assets.filter(a => a.status === 'Active').length,
+    underWarranty: assets.filter(a => isWarrantyValid(a)).length,
+    warrantyExpired: assets.filter(a => a.warranty_end && !isWarrantyValid(a)).length,
+  };
+
+  // ── Actions ───────────────────────────────────────────────────────────
+  const submitCreate = async () => {
+    if (!form.assetCode.trim() || !form.assetName.trim()) return;
+    setSubmitting(true);
+    try {
+      await createAsset({
+        assetCode: form.assetCode.trim(),
+        assetName: form.assetName.trim(),
+        assetCategory: form.assetCategory,
+        description: form.description.trim() || undefined,
+        location: form.location.trim() || undefined,
+        manufacturer: form.manufacturer.trim() || undefined,
+        modelNumber: form.modelNumber.trim() || undefined,
+        serialNumber: form.serialNumber.trim() || undefined,
+        purchaseDate: form.purchaseDate,
+        purchaseCost: parseFloat(form.purchaseCost) || 0,
+        salvageValue: parseFloat(form.salvageValue) || 0,
+        usefulLifeYears: parseInt(form.usefulLifeYears) || 10,
+        warrantyStart: form.warrantyStart || undefined,
+        warrantyEnd: form.warrantyEnd || undefined,
+        warrantyProvider: form.warrantyProvider.trim() || undefined,
+        criticality: form.criticality,
+        propertyId: currentPropertyId || undefined,
+      });
+      addNotification(`Equipment "${form.assetName.trim()}" registered.`, 'task', 'Maintenance');
+      setShowCreate(false);
+      setForm({
+        assetCode: '', assetName: '', assetCategory: 'Other', description: '', location: '',
+        manufacturer: '', modelNumber: '', serialNumber: '',
+        purchaseDate: new Date().toISOString().split('T')[0],
+        purchaseCost: '0', salvageValue: '0', usefulLifeYears: '10',
+        warrantyStart: '', warrantyEnd: '', warrantyProvider: '',
+        criticality: 'Medium',
+      });
+      load();
+    } catch (e: any) {
+      addNotification(e?.message || 'Failed to register equipment', 'warning', 'Maintenance');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const changeStatus = async (id: string, status: string) => {
+    setActingOn(id);
+    setMenuOpen(null);
+    try {
+      await updateAsset(id, { status });
+      setAssets(prev => prev.map(a => (a.id === id ? { ...a, status } : a)));
+      addNotification(`Equipment status → ${status}.`, 'task', 'Maintenance');
+    } catch (e: any) {
+      addNotification(e?.message || `Failed to update status to ${status}`, 'warning', 'Maintenance');
+    } finally {
+      setActingOn(null);
+    }
+  };
+
+  const removeAsset = async (id: string) => {
+    setActingOn(id);
+    setMenuOpen(null);
+    try {
+      await deleteAsset(id);
+      setAssets(prev => prev.filter(a => a.id !== id));
+      addNotification(`Equipment deleted.`, 'task', 'Maintenance');
+      setDetailId(null);
+    } catch (e: any) {
+      addNotification(e?.message || 'Failed to delete equipment', 'warning', 'Maintenance');
+    } finally {
+      setActingOn(null);
+    }
+  };
+
+  const saveDetail = async (patch: any) => {
+    if (!detailAsset) return;
+    setActingOn(detailAsset.id);
+    try {
+      await updateAsset(detailAsset.id, patch);
+      setAssets(prev => prev.map(a => (a.id === detailAsset.id ? { ...a, ...patch } : a)));
+      addNotification(`Equipment "${detailAsset.asset_name}" updated.`, 'task', 'Maintenance');
+    } catch (e: any) {
+      addNotification(e?.message || 'Failed to update equipment', 'warning', 'Maintenance');
+    } finally {
+      setActingOn(null);
+    }
+  };
+
+  // ── Render ────────────────────────────────────────────────────────────
+  const categoryFilters: ('All' | string)[] = ['All', ...CATEGORY_OPTIONS];
+  const statusFilters: ('All' | string)[] = ['All', ...STATUS_OPTIONS];
+
   return (
-    <div className="space-y-6">
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div>
-          <h2 className="text-xl font-sans font-black text-slate-900 dark:text-white leading-tight">Equipment Registry</h2>
-          <p className="text-xs text-slate-400 font-medium tracking-tight">Asset registration, QR/barcode labeling, specifications & documentation</p>
-        </div>
-        <div className="flex items-center gap-2">
-          <button className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white font-bold py-2.5 px-4 rounded-2xl flex items-center gap-2 text-xs hover:bg-slate-50 transition shadow-sm">
-            <Search size={16} />
-            Search
-          </button>
-          <button className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2.5 px-4 rounded-2xl flex items-center gap-2 text-xs transition shadow-md shadow-indigo-200 dark:shadow-none">
-            <Plus size={16} />
-            Register Equipment
-          </button>
-        </div>
-      </div>
-
-      {/* Category Filter */}
-      <div className="flex bg-white dark:bg-slate-900 p-1.5 border border-slate-200 dark:border-slate-800 rounded-2xl overflow-x-auto no-scrollbar gap-1.5">
-        {categories.map((category) => {
-          const Icon = getCategoryIcon(category);
-          return (
-            <button
-              key={category}
-              onClick={() => setActiveCategory(category)}
-              className={`px-3 py-1.5 rounded-xl text-xs font-black transition-all whitespace-nowrap uppercase tracking-tighter flex items-center gap-1.5 ${
-                activeCategory === category
-                  ? 'bg-slate-950 dark:bg-white text-white dark:text-slate-950 shadow-sm'
-                  : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-200'
-              }`}
-            >
-              <Icon size={12} />
-              {category}
+    <div className={`${layout.sectionStack} animate-fade-in`}>
+      <PageHeader
+        title="Equipment Registry"
+        subtitle="Asset registration, specifications, warranty tracking & documentation."
+        icon={Box}
+        actions={
+          <div className="flex items-center gap-2">
+            <button onClick={load} disabled={loading} className={button.secondary + ' disabled:opacity-50'}>
+              {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <ArrowRight className="w-4 h-4" />}
+              Refresh
             </button>
-          );
-        })}
+            <button onClick={() => setShowCreate(true)} className={button.primary}>
+              <Plus className="w-4 h-4" /> Register Equipment
+            </button>
+          </div>
+        }
+      />
+
+      {/* KPIs */}
+      <div className={layout.kpiGrid}>
+        <StatCard title="Total Equipment" value={counts.total} icon={Box} tone="info" />
+        <StatCard title="Active" value={counts.active} icon={ShieldCheck} tone="success" />
+        <StatCard title="Under Warranty" value={counts.underWarranty} icon={ShieldCheck} tone="accent" />
+        <StatCard title="Warranty Expired" value={counts.warrantyExpired} icon={AlertTriangle} tone="danger" />
       </div>
 
-      {/* Status Filter */}
-      <div className="flex bg-white dark:bg-slate-900 p-1.5 border border-slate-200 dark:border-slate-800 rounded-2xl overflow-x-auto no-scrollbar gap-1.5">
-        {statuses.map((status) => (
-          <button
-            key={status}
-            onClick={() => setActiveStatus(status)}
-            className={`px-4 py-1.5 rounded-xl text-xs font-black transition-all whitespace-nowrap uppercase tracking-tighter ${
-              activeStatus === status
-                ? 'bg-slate-950 dark:bg-white text-white dark:text-slate-950 shadow-sm'
-                : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-200'
-            }`}
-          >
-            {status}
-          </button>
-        ))}
-      </div>
+      {error && (
+        <div className="px-4 py-3 rounded-xl bg-red-50 dark:bg-red-900/20 text-sm text-red-700 dark:text-red-300 border border-red-200 dark:border-red-800 flex items-center gap-2">
+          <ServerCrash className="w-4 h-4 shrink-0" /> {error}
+          <button onClick={load} className={button.ghost + ' ml-auto'}>Retry</button>
+        </div>
+      )}
 
-      {/* Summary Stats */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 p-4 rounded-3xl shadow-3xs">
-          <div className="flex items-center gap-2 mb-2">
-            <div className="p-2 rounded-xl bg-indigo-50 dark:bg-indigo-500/10 text-indigo-500">
-              <Box size={14} />
-            </div>
-            <span className="text-xl font-black text-slate-900 dark:text-white">{equipment.length}</span>
-          </div>
-          <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Total Equipment</span>
-        </div>
-        <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 p-4 rounded-3xl shadow-3xs">
-          <div className="flex items-center gap-2 mb-2">
-            <div className="p-2 rounded-xl bg-emerald-50 dark:bg-emerald-500/10 text-emerald-500">
-              <QrCode size={14} />
-            </div>
-            <span className="text-xl font-black text-slate-900 dark:text-white">{equipment.length}</span>
-          </div>
-          <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">QR Labels Generated</span>
-        </div>
-        <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 p-4 rounded-3xl shadow-3xs">
-          <div className="flex items-center gap-2 mb-2">
-            <div className="p-2 rounded-xl bg-amber-50 dark:bg-amber-500/10 text-amber-500">
-              <ShieldCheck size={14} />
-            </div>
-            <span className="text-xl font-black text-slate-900 dark:text-white">{equipment.filter(e => isWarrantyValid(e.warranty)).length}</span>
-          </div>
-          <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Under Warranty</span>
-        </div>
-        <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 p-4 rounded-3xl shadow-3xs">
-          <div className="flex items-center gap-2 mb-2">
-            <div className="p-2 rounded-xl bg-rose-50 dark:bg-rose-500/10 text-rose-500">
-              <AlertTriangle size={14} />
-            </div>
-            <span className="text-xl font-black text-slate-900 dark:text-white">{equipment.filter(e => !isWarrantyValid(e.warranty)).length}</span>
-          </div>
-          <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Warranty Expired</span>
-        </div>
-      </div>
-
-      {/* Equipment List */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        <div className="lg:col-span-8 space-y-4">
-          {filteredEquipment.map((eq) => {
-            const CategoryIcon = getCategoryIcon(eq.category);
-            const warrantyValid = isWarrantyValid(eq.warranty);
+      {/* Filters section */}
+      <SectionCard
+        title="Equipment"
+        subtitle="Registered fixed assets and equipment"
+        icon={Box}
+        pad="md"
+      >
+        {/* Category filter */}
+        <div className="flex bg-slate-100 dark:bg-slate-900/40 p-1 rounded-xl gap-1 flex-wrap mb-3">
+          {categoryFilters.map(f => {
+            const Icon = f === 'All' ? Box : CATEGORY_ICON[f] ?? Box;
             return (
-              <div
-                key={eq.id}
-                className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-3xl p-5 shadow-3xs group hover:border-indigo-300 transition-all cursor-pointer"
+              <button
+                key={f}
+                onClick={() => setCategoryFilter(f)}
+                className={[
+                  'px-3 py-1.5 rounded-lg text-xs font-medium transition whitespace-nowrap flex items-center gap-1.5',
+                  categoryFilter === f
+                    ? 'bg-white dark:bg-slate-700 text-gray-900 dark:text-white shadow-sm'
+                    : 'text-gray-500 hover:text-gray-700',
+                ].join(' ')}
               >
-                <div className="flex flex-col md:flex-row justify-between gap-4">
-                  <div className="space-y-3 flex-1">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="text-[10px] font-mono font-black text-slate-400 group-hover:text-indigo-500 transition-colors uppercase tracking-widest">{eq.assetCode}</span>
-                      <span className={`px-2 py-0.5 rounded-full text-[8px] font-black uppercase tracking-tight ${getStatusColor(eq.status)} text-white`}>
-                        {eq.status}
-                      </span>
-                      {warrantyValid ? (
-                        <span className="px-2 py-0.5 bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 rounded-full text-[8px] font-black uppercase tracking-tight flex items-center gap-1">
-                          <ShieldCheck size={8} />
-                          Warranty Active
-                        </span>
-                      ) : (
-                        <span className="px-2 py-0.5 bg-rose-50 dark:bg-rose-500/10 text-rose-600 dark:text-rose-400 rounded-full text-[8px] font-black uppercase tracking-tight flex items-center gap-1">
-                          <AlertTriangle size={8} />
-                          Warranty Expired
-                        </span>
-                      )}
-                    </div>
-
-                    <div>
-                      <h4 className="text-sm font-sans font-extrabold text-slate-900 dark:text-white leading-tight">{eq.name}</h4>
-                      <div className="flex flex-wrap items-center gap-3 mt-1.5">
-                        <div className="flex items-center gap-1 text-[10px] font-bold text-slate-500">
-                          <CategoryIcon size={10} className="text-indigo-500" />
-                          {eq.category}
-                        </div>
-                        <div className="flex items-center gap-1 text-[10px] font-bold text-slate-500">
-                          <MapPin size={10} className="text-indigo-500" />
-                          {eq.location}
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-2 md:grid-cols-4 gap-3 p-3 bg-slate-50 dark:bg-slate-850 rounded-2xl">
-                      <div>
-                        <span className="text-[8px] font-black text-slate-400 uppercase tracking-tight block">Manufacturer</span>
-                        <span className="text-[10px] font-bold text-slate-700 dark:text-slate-300">{eq.specifications.manufacturer}</span>
-                      </div>
-                      <div>
-                        <span className="text-[8px] font-black text-slate-400 uppercase tracking-tight block">Model</span>
-                        <span className="text-[10px] font-bold text-slate-700 dark:text-slate-300">{eq.specifications.model}</span>
-                      </div>
-                      <div>
-                        <span className="text-[8px] font-black text-slate-400 uppercase tracking-tight block">Serial No.</span>
-                        <span className="text-[10px] font-bold text-slate-700 dark:text-slate-300 font-mono">{eq.specifications.serialNumber}</span>
-                      </div>
-                      <div>
-                        <span className="text-[8px] font-black text-slate-400 uppercase tracking-tight block">Capacity</span>
-                        <span className="text-[10px] font-bold text-slate-700 dark:text-slate-300">{eq.specifications.capacity || '—'}</span>
-                      </div>
-                    </div>
-
-                    <div className="flex items-center gap-4">
-                      <div className="flex items-center gap-2 px-3 py-2 bg-indigo-50 dark:bg-indigo-500/10 rounded-xl">
-                        <QrCode size={14} className="text-indigo-500" />
-                        <div>
-                          <span className="text-[8px] font-black text-slate-400 uppercase block tracking-tight">QR Code</span>
-                          <span className="text-[10px] font-bold text-slate-700 dark:text-slate-300 font-mono">{eq.qrCode}</span>
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-2 px-3 py-2 bg-purple-50 dark:bg-purple-500/10 rounded-xl">
-                        <Barcode size={14} className="text-purple-500" />
-                        <div>
-                          <span className="text-[8px] font-black text-slate-400 uppercase block tracking-tight">Barcode</span>
-                          <span className="text-[10px] font-bold text-slate-700 dark:text-slate-300 font-mono">{eq.barcode}</span>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="flex flex-row md:flex-col justify-between items-end md:items-end gap-2 border-t md:border-t-0 md:border-l border-slate-100 dark:border-slate-800 md:pl-6 pt-3 md:pt-0">
-                    <div className="space-y-2">
-                      <div>
-                        <span className="text-[9px] font-black text-slate-400 uppercase block tracking-tight">Warranty</span>
-                        <span className={`text-[10px] font-bold ${warrantyValid ? 'text-emerald-600' : 'text-rose-600'} block`}>
-                          {eq.warranty.endDate}
-                        </span>
-                      </div>
-                      <div>
-                        <span className="text-[9px] font-black text-slate-400 uppercase block tracking-tight">Next Inspection</span>
-                        <span className="text-[10px] font-bold text-slate-700 dark:text-slate-300">{eq.nextInspection || '—'}</span>
-                      </div>
-                    </div>
-
-                    <div className="flex gap-2">
-                      <button className="p-2 rounded-xl bg-slate-50 dark:bg-slate-800 text-slate-400 hover:bg-indigo-50 hover:text-indigo-500 transition" title="View Documentation">
-                        <FileText size={16} />
-                      </button>
-                      <button className="p-2 rounded-xl bg-slate-50 dark:bg-slate-800 text-slate-400 hover:bg-indigo-50 hover:text-indigo-500 transition" title="Print QR Code">
-                        <Download size={16} />
-                      </button>
-                      <button className="p-2 rounded-xl bg-slate-50 dark:bg-slate-800 text-slate-400 hover:bg-indigo-50 hover:text-indigo-500 transition" title="More Options">
-                        <MoreVertical size={16} />
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              </div>
+                <Icon className="w-3 h-3" />
+                {f}
+              </button>
             );
           })}
         </div>
 
-        {/* Sidebar */}
-        <div className="lg:col-span-4 space-y-6">
-          <div className="bg-slate-900 text-white p-6 rounded-3xl space-y-6">
-            <div>
-              <h3 className="text-sm font-sans font-extrabold leading-tight">Quick Actions</h3>
-              <p className="text-[10px] text-slate-400 uppercase font-bold tracking-widest mt-0.5">Label & documentation</p>
-            </div>
-
-            <div className="space-y-3">
-              <button className="w-full p-3 bg-white/5 border border-white/10 rounded-2xl flex items-center gap-3 hover:bg-white/10 transition">
-                <QrCode size={16} className="text-indigo-400" />
-                <div className="text-left">
-                  <span className="text-[10px] font-black text-white block">Generate QR Labels</span>
-                  <span className="text-[8px] text-slate-400 font-medium">Batch print equipment labels</span>
-                </div>
+        {/* Status filter + search */}
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <div className="flex bg-slate-100 dark:bg-slate-900/40 p-1 rounded-xl gap-1 flex-wrap">
+            {statusFilters.map(f => (
+              <button
+                key={f}
+                onClick={() => setStatusFilter(f)}
+                className={[
+                  'px-3 py-1.5 rounded-lg text-xs font-medium transition whitespace-nowrap',
+                  statusFilter === f
+                    ? 'bg-white dark:bg-slate-700 text-gray-900 dark:text-white shadow-sm'
+                    : 'text-gray-500 hover:text-gray-700',
+                ].join(' ')}
+              >
+                {f}
               </button>
-              <button className="w-full p-3 bg-white/5 border border-white/10 rounded-2xl flex items-center gap-3 hover:bg-white/10 transition">
-                <Camera size={16} className="text-emerald-400" />
-                <div className="text-left">
-                  <span className="text-[10px] font-black text-white block">Scan Equipment</span>
-                  <span className="text-[8px] text-slate-400 font-medium">Mobile asset identification</span>
-                </div>
-              </button>
-              <button className="w-full p-3 bg-white/5 border border-white/10 rounded-2xl flex items-center gap-3 hover:bg-white/10 transition">
-                <Upload size={16} className="text-amber-400" />
-                <div className="text-left">
-                  <span className="text-[10px] font-black text-white block">Upload Documents</span>
-                  <span className="text-[8px] text-slate-400 font-medium">Manuals, certificates, specs</span>
-                </div>
-              </button>
-            </div>
+            ))}
           </div>
-
-          <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 p-6 rounded-3xl space-y-4">
-            <div>
-              <h3 className="text-sm font-sans font-extrabold text-slate-900 dark:text-white">Warranty Status</h3>
-              <p className="text-[10px] text-slate-400 uppercase font-black tracking-widest mt-0.5">Coverage overview</p>
-            </div>
-
-            <div className="space-y-3">
-              {equipment.slice(0, 4).map((eq, i) => {
-                const valid = isWarrantyValid(eq.warranty);
-                return (
-                  <div key={i} className="flex items-center justify-between p-2 bg-slate-50 dark:bg-slate-850 rounded-xl">
-                    <div className="flex items-center gap-2">
-                      {valid ? <CheckCircle2 size={12} className="text-emerald-500" /> : <AlertTriangle size={12} className="text-rose-500" />}
-                      <span className="text-[10px] font-bold text-slate-700 dark:text-slate-300">{eq.assetCode}</span>
-                    </div>
-                    <span className={`text-[9px] font-black ${valid ? 'text-emerald-600' : 'text-rose-600'}`}>
-                      {eq.warranty.endDate}
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
+          <div className="relative w-full max-w-xs">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+            <input
+              placeholder="Search code, name, serial, location…"
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              className="w-full pl-9 pr-3 py-2 text-sm border border-gray-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-gray-900 dark:text-white outline-none focus:ring-1 focus:ring-[var(--color-accent-operations)]"
+            />
           </div>
         </div>
-      </div>
+      </SectionCard>
+
+      {/* Equipment list */}
+      <SectionCard pad="none" bodyClassName="divide-y divide-gray-100 dark:divide-slate-700">
+        {loading && (
+          <div className="p-8 flex items-center justify-center gap-2 text-sm text-gray-500">
+            <Loader2 className="w-5 h-5 animate-spin" /> Loading equipment…
+          </div>
+        )}
+
+        {!loading && !error && filtered.length === 0 && (
+          <div className="p-8 text-center text-sm text-gray-500">
+            {assets.length === 0 ? 'No equipment registered yet.' : 'No equipment matches the filters.'}
+          </div>
+        )}
+
+        {!loading && !error && filtered.map(a => {
+          const tone = STATUS_TONE[a.status] ?? 'neutral';
+          const criticalityTone = CRITICALITY_TONE[a.criticality] ?? 'neutral';
+          const warrantyValid = isWarrantyValid(a);
+          const CategoryIcon = CATEGORY_ICON[a.asset_category || 'Other'] ?? Box;
+          const isMenuOpen = menuOpen === a.id;
+
+          return (
+            <div key={a.id} className="p-4 flex flex-col md:flex-row md:items-center gap-4">
+              {/* Identity */}
+              <div className="flex items-center gap-3 md:w-64 shrink-0">
+                <div className={`p-2 rounded-xl ${statusTone[tone].soft}`}>
+                  <CategoryIcon className={`w-4 h-4 ${statusTone[tone].text}`} />
+                </div>
+                <div className="min-w-0">
+                  <h4 className="text-sm font-bold text-gray-900 dark:text-white truncate">{a.asset_name || '—'}</h4>
+                  <p className="text-xs text-gray-500 font-mono truncate">
+                    {a.asset_code || '—'} · {a.asset_category || 'Other'}
+                  </p>
+                </div>
+              </div>
+
+              {/* Body */}
+              <div className="flex-1 min-w-0">
+                <div className="flex flex-wrap items-center gap-2 text-xs text-gray-500">
+                  {a.location && (
+                    <span className="inline-flex items-center gap-1">
+                      <MapPin className="w-3.5 h-3.5" /> {a.location}
+                    </span>
+                  )}
+                  {a.manufacturer && (
+                    <>
+                      <span>·</span>
+                      <span>{a.manufacturer}{a.model_number ? ` ${a.model_number}` : ''}</span>
+                    </>
+                  )}
+                  {a.serial_number && (
+                    <>
+                      <span>·</span>
+                      <span className="font-mono">SN: {a.serial_number}</span>
+                    </>
+                  )}
+                </div>
+                <div className="flex flex-wrap items-center gap-2 mt-1.5">
+                  {warrantyValid ? (
+                    <span className="inline-flex items-center gap-1 text-xs font-medium text-[var(--color-success)]">
+                      <ShieldCheck className="w-3 h-3" /> Warranty until {fmtDate(a.warranty_end)}
+                    </span>
+                  ) : a.warranty_end ? (
+                    <span className="inline-flex items-center gap-1 text-xs font-medium text-[var(--color-danger)]">
+                      <AlertTriangle className="w-3 h-3" /> Warranty expired {fmtDate(a.warranty_end)}
+                    </span>
+                  ) : null}
+                </div>
+              </div>
+
+              {/* Status + criticality */}
+              <div className="md:w-48 shrink-0">
+                <div className="flex items-center justify-between text-xs">
+                  <Badge tone={tone}>{a.status}</Badge>
+                  <Badge tone={criticalityTone} variant="solid">{a.criticality}</Badge>
+                </div>
+              </div>
+
+              {/* Actions */}
+              <div className="md:w-36 shrink-0 flex justify-end items-center gap-1.5">
+                <button
+                  onClick={() => setDetailId(a.id)}
+                  className={button.ghost}
+                  title="View details"
+                >
+                  <Eye className="w-4 h-4" />
+                </button>
+                <div className="relative">
+                  <button
+                    onClick={() => setMenuOpen(isMenuOpen ? null : a.id)}
+                    disabled={actingOn === a.id}
+                    className={button.ghost + ' disabled:opacity-50'}
+                  >
+                    {actingOn === a.id ? <Loader2 className="w-4 h-4 animate-spin" /> : <MoreVertical className="w-4 h-4" />}
+                  </button>
+                  {isMenuOpen && (
+                    <div className="absolute right-0 top-full mt-2 w-52 bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl shadow-xl z-20 overflow-hidden">
+                      {STATUS_OPTIONS.filter(s => s !== a.status).map(s => (
+                        <button
+                          key={s}
+                          onClick={() => changeStatus(a.id, s)}
+                          className="w-full text-left px-3 py-2 text-xs font-medium text-gray-700 dark:text-gray-200 hover:bg-slate-100 dark:hover:bg-slate-700 transition"
+                        >
+                          Set status: {s}
+                        </button>
+                      ))}
+                      <button
+                        onClick={() => removeAsset(a.id)}
+                        className="w-full text-left px-3 py-2 text-xs font-medium text-[var(--color-danger)] hover:bg-red-50 dark:hover:bg-red-900/20 transition border-t border-gray-100 dark:border-slate-700"
+                      >
+                        <Trash2 className="w-3.5 h-3.5 inline mr-1" /> Delete
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </SectionCard>
+
+      {/* ── Create modal ─────────────────────────────────────────────── */}
+      <ModalSystem
+        isOpen={showCreate}
+        onClose={() => (submitting ? undefined : setShowCreate(false))}
+        title="Register Equipment"
+        subtitle="Add a new equipment asset to the registry."
+        variant="form"
+        size="lg"
+        loading={submitting}
+        confirmLabel={submitting ? 'Submitting…' : 'Register'}
+        cancelLabel="Cancel"
+        confirmColor="indigo"
+        onConfirm={submitCreate}
+        showFooter
+      >
+        <div className="space-y-5">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <Field label="Asset Code">
+              <input
+                value={form.assetCode}
+                onChange={e => setForm(f => ({ ...f, assetCode: e.target.value }))}
+                placeholder="e.g. GEN-01"
+                className={inputClass}
+              />
+            </Field>
+            <Field label="Asset Name">
+              <input
+                value={form.assetName}
+                onChange={e => setForm(f => ({ ...f, assetName: e.target.value }))}
+                placeholder="e.g. Backup Generator 500kVA"
+                className={inputClass}
+              />
+            </Field>
+            <Field label="Category">
+              <select
+                value={form.assetCategory}
+                onChange={e => setForm(f => ({ ...f, assetCategory: e.target.value }))}
+                className={inputClass}
+              >
+                {CATEGORY_OPTIONS.map(c => <option key={c} value={c}>{c}</option>)}
+              </select>
+            </Field>
+            <Field label="Criticality">
+              <select
+                value={form.criticality}
+                onChange={e => setForm(f => ({ ...f, criticality: e.target.value }))}
+                className={inputClass}
+              >
+                {CRITICALITY_OPTIONS.map(c => <option key={c} value={c}>{c}</option>)}
+              </select>
+            </Field>
+            <Field label="Location">
+              <input
+                value={form.location}
+                onChange={e => setForm(f => ({ ...f, location: e.target.value }))}
+                placeholder="e.g. Plant Room 1"
+                className={inputClass}
+              />
+            </Field>
+            <Field label="Manufacturer">
+              <input
+                value={form.manufacturer}
+                onChange={e => setForm(f => ({ ...f, manufacturer: e.target.value }))}
+                placeholder="e.g. Cummins Power"
+                className={inputClass}
+              />
+            </Field>
+            <Field label="Model Number">
+              <input
+                value={form.modelNumber}
+                onChange={e => setForm(f => ({ ...f, modelNumber: e.target.value }))}
+                placeholder="e.g. C500D5"
+                className={inputClass}
+              />
+            </Field>
+            <Field label="Serial Number">
+              <input
+                value={form.serialNumber}
+                onChange={e => setForm(f => ({ ...f, serialNumber: e.target.value }))}
+                placeholder="e.g. CUM-2022-GEN-001"
+                className={inputClass}
+              />
+            </Field>
+            <Field label="Purchase Date">
+              <input
+                type="date"
+                value={form.purchaseDate}
+                onChange={e => setForm(f => ({ ...f, purchaseDate: e.target.value }))}
+                className={inputClass}
+              />
+            </Field>
+            <Field label="Purchase Cost">
+              <input
+                type="number"
+                step="0.01"
+                value={form.purchaseCost}
+                onChange={e => setForm(f => ({ ...f, purchaseCost: e.target.value }))}
+                className={inputClass}
+              />
+            </Field>
+            <Field label="Salvage Value">
+              <input
+                type="number"
+                step="0.01"
+                value={form.salvageValue}
+                onChange={e => setForm(f => ({ ...f, salvageValue: e.target.value }))}
+                className={inputClass}
+              />
+            </Field>
+            <Field label="Useful Life (years)">
+              <input
+                type="number"
+                value={form.usefulLifeYears}
+                onChange={e => setForm(f => ({ ...f, usefulLifeYears: e.target.value }))}
+                className={inputClass}
+              />
+            </Field>
+            <Field label="Warranty Start">
+              <input
+                type="date"
+                value={form.warrantyStart}
+                onChange={e => setForm(f => ({ ...f, warrantyStart: e.target.value }))}
+                className={inputClass}
+              />
+            </Field>
+            <Field label="Warranty End">
+              <input
+                type="date"
+                value={form.warrantyEnd}
+                onChange={e => setForm(f => ({ ...f, warrantyEnd: e.target.value }))}
+                className={inputClass}
+              />
+            </Field>
+            <Field label="Warranty Provider">
+              <input
+                value={form.warrantyProvider}
+                onChange={e => setForm(f => ({ ...f, warrantyProvider: e.target.value }))}
+                placeholder="e.g. Cummins Power Systems"
+                className={inputClass}
+              />
+            </Field>
+          </div>
+          <Field label="Description">
+            <textarea
+              value={form.description}
+              onChange={e => setForm(f => ({ ...f, description: e.target.value }))}
+              placeholder="Equipment description, capacity, power rating, etc."
+              rows={3}
+              className={inputClass}
+            />
+          </Field>
+        </div>
+      </ModalSystem>
+
+      {/* ── Detail modal ─────────────────────────────────────────────── */}
+      <ModalSystem
+        isOpen={!!detailId}
+        onClose={() => setDetailId(null)}
+        title={detailAsset?.asset_name || 'Equipment'}
+        subtitle={detailAsset?.asset_code}
+        variant="info"
+        size="lg"
+        showFooter={false}
+      >
+        {detailAsset && (
+          <div className="space-y-5">
+            {/* Status + criticality + category */}
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge tone={STATUS_TONE[detailAsset.status] ?? 'neutral'}>{detailAsset.status}</Badge>
+              <Badge tone={CRITICALITY_TONE[detailAsset.criticality] ?? 'neutral'} variant="solid">{detailAsset.criticality}</Badge>
+              <Badge tone="info">{detailAsset.asset_category || 'Other'}</Badge>
+              {isWarrantyValid(detailAsset) ? (
+                <Badge tone="success" icon={ShieldCheck}>Warranty Active</Badge>
+              ) : detailAsset.warranty_end ? (
+                <Badge tone="danger" icon={AlertTriangle}>Warranty Expired</Badge>
+              ) : null}
+            </div>
+
+            {/* Description */}
+            {detailAsset.description && (
+              <div>
+                <p className="text-xs font-bold text-gray-500 uppercase tracking-wide mb-1">Description</p>
+                <p className="text-sm text-gray-700 dark:text-gray-200">{detailAsset.description}</p>
+              </div>
+            )}
+
+            {/* Metadata grid */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <div className="bg-slate-50 dark:bg-slate-900/40 rounded-xl p-3">
+                <p className="text-[10px] font-bold text-gray-500 uppercase tracking-wide">Location</p>
+                <p className="text-sm font-bold text-gray-900 dark:text-white">{detailAsset.location || '—'}</p>
+              </div>
+              <div className="bg-slate-50 dark:bg-slate-900/40 rounded-xl p-3">
+                <p className="text-[10px] font-bold text-gray-500 uppercase tracking-wide">Manufacturer</p>
+                <p className="text-sm font-bold text-gray-900 dark:text-white">{detailAsset.manufacturer || '—'}</p>
+              </div>
+              <div className="bg-slate-50 dark:bg-slate-900/40 rounded-xl p-3">
+                <p className="text-[10px] font-bold text-gray-500 uppercase tracking-wide">Model</p>
+                <p className="text-sm font-bold text-gray-900 dark:text-white">{detailAsset.model_number || '—'}</p>
+              </div>
+              <div className="bg-slate-50 dark:bg-slate-900/40 rounded-xl p-3">
+                <p className="text-[10px] font-bold text-gray-500 uppercase tracking-wide">Serial Number</p>
+                <p className="text-sm font-bold text-gray-900 dark:text-white font-mono">{detailAsset.serial_number || '—'}</p>
+              </div>
+              <div className="bg-slate-50 dark:bg-slate-900/40 rounded-xl p-3">
+                <p className="text-[10px] font-bold text-gray-500 uppercase tracking-wide">Purchase Date</p>
+                <p className="text-sm font-bold text-gray-900 dark:text-white">{fmtDate(detailAsset.purchase_date)}</p>
+              </div>
+              <div className="bg-slate-50 dark:bg-slate-900/40 rounded-xl p-3">
+                <p className="text-[10px] font-bold text-gray-500 uppercase tracking-wide">Purchase Cost</p>
+                <p className="text-sm font-bold text-gray-900 dark:text-white">{fmtCost(detailAsset.purchase_cost)}</p>
+              </div>
+              <div className="bg-slate-50 dark:bg-slate-900/40 rounded-xl p-3">
+                <p className="text-[10px] font-bold text-gray-500 uppercase tracking-wide">Net Book Value</p>
+                <p className="text-sm font-bold text-gray-900 dark:text-white">{fmtCost(detailAsset.net_book_value)}</p>
+              </div>
+              <div className="bg-slate-50 dark:bg-slate-900/40 rounded-xl p-3">
+                <p className="text-[10px] font-bold text-gray-500 uppercase tracking-wide">Useful Life</p>
+                <p className="text-sm font-bold text-gray-900 dark:text-white">{detailAsset.useful_life_years || '—'} yrs</p>
+              </div>
+              <div className="bg-slate-50 dark:bg-slate-900/40 rounded-xl p-3">
+                <p className="text-[10px] font-bold text-gray-500 uppercase tracking-wide">Warranty Start</p>
+                <p className="text-sm font-bold text-gray-900 dark:text-white">{fmtDate(detailAsset.warranty_start)}</p>
+              </div>
+              <div className="bg-slate-50 dark:bg-slate-900/40 rounded-xl p-3">
+                <p className="text-[10px] font-bold text-gray-500 uppercase tracking-wide">Warranty End</p>
+                <p className="text-sm font-bold text-gray-900 dark:text-white">{fmtDate(detailAsset.warranty_end)}</p>
+              </div>
+              <div className="bg-slate-50 dark:bg-slate-900/40 rounded-xl p-3">
+                <p className="text-[10px] font-bold text-gray-500 uppercase tracking-wide">Warranty Provider</p>
+                <p className="text-sm font-bold text-gray-900 dark:text-white">{detailAsset.warranty_provider || '—'}</p>
+              </div>
+              <div className="bg-slate-50 dark:bg-slate-900/40 rounded-xl p-3">
+                <p className="text-[10px] font-bold text-gray-500 uppercase tracking-wide">Created</p>
+                <p className="text-sm font-bold text-gray-900 dark:text-white">{fmtDate(detailAsset.created_at)}</p>
+              </div>
+            </div>
+
+            {/* QR / Barcode identifiers */}
+            <div className="border border-gray-200 dark:border-slate-700 rounded-xl p-4 space-y-3">
+              <div className="flex items-center gap-2">
+                <QrCode className="w-4 h-4 text-[var(--color-accent-operations)]" />
+                <span className="text-xs font-bold text-gray-700 dark:text-gray-200 uppercase tracking-wide">Asset Identifiers</span>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="flex items-center gap-2 bg-slate-50 dark:bg-slate-900/40 rounded-lg p-2">
+                  <QrCode className="w-4 h-4 text-[var(--color-accent-operations)]" />
+                  <div>
+                    <p className="text-[10px] font-bold text-gray-500 uppercase">Asset Code</p>
+                    <p className="text-sm font-bold text-gray-900 dark:text-white font-mono">{detailAsset.asset_code || '—'}</p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 bg-slate-50 dark:bg-slate-900/40 rounded-lg p-2">
+                  <Barcode className="w-4 h-4 text-purple-500" />
+                  <div>
+                    <p className="text-[10px] font-bold text-gray-500 uppercase">Serial Number</p>
+                    <p className="text-sm font-bold text-gray-900 dark:text-white font-mono">{detailAsset.serial_number || '—'}</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Editable fields */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-gray-100 dark:border-slate-700">
+              <Field label="Status">
+                <select
+                  value={detailAsset.status}
+                  onChange={e => saveDetail({ status: e.target.value })}
+                  className={inputClass}
+                  disabled={actingOn === detailAsset.id}
+                >
+                  {STATUS_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}
+                </select>
+              </Field>
+              <Field label="Criticality">
+                <select
+                  value={detailAsset.criticality}
+                  onChange={e => saveDetail({ criticality: e.target.value })}
+                  className={inputClass}
+                  disabled={actingOn === detailAsset.id}
+                >
+                  {CRITICALITY_OPTIONS.map(c => <option key={c} value={c}>{c}</option>)}
+                </select>
+              </Field>
+              <Field label="Location">
+                <input
+                  defaultValue={detailAsset.location || ''}
+                  onBlur={e => saveDetail({ location: e.target.value })}
+                  className={inputClass}
+                  disabled={actingOn === detailAsset.id}
+                />
+              </Field>
+              <Field label="Manufacturer">
+                <input
+                  defaultValue={detailAsset.manufacturer || ''}
+                  onBlur={e => saveDetail({ manufacturer: e.target.value })}
+                  className={inputClass}
+                  disabled={actingOn === detailAsset.id}
+                />
+              </Field>
+              <Field label="Model Number">
+                <input
+                  defaultValue={detailAsset.model_number || ''}
+                  onBlur={e => saveDetail({ modelNumber: e.target.value })}
+                  className={inputClass}
+                  disabled={actingOn === detailAsset.id}
+                />
+              </Field>
+              <Field label="Serial Number">
+                <input
+                  defaultValue={detailAsset.serial_number || ''}
+                  onBlur={e => saveDetail({ serialNumber: e.target.value })}
+                  className={inputClass}
+                  disabled={actingOn === detailAsset.id}
+                />
+              </Field>
+              <Field label="Warranty Start">
+                <input
+                  type="date"
+                  defaultValue={detailAsset.warranty_start || ''}
+                  onBlur={e => saveDetail({ warrantyStart: e.target.value || null })}
+                  className={inputClass}
+                  disabled={actingOn === detailAsset.id}
+                />
+              </Field>
+              <Field label="Warranty End">
+                <input
+                  type="date"
+                  defaultValue={detailAsset.warranty_end || ''}
+                  onBlur={e => saveDetail({ warrantyEnd: e.target.value || null })}
+                  className={inputClass}
+                  disabled={actingOn === detailAsset.id}
+                />
+              </Field>
+              <Field label="Warranty Provider">
+                <input
+                  defaultValue={detailAsset.warranty_provider || ''}
+                  onBlur={e => saveDetail({ warrantyProvider: e.target.value })}
+                  className={inputClass}
+                  disabled={actingOn === detailAsset.id}
+                />
+              </Field>
+              <Field label="Description">
+                <textarea
+                  defaultValue={detailAsset.description || ''}
+                  onBlur={e => saveDetail({ description: e.target.value })}
+                  rows={2}
+                  className={inputClass}
+                  disabled={actingOn === detailAsset.id}
+                />
+              </Field>
+            </div>
+
+            {/* Action buttons */}
+            <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-gray-100 dark:border-slate-700">
+              <button
+                onClick={() => { removeAsset(detailAsset.id); }}
+                disabled={actingOn === detailAsset.id}
+                className={button.ghost + ' text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 ml-auto disabled:opacity-50'}
+              >
+                <Trash2 className="w-4 h-4 inline mr-1" /> Delete
+              </button>
+            </div>
+          </div>
+        )}
+      </ModalSystem>
     </div>
   );
 };

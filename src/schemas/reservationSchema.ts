@@ -39,6 +39,11 @@ export const reservationSchema = z.object({
   guestVatDate: z.string().optional(),
   bookingType: z.enum(['Individual', 'Group', 'Corporate']),
   bookingGroupId: z.string().optional(),
+  // Explicit billing mode — drives folio hierarchy at check-in (see
+  // ensureFolio() in reservations.routes.ts). Defaults are applied in
+  // BookingTypeSelector based on bookingType; only Group bookings expose the
+  // "who pays" sub-choice since Individual/Corporate are unambiguous.
+  billingMode: z.enum(['individual', 'group', 'corporate']).optional(),
   groupName: z.string().optional(),
   numberOfRooms: z.number().min(1).optional(),
   corporateAccountId: z.string().optional(),

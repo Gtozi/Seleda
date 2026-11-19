@@ -28,11 +28,23 @@ const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 const supabase = supabaseUrl && supabaseKey ? createClient(supabaseUrl, supabaseKey) : null;
 
-// Create admin Supabase client for room management operations
-// This uses the service role key which bypasses RLS policies
-const createAdminClient = () => {
-  const serviceRoleKey = import.meta.env.VITE_SUPABASE_SERVICE_ROLE_KEY || import.meta.env.SUPABASE_SERVICE_ROLE_KEY;
-  return supabaseUrl && serviceRoleKey ? createClient(supabaseUrl, serviceRoleKey) : null;
+// Mutations go through the Express API — the service-role key must never be
+// shipped to the browser.
+const apiFetch = async (path: string, options: RequestInit = {}) => {
+  const token = localStorage.getItem('hotel_erp_session') || localStorage.getItem('auth_token');
+  const response = await fetch(`/api${path}`, {
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+      ...(options.headers || {}),
+    },
+  });
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error(body.error || `Request failed (${response.status})`);
+  }
+  return response.json();
 };
 
 type RoomStatus = 'available' | 'occupied' | 'house-use' | 'out-of-order' | 'out-of-service' | 'blocked';
@@ -81,7 +93,6 @@ const RoomAssignment = () => {
   const [statusFilter, setStatusFilter] = useState('');
   const [selectedAssignmentType, setSelectedAssignmentType] = useState('');
   const [selectedRoom, setSelectedRoom] = useState<string | null>(null);
-  const [selectedAssignment, setSelectedAssignment] = useState<string | null>(null);
 
   // Fetch rooms from Supabase
   useEffect(() => {
@@ -127,6 +138,7 @@ const RoomAssignment = () => {
     fetchRooms();
 
     // Set up real-time subscription for room changes
+    if (!supabase) return;
     const subscription = supabase
       .channel('room-changes')
       .on(
@@ -160,19 +172,6 @@ const RoomAssignment = () => {
       'Blocked': 'blocked',
     };
     return statusMap[dbStatus] || 'available';
-  };
-
-  // Helper function to map UI status to database status
-  const mapUIToDBStatus = (uiStatus: RoomStatus): string => {
-    const statusMap: Record<RoomStatus, string> = {
-      'available': 'Vacant Clean',
-      'occupied': 'Occupied Clean',
-      'house-use': 'Occupied Clean', // Use occupied for house use
-      'out-of-order': 'Out of Order',
-      'out-of-service': 'Out of Order',
-      'blocked': 'Out of Order', // Use Out of Order for blocked rooms
-    };
-    return statusMap[uiStatus] || 'Vacant Clean';
   };
 
   // Helper function to extract bed type from features
@@ -227,6 +226,7 @@ const RoomAssignment = () => {
 
   // Refresh data handler
   const handleRefresh = async () => {
+    if (!supabase) return;
     setLoading(true);
     setAssignmentsLoading(true);
     
@@ -300,12 +300,6 @@ const RoomAssignment = () => {
     if (!supabase) return;
 
     try {
-      const adminClient = createAdminClient();
-      if (!adminClient) {
-        alert('Admin client not available. Please configure VITE_SUPABASE_SERVICE_ROLE_KEY');
-        return;
-      }
-      
       // Get all unassigned reservations
       const { data: unassignedReservations, error: fetchError } = await supabase
         .from('reservations')
@@ -326,25 +320,15 @@ const RoomAssignment = () => {
         if (availableRooms.length > 0) {
           // Simple assignment: pick first available room
           const assignedRoom = availableRooms[0];
-          
-          // Update reservation with room assignment
-          const { error: updateError } = await adminClient
-            .from('reservations')
-            .update({ 
-              room_number: assignedRoom.roomNumber,
-              status: 'Confirmed'
-            })
-            .eq('id', reservation.id);
 
-          if (updateError) throw updateError;
+          // Atomic assign via API (server checks overlaps and updates the room)
+          await apiFetch(`/reservations/${reservation.id}/assign-room`, {
+            method: 'POST',
+            body: JSON.stringify({ roomNumber: assignedRoom.roomNumber }),
+          });
 
-          // Update room status
-          const { error: roomUpdateError } = await adminClient
-            .from('rooms')
-            .update({ status: 'Occupied Clean' })
-            .eq('id', assignedRoom.id);
-
-          if (roomUpdateError) throw roomUpdateError;
+          // Mark it used locally so the next reservation picks a different room
+          assignedRoom.status = 'occupied';
         }
       }
 
@@ -366,47 +350,13 @@ const RoomAssignment = () => {
     try {
       console.log('Blocking room:', roomNumber);
       console.log('Selected room ID:', selectedRoom);
-      
-      // Use admin client with RPC function to bypass triggers
-      const adminClient = createAdminClient();
-      if (!adminClient) {
-        alert('Admin client not available. Please configure VITE_SUPABASE_SERVICE_ROLE_KEY');
-        return;
-      }
-      
-      // Try using RPC function to bypass triggers
-      const { error } = await adminClient.rpc('update_room_status_safe', {
-        room_id: selectedRoom,
-        new_status: 'Out of Order'
+
+      await apiFetch(`/front-office/rooms/${selectedRoom}/status`, {
+        method: 'PUT',
+        body: JSON.stringify({ status: 'Out of Order', cancel_reservations: true }),
       });
 
-      if (error) {
-        console.error('RPC error:', error);
-        // Fallback to direct update if RPC doesn't exist
-        const { error: directError } = await adminClient
-          .from('rooms')
-          .update({ status: 'Out of Order' })
-          .eq('id', selectedRoom);
-        
-        if (directError) {
-          console.error('Direct update error:', directError);
-          throw directError;
-        }
-      }
-      
       console.log('Block completed successfully');
-      
-      // Also update any reservations for this room
-      const { error: reservationError } = await adminClient
-        .from('reservations')
-        .update({ status: 'Cancelled' })
-        .eq('room_number', roomNumber)
-        .in('status', ['Confirmed', 'CheckedIn']);
-
-      if (reservationError) {
-        console.error('Reservation update error:', reservationError);
-      }
-      
       await handleRefresh();
       alert(`Room ${roomNumber} has been blocked successfully`);
     } catch (err) {
@@ -424,33 +374,12 @@ const RoomAssignment = () => {
 
     try {
       console.log('Unblocking room:', roomNumber);
-      
-      const adminClient = createAdminClient();
-      if (!adminClient) {
-        alert('Admin client not available. Please configure VITE_SUPABASE_SERVICE_ROLE_KEY');
-        return;
-      }
-      
-      // Try using RPC function to bypass triggers
-      const { error } = await adminClient.rpc('update_room_status_safe', {
-        room_id: selectedRoom,
-        new_status: 'Vacant Clean'
+
+      await apiFetch(`/front-office/rooms/${selectedRoom}/status`, {
+        method: 'PUT',
+        body: JSON.stringify({ status: 'Vacant Clean' }),
       });
 
-      if (error) {
-        console.error('RPC error:', error);
-        // Fallback to direct update
-        const { error: directError } = await adminClient
-          .from('rooms')
-          .update({ status: 'Vacant Clean' })
-          .eq('id', selectedRoom);
-        
-        if (directError) {
-          console.error('Direct update error:', directError);
-          throw directError;
-        }
-      }
-      
       console.log('Unblock completed successfully');
       
       await handleRefresh();
@@ -483,31 +412,10 @@ const RoomAssignment = () => {
         updatedFeatures = [...room.features, 'locked'];
       }
 
-      const adminClient = createAdminClient();
-      if (!adminClient) {
-        alert('Admin client not available. Please configure VITE_SUPABASE_SERVICE_ROLE_KEY');
-        return;
-      }
-      
-      // Try using RPC function to bypass triggers
-      const { error } = await adminClient.rpc('update_room_features_safe', {
-        room_id: selectedRoom,
-        new_features: updatedFeatures
+      await apiFetch(`/front-office/rooms/${selectedRoom}/features`, {
+        method: 'PUT',
+        body: JSON.stringify({ features: updatedFeatures }),
       });
-
-      if (error) {
-        console.error('RPC error:', error);
-        // Fallback to direct update
-        const { error: directError } = await adminClient
-          .from('rooms')
-          .update({ features: updatedFeatures })
-          .eq('id', selectedRoom);
-        
-        if (directError) {
-          console.error('Direct update error:', directError);
-          throw directError;
-        }
-      }
       
       console.log('Lock completed successfully');
       
@@ -535,41 +443,15 @@ const RoomAssignment = () => {
 
     try {
       console.log(`${action} room:`, roomNumber, 'New status:', newStatus);
-      
-      // Use Express API endpoint instead of direct Supabase
-      const token = localStorage.getItem('hotel_erp_session') || localStorage.getItem('auth_token');
-      const response = await fetch('/api/front-office/rooms/' + selectedRoom + '/status', {
+
+      // Setting out of order also releases reservations booked on the room.
+      await apiFetch(`/front-office/rooms/${selectedRoom}/status`, {
         method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({ status: newStatus })
+        body: JSON.stringify({ status: newStatus, cancel_reservations: !isOOO }),
       });
 
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || 'Failed to update room status');
-      }
-      
       console.log('OOO completed successfully');
-      
-      // If setting out of order, cancel any reservations
-      if (!isOOO) {
-        const adminClient = createAdminClient();
-        if (adminClient) {
-          const { error: reservationError } = await adminClient
-            .from('reservations')
-            .update({ status: 'Cancelled' })
-            .eq('room_number', roomNumber)
-            .in('status', ['Confirmed', 'CheckedIn']);
 
-          if (reservationError) {
-            console.error('Reservation update error:', reservationError);
-          }
-        }
-      }
-      
       await handleRefresh();
       alert(`Room ${roomNumber} has been ${action}ed successfully`);
     } catch (err) {
@@ -587,33 +469,14 @@ const RoomAssignment = () => {
     }
 
     try {
-      const adminClient = createAdminClient();
-      if (!adminClient) {
-        alert('Admin client not available. Please configure VITE_SUPABASE_SERVICE_ROLE_KEY');
-        return;
-      }
-      
       const selectedRoomData = rooms.find(r => r.id === selectedRoom);
       if (!selectedRoomData) return;
 
-      // Update reservation with room assignment
-      const { error: updateError } = await adminClient
-        .from('reservations')
-        .update({ 
-          room_number: selectedRoomData.roomNumber,
-          status: 'Confirmed'
-        })
-        .eq('id', assignmentId);
-
-      if (updateError) throw updateError;
-
-      // Update room status
-      const { error: roomUpdateError } = await adminClient
-        .from('rooms')
-        .update({ status: 'Occupied Clean' })
-        .eq('id', selectedRoomData.id);
-
-      if (roomUpdateError) throw roomUpdateError;
+      // Atomic assign via API (server checks overlaps and updates the room)
+      await apiFetch(`/reservations/${assignmentId}/assign-room`, {
+        method: 'POST',
+        body: JSON.stringify({ roomNumber: selectedRoomData.roomNumber }),
+      });
 
       // Clear selection and refresh
       setSelectedRoom(null);
@@ -727,6 +590,7 @@ const RoomAssignment = () => {
     fetchAssignments();
 
     // Set up real-time subscription for reservation changes
+    if (!supabase) return;
     const subscription = supabase
       .channel('reservation-changes')
       .on(

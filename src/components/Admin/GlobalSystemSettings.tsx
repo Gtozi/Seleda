@@ -7,18 +7,18 @@
 
 import React, { useState } from 'react';
 import {
-  Globe, Clock, Mail, Save, CheckCircle2, Settings, Languages,
-  Calendar, Moon, Sun, Bell, FileText, Send, ChevronDown, PenLine, X
+  Globe, Clock, Mail, Save, CheckCircle2, Settings, Calendar, Moon, Sun, Bell, FileText, Send, ChevronDown, PenLine, X, ShieldAlert, AlertTriangle
 } from 'lucide-react';
 import { useERP } from '../../context/ERPContext';
 import type { GlobalHotelSettings } from '../../types/erp';
 
-type SettingsTab = 'localization' | 'night_audit' | 'templates';
+type SettingsTab = 'localization' | 'night_audit' | 'templates' | 'system';
 
 const TAB_META: { id: SettingsTab; label: string; icon: React.ReactNode }[] = [
   { id: 'localization', label: 'Localization', icon: <Globe size={14} /> },
   { id: 'night_audit', label: 'Night Audit', icon: <Moon size={14} /> },
   { id: 'templates', label: 'Email Templates', icon: <Mail size={14} /> },
+  { id: 'system', label: 'System', icon: <Settings size={14} /> },
 ];
 
 export default function GlobalSystemSettings() {
@@ -43,6 +43,7 @@ export default function GlobalSystemSettings() {
         {activeTab === 'localization' && <LocalizationModule />}
         {activeTab === 'night_audit' && <NightAuditModule />}
         {activeTab === 'templates' && <EmailTemplatesModule />}
+        {activeTab === 'system' && <SystemModule />}
       </div>
     </div>
   );
@@ -50,20 +51,49 @@ export default function GlobalSystemSettings() {
 
 function LocalizationModule() {
   const { globalHotelSettings, submitGlobalSettingsChange } = useERP();
+  const [locales, setLocales] = useState<{ code: string; name: string; nativeName?: string }[]>([]);
   const [form, setForm] = useState({
-    timezone: 'Africa/Addis_Ababa',
-    dateFormat: 'YYYY-MM-DD',
-    language: 'en',
-    currency: 'USD',
+    timezone: globalHotelSettings.timezone || 'Africa/Addis_Ababa',
+    dateFormat: globalHotelSettings.dateFormat || 'YYYY-MM-DD',
+    language: globalHotelSettings.defaultLanguage || 'en',
+    currency: globalHotelSettings.baseCurrency || 'USD',
   });
   const [saveStatus, setSaveStatus] = useState<'idle' | 'success'>('idle');
+
+  // Language options come from the live admin_locales registry (enabled rows).
+  React.useEffect(() => {
+    fetch('/api/admin/control/runtime/locales', { credentials: 'include' })
+      .then(r => r.ok ? r.json() : { locales: [] })
+      .then(d => {
+        const rows = Array.isArray(d?.locales) ? d.locales : [];
+        setLocales(rows.map((l: any) => ({ code: l.code, name: l.name, nativeName: l.nativeName })));
+      })
+      .catch(() => {});
+  }, []);
+
+  // Sync the form whenever persisted settings load/change.
+  React.useEffect(() => {
+    setForm({
+      timezone: globalHotelSettings.timezone || 'Africa/Addis_Ababa',
+      dateFormat: globalHotelSettings.dateFormat || 'YYYY-MM-DD',
+      language: globalHotelSettings.defaultLanguage || 'en',
+      currency: globalHotelSettings.baseCurrency || 'USD',
+    });
+  }, [globalHotelSettings.timezone, globalHotelSettings.dateFormat, globalHotelSettings.defaultLanguage, globalHotelSettings.baseCurrency]);
+
+  const languageOptions = locales.length > 0 ? locales : [{ code: 'en', name: 'English' }];
 
   const handleSave = () => {
     submitGlobalSettingsChange(
       'Localization Preferences',
       `Timezone: ${form.timezone}, Date Format: ${form.dateFormat}, Language: ${form.language}, Currency: ${form.currency}`,
       'global-setting',
-      { currency: form.currency }
+      {
+        timezone: form.timezone,
+        dateFormat: form.dateFormat,
+        defaultLanguage: form.language,
+        baseCurrency: form.currency,
+      }
     );
     setSaveStatus('success');
     setTimeout(() => setSaveStatus('idle'), 2500);
@@ -101,10 +131,9 @@ function LocalizationModule() {
             <label className="text-xs font-mono uppercase text-slate-400 font-bold">Default Language</label>
             <select value={form.language} onChange={e => setForm(f => ({ ...f, language: e.target.value }))}
               className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs outline-none">
-              <option value="en">English</option>
-              <option value="am">Amharic</option>
-              <option value="fr">French</option>
-              <option value="ar">Arabic</option>
+              {languageOptions.map(l => (
+                <option key={l.code} value={l.code}>{l.name}{l.nativeName ? ` — ${l.nativeName}` : ''}</option>
+              ))}
             </select>
           </div>
           <div className="space-y-1.5">
@@ -136,18 +165,39 @@ function NightAuditModule() {
   const [form, setForm] = useState({
     autoNightAuditTime: globalHotelSettings.autoNightAuditTime || '02:00',
     enableAutoNightAudit: !!globalHotelSettings.autoNightAuditTime,
-    postRoomCharges: true,
-    generateDailySummary: true,
-    autoCheckinReminders: true,
+    postRoomCharges: globalHotelSettings.nightAuditPostRoomCharges ?? true,
+    generateDailySummary: globalHotelSettings.nightAuditGenerateSummary ?? true,
+    autoCheckinReminders: globalHotelSettings.nightAuditCheckinReminders ?? true,
   });
   const [saveStatus, setSaveStatus] = useState<'idle' | 'success'>('idle');
+
+  // Sync the form whenever persisted settings load/change.
+  React.useEffect(() => {
+    setForm({
+      autoNightAuditTime: globalHotelSettings.autoNightAuditTime || '02:00',
+      enableAutoNightAudit: !!globalHotelSettings.autoNightAuditTime,
+      postRoomCharges: globalHotelSettings.nightAuditPostRoomCharges ?? true,
+      generateDailySummary: globalHotelSettings.nightAuditGenerateSummary ?? true,
+      autoCheckinReminders: globalHotelSettings.nightAuditCheckinReminders ?? true,
+    });
+  }, [
+    globalHotelSettings.autoNightAuditTime,
+    globalHotelSettings.nightAuditPostRoomCharges,
+    globalHotelSettings.nightAuditGenerateSummary,
+    globalHotelSettings.nightAuditCheckinReminders,
+  ]);
 
   const handleSave = () => {
     submitGlobalSettingsChange(
       'Night Audit Schedule',
       `Set automatic night audit time to ${form.autoNightAuditTime} (${form.enableAutoNightAudit ? 'enabled' : 'disabled'})`,
       'global-setting',
-      { autoNightAuditTime: form.enableAutoNightAudit ? form.autoNightAuditTime : undefined }
+      {
+        autoNightAuditTime: form.enableAutoNightAudit ? form.autoNightAuditTime : '',
+        nightAuditPostRoomCharges: form.postRoomCharges,
+        nightAuditGenerateSummary: form.generateDailySummary,
+        nightAuditCheckinReminders: form.autoCheckinReminders,
+      }
     );
     setSaveStatus('success');
     setTimeout(() => setSaveStatus('idle'), 2500);
@@ -173,6 +223,8 @@ function NightAuditModule() {
             enabled={form.postRoomCharges} onChange={v => setForm(f => ({ ...f, postRoomCharges: v }))} />
           <ToggleRow label="Generate daily summary report" description="Create and email the daily revenue and occupancy summary."
             enabled={form.generateDailySummary} onChange={v => setForm(f => ({ ...f, generateDailySummary: v }))} />
+          <ToggleRow label="Auto check-in reminders" description="Send automated reminders to guests ahead of their check-in time."
+            enabled={form.autoCheckinReminders} onChange={v => setForm(f => ({ ...f, autoCheckinReminders: v }))} />
         </div>
       </div>
 
@@ -181,6 +233,106 @@ function NightAuditModule() {
           className="flex items-center gap-2 px-5 py-2.5 rounded-xl text-xs font-sans font-bold text-white bg-indigo-600 hover:bg-indigo-700 transition">
           {saveStatus === 'success' ? <CheckCircle2 size={16} /> : <Save size={16} />}
           {saveStatus === 'success' ? 'Saved' : 'Save Night Audit Settings'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function SystemModule() {
+  const { globalHotelSettings, submitGlobalSettingsChange } = useERP();
+  const [form, setForm] = useState({
+    maintenanceMode: globalHotelSettings.maintenanceMode ?? false,
+    maintenanceMessage:
+      globalHotelSettings.maintenanceMessage ??
+      'The system is undergoing scheduled maintenance. Some features may be temporarily unavailable.',
+    sessionTimeout: globalHotelSettings.sessionTimeout ?? 30,
+  });
+  const [saveStatus, setSaveStatus] = useState<'idle' | 'success'>('idle');
+
+  // Sync the form whenever persisted settings load/change.
+  React.useEffect(() => {
+    setForm({
+      maintenanceMode: globalHotelSettings.maintenanceMode ?? false,
+      maintenanceMessage:
+        globalHotelSettings.maintenanceMessage ??
+        'The system is undergoing scheduled maintenance. Some features may be temporarily unavailable.',
+      sessionTimeout: globalHotelSettings.sessionTimeout ?? 30,
+    });
+  }, [globalHotelSettings.maintenanceMode, globalHotelSettings.maintenanceMessage, globalHotelSettings.sessionTimeout]);
+
+  const handleSave = () => {
+    submitGlobalSettingsChange(
+      'System Settings Update',
+      `Maintenance mode: ${form.maintenanceMode ? 'on' : 'off'}, Session timeout: ${form.sessionTimeout} min`,
+      'global-setting',
+      {
+        maintenanceMode: form.maintenanceMode,
+        maintenanceMessage: form.maintenanceMessage,
+        sessionTimeout: Number(form.sessionTimeout) || 30,
+      }
+    );
+    setSaveStatus('success');
+    setTimeout(() => setSaveStatus('idle'), 2500);
+  };
+
+  return (
+    <div className="space-y-6 animate-fade-in pt-4 max-w-5xl mx-auto">
+      {form.maintenanceMode && (
+        <div className="bg-rose-50 border border-rose-200 rounded-2xl px-5 py-3 flex items-center gap-2 text-sm text-rose-700 font-medium">
+          <AlertTriangle size={16} /> Maintenance mode is currently <strong>active</strong>. A banner is shown to all users.
+        </div>
+      )}
+
+      <div className="bg-white border border-slate-200 rounded-3xl p-6 shadow-sm">
+        <h2 className="text-base font-sans font-black text-slate-900 tracking-tight flex items-center gap-2 mb-4">
+          <ShieldAlert size={18} className="text-rose-500" /> Maintenance Mode
+        </h2>
+        <ToggleRow
+          label="Enable maintenance mode"
+          description="Displays a system-wide banner to every signed-in user. Administrators retain full access."
+          enabled={form.maintenanceMode}
+          onChange={v => setForm(f => ({ ...f, maintenanceMode: v }))}
+        />
+        <div className="mt-3 space-y-1.5">
+          <label className="text-xs font-mono uppercase text-slate-400 font-bold">Banner message</label>
+          <textarea
+            value={form.maintenanceMessage}
+            onChange={e => setForm(f => ({ ...f, maintenanceMessage: e.target.value }))}
+            rows={2}
+            className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-1 focus:ring-indigo-500 transition resize-none"
+          />
+        </div>
+      </div>
+
+      <div className="bg-white border border-slate-200 rounded-3xl p-6 shadow-sm">
+        <h2 className="text-base font-sans font-black text-slate-900 tracking-tight flex items-center gap-2 mb-4">
+          <Clock size={18} className="text-amber-500" /> Session Policy
+        </h2>
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <p className="text-sm font-bold text-slate-800">Idle session timeout</p>
+            <p className="text-xs text-slate-500 mt-0.5">Minutes of inactivity before users are signed out.</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <input
+              type="number"
+              min={5}
+              max={480}
+              value={form.sessionTimeout}
+              onChange={e => setForm(f => ({ ...f, sessionTimeout: Number(e.target.value) }))}
+              className="w-24 px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold text-right outline-none focus:ring-1 focus:ring-indigo-500"
+            />
+            <span className="text-xs font-bold text-slate-400 uppercase">min</span>
+          </div>
+        </div>
+      </div>
+
+      <div className="flex justify-end">
+        <button onClick={handleSave}
+          className="flex items-center gap-2 px-5 py-2.5 rounded-xl text-xs font-sans font-bold text-white bg-indigo-600 hover:bg-indigo-700 transition">
+          {saveStatus === 'success' ? <CheckCircle2 size={16} /> : <Save size={16} />}
+          {saveStatus === 'success' ? 'Saved' : 'Save System Settings'}
         </button>
       </div>
     </div>

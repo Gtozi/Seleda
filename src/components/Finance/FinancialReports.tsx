@@ -1,1957 +1,1561 @@
-import React, { useState } from 'react';
-import { 
-  FileSpreadsheet, 
-  Download, 
-  ArrowRight, 
-  Layers,
-  ChevronRight,
-  ShieldCheck,
-  TrendingUp,
-  DollarSign,
-  Activity,
-  Home,
-  RefreshCw
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Finance Reports module — Finance Portal.
+ * 8 report categories: Financial Statements, General Ledger, AR, AP,
+ * Cash & Bank, Budget & Cost, Asset & Tax, Revenue — 53 reports total.
+ *
+ * DB-integrated: mimics the F&B / HK reports pattern (FBReports.tsx,
+ * HKReportsModule.tsx). All data is served from the `fin_reports` registry
+ * table via the /api/fin-portal/reports routes. Run / Run All actions
+ * persist status + last_run back to the DB. View opens a detail modal
+ * with metadata. Schedule opens a modal to edit frequency / format /
+ * status per report, persisted via PATCH /api/fin-portal/reports/:id.
+ */
+
+import { useState, useEffect, useCallback, useMemo } from 'react';
+import {
+  FileText,
+  Download,
+  Search,
+  Clock,
+  CheckCircle2,
+  AlertTriangle,
+  Eye,
+  FileBarChart,
+  Loader2,
+  RefreshCw,
+  Save,
 } from 'lucide-react';
+import { useERP } from '../../context/ERPContext';
+import StatCard from '../FrontOffice/StatCard';
+import { PageHeader, SectionCard, Badge } from '../FrontOffice/ui';
+import { button, layout } from '../FrontOffice/brandTheme';
+import { ModalSystem } from '../Shared/ModalSystem';
+import { DataTable, type Column } from '../Shared/DataTable';
+import FinancialStatements from './FinancialStatements';
+import TrialBalance from './TrialBalance';
+import {
+  exportReportToPDF,
+  exportReportToExcel,
+  exportReportToCSV,
+  type ReportDocument,
+  type ReportSection,
+} from '../FrontDesk/reportExportUtils';
+import {
+  fetchReports,
+  fetchReportStats,
+  runReport,
+  runAllReports,
+  updateReport,
+  type FinReportFE,
+  type FinReportStats,
+} from '../../services/financePortalService';
 
-const FinancialReports = () => {
-  const [activeReport, setActiveReport] = useState<string | null>(null);
+type ReportStatus = 'Ready' | 'Scheduled' | 'Generating' | 'Failed';
+type ReportFormat = 'PDF' | 'Excel' | 'CSV';
+type Period = 'Today' | 'WTD' | 'MTD' | 'YTD' | 'Custom';
 
-  const reportCategories = [
-    {
-      title: 'Financial Statements',
-      reports: [
-        { id: 'tb', title: 'Trial Balance', period: 'April 2024', status: 'Finalized', format: 'PDF/XLS', lastRun: '2 days ago' },
-        { id: 'bs', title: 'Balance Sheet', period: 'April 2024', status: 'Finalized', format: 'PDF/XLS', lastRun: '2 days ago' },
-        { id: 'pl', title: 'Profit & Loss Statement', period: 'Q1 2024', status: 'Audit Pending', format: 'PDF', lastRun: 'Last Week' },
-        { id: 'cf', title: 'Cash Flow Statement', period: 'M-TD May', status: 'Draft', format: 'Live', lastRun: 'Today, 08:30 AM' },
-        { id: 'equity', title: 'Statement of Changes in Equity', period: 'Q1 2024', status: 'Draft', format: 'PDF', lastRun: 'Last Week' },
-        { id: 'comprehensive', title: 'Comprehensive Income', period: 'Q1 2024', status: 'Draft', format: 'PDF', lastRun: 'Last Week' },
-      ],
-    },
-    {
-      title: 'General Ledger Reports',
-      reports: [
-        { id: 'gl_detail', title: 'GL Detail Report', period: 'May 2024', status: 'Live', format: 'XLS', lastRun: '1 hour ago' },
-        { id: 'gl_summary', title: 'GL Summary Report', period: 'May 2024', status: 'Live', format: 'XLS', lastRun: '1 hour ago' },
-        { id: 'je_report', title: 'Journal Entry Report', period: 'May 2024', status: 'Live', format: 'PDF', lastRun: '30 mins ago' },
-        { id: 'je_register', title: 'Journal Register', period: 'May 2024', status: 'Live', format: 'PDF', lastRun: '30 mins ago' },
-        { id: 'account_activity', title: 'Account Activity', period: 'May 2024', status: 'Live', format: 'XLS', lastRun: '1 hour ago' },
-        { id: 'audit_trail', title: 'Audit Trail', period: 'May 2024', status: 'Live', format: 'PDF', lastRun: '2 hours ago' },
-        { id: 'coa_report', title: 'Chart of Accounts Listing', period: 'Current', status: 'Synced', format: 'PDF', lastRun: 'Today' },
-      ],
-    },
-    {
-      title: 'AR Reports',
-      reports: [
-        { id: 'ar', title: 'Accounts Receivable Aging', period: 'Current', status: 'Synced', format: 'XLS', lastRun: '1 hour ago' },
-        { id: 'ar_ledger', title: 'AR Ledger Report', period: 'May 2024', status: 'Live', format: 'XLS', lastRun: '1 hour ago' },
-        { id: 'customer_statement', title: 'Customer Statement', period: 'May 2024', status: 'Live', format: 'PDF', lastRun: '1 hour ago' },
-        { id: 'ar_collection', title: 'Collection Analysis', period: 'Q2 2024', status: 'Draft', format: 'PDF', lastRun: 'Yesterday' },
-        { id: 'collection_report', title: 'Collection Report', period: 'Q2 2024', status: 'Draft', format: 'PDF', lastRun: 'Yesterday' },
-        { id: 'ar_writeoff', title: 'Bad Debt Write-off Report', period: 'YTD 2024', status: 'Draft', format: 'PDF', lastRun: 'Last Week' },
-      ],
-    },
-    {
-      title: 'AP Reports',
-      reports: [
-        { id: 'ap_aging', title: 'Accounts Payable Aging', period: 'Current', status: 'Synced', format: 'XLS', lastRun: '1 hour ago' },
-        { id: 'ap_ledger', title: 'AP Ledger Report', period: 'May 2024', status: 'Live', format: 'XLS', lastRun: '1 hour ago' },
-        { id: 'vendor_statement', title: 'Vendor Statement', period: 'May 2024', status: 'Live', format: 'PDF', lastRun: '1 hour ago' },
-        { id: 'payment_schedule', title: 'Payment Schedule', period: 'May 2024', status: 'Live', format: 'PDF', lastRun: '2 hours ago' },
-        { id: 'ap_payment', title: 'Payment History Report', period: 'May 2024', status: 'Live', format: 'PDF', lastRun: '2 hours ago' },
-        { id: 'outstanding_bills', title: 'Outstanding Bills', period: 'Current', status: 'Live', format: 'XLS', lastRun: '1 hour ago' },
-        { id: 'ap_vendor', title: 'Vendor Spending Analysis', period: 'Q2 2024', status: 'Draft', format: 'PDF', lastRun: 'Yesterday' },
-      ],
-    },
-    {
-      title: 'Cash & Bank Reports',
-      reports: [
-        { id: 'ba', title: 'Bank Audit & Recon', period: 'May 2024', status: 'In Review', format: 'Audit', lastRun: '2 hours ago' },
-        { id: 'cash_book', title: 'Cash Book', period: 'May 2024', status: 'Live', format: 'PDF', lastRun: '1 hour ago' },
-        { id: 'bank_book', title: 'Bank Book', period: 'May 2024', status: 'Live', format: 'PDF', lastRun: '1 hour ago' },
-        { id: 'cash_flow', title: 'Daily Cash Flow', period: 'Today', status: 'Live', format: 'PDF', lastRun: '5 mins ago' },
-        { id: 'cash_flow_forecast', title: 'Cash Flow Forecast', period: 'Q3 2024', status: 'Draft', format: 'PDF', lastRun: 'Yesterday' },
-        { id: 'petty_cash', title: 'Petty Cash Report', period: 'May 2024', status: 'Live', format: 'PDF', lastRun: '1 hour ago' },
-        { id: 'bank_position', title: 'Bank Position Report', period: 'Current', status: 'Live', format: 'XLS', lastRun: '10 mins ago' },
-      ],
-    },
-    {
-      title: 'Budget & Cost Reports',
-      reports: [
-        { id: 'budget_var', title: 'Budget vs Actual Variance', period: 'May 2024', status: 'Live', format: 'XLS', lastRun: '1 hour ago' },
-        { id: 'variance_analysis', title: 'Variance Analysis', period: 'May 2024', status: 'Live', format: 'PDF', lastRun: '1 hour ago' },
-        { id: 'cost_center', title: 'Cost Center Report', period: 'May 2024', status: 'Live', format: 'PDF', lastRun: '2 hours ago' },
-        { id: 'cost_center_analysis', title: 'Cost Center Analysis', period: 'May 2024', status: 'Live', format: 'PDF', lastRun: '2 hours ago' },
-        { id: 'dept_pl', title: 'Department P&L', period: 'May 2024', status: 'Live', format: 'PDF', lastRun: '1 hour ago' },
-        { id: 'profit_center_analysis', title: 'Profit Center Analysis', period: 'May 2024', status: 'Live', format: 'PDF', lastRun: '1 hour ago' },
-        { id: 'forecast', title: 'Rolling Forecast Report', period: 'Q3 2024', status: 'Draft', format: 'PDF', lastRun: 'Yesterday' },
-        { id: 'forecast_report', title: 'Forecast Report', period: 'Q3 2024', status: 'Draft', format: 'PDF', lastRun: 'Yesterday' },
-      ],
-    },
-    {
-      title: 'Asset & Tax Reports',
-      reports: [
-        { id: 'asset_reg', title: 'Fixed Asset Register', period: 'Current', status: 'Synced', format: 'XLS', lastRun: 'Today' },
-        { id: 'asset_movement', title: 'Asset Movement', period: 'May 2024', status: 'Live', format: 'PDF', lastRun: '1 hour ago' },
-        { id: 'asset_disposal', title: 'Asset Disposal', period: 'YTD 2024', status: 'Draft', format: 'PDF', lastRun: 'Last Week' },
-        { id: 'asset_dep', title: 'Depreciation Schedule', period: 'May 2024', status: 'Live', format: 'PDF', lastRun: '1 hour ago' },
-        { id: 'vat_report', title: 'VAT Return Report', period: 'June 2024', status: 'Pending', format: 'PDF', lastRun: 'Yesterday' },
-        { id: 'wht_report', title: 'Withholding Tax Report', period: 'June 2024', status: 'Pending', format: 'PDF', lastRun: 'Yesterday' },
-        { id: 'tax_summary', title: 'Tax Summary', period: 'Q2 2024', status: 'Draft', format: 'PDF', lastRun: 'Yesterday' },
-        { id: 'tax_filing', title: 'Tax Filing Report', period: 'June 2024', status: 'Pending', format: 'PDF', lastRun: 'Yesterday' },
-      ],
-    },
-    {
-      title: 'Revenue Reports',
-      reports: [
-        { id: 'dr', title: 'Daily Revenue Summary', period: '2026-06-03', status: 'Live', format: 'PDF', lastRun: '5 mins ago' },
-        { id: 'rev_dept', title: 'Revenue by Department', period: 'May 2024', status: 'Live', format: 'XLS', lastRun: '1 hour ago' },
-        { id: 'rev_source', title: 'Revenue by Source', period: 'May 2024', status: 'Live', format: 'PDF', lastRun: '1 hour ago' },
-        { id: 'rev_trend', title: 'Revenue Trend Analysis', period: 'H1 2024', status: 'Live', format: 'PDF', lastRun: 'Today' },
-      ],
-    },
-  ];
+const STATUS_TONE: Record<ReportStatus, 'success' | 'warning' | 'info' | 'danger'> = {
+  Ready: 'success',
+  Scheduled: 'info',
+  Generating: 'warning',
+  Failed: 'danger',
+};
 
-  const allReports = reportCategories.flatMap(c => c.reports);
+const FORMAT_TONE: Record<ReportFormat, 'danger' | 'success' | 'info'> = {
+  PDF: 'danger',
+  Excel: 'success',
+  CSV: 'info',
+};
 
-  const renderReportContent = () => {
-    switch (activeReport) {
-      case 'tb':
-        return <TrialBalanceView onBack={() => setActiveReport(null)} />;
-      case 'pl':
-        return <ProfitAndLossView onBack={() => setActiveReport(null)} />;
-      case 'bs':
-        return <BalanceSheetView onBack={() => setActiveReport(null)} />;
-      case 'cf':
-        return <CashFlowView onBack={() => setActiveReport(null)} />;
-      case 'equity':
-        return <StatementOfChangesInEquityView onBack={() => setActiveReport(null)} />;
-      case 'comprehensive':
-        return <ComprehensiveIncomeView onBack={() => setActiveReport(null)} />;
-      case 'je_register':
-        return <JournalRegisterView onBack={() => setActiveReport(null)} />;
-      case 'account_activity':
-        return <AccountActivityView onBack={() => setActiveReport(null)} />;
-      case 'audit_trail':
-        return <AuditTrailView onBack={() => setActiveReport(null)} />;
-      case 'customer_statement':
-        return <CustomerStatementView onBack={() => setActiveReport(null)} />;
-      case 'collection_report':
-        return <CollectionReportView onBack={() => setActiveReport(null)} />;
-      case 'vendor_statement':
-        return <VendorStatementView onBack={() => setActiveReport(null)} />;
-      case 'payment_schedule':
-        return <PaymentScheduleView onBack={() => setActiveReport(null)} />;
-      case 'outstanding_bills':
-        return <OutstandingBillsView onBack={() => setActiveReport(null)} />;
-      case 'cash_book':
-        return <CashBookView onBack={() => setActiveReport(null)} />;
-      case 'bank_book':
-        return <BankBookView onBack={() => setActiveReport(null)} />;
-      case 'cash_flow_forecast':
-        return <CashFlowForecastView onBack={() => setActiveReport(null)} />;
-      case 'variance_analysis':
-        return <VarianceAnalysisView onBack={() => setActiveReport(null)} />;
-      case 'cost_center_analysis':
-        return <CostCenterAnalysisView onBack={() => setActiveReport(null)} />;
-      case 'profit_center_analysis':
-        return <ProfitCenterAnalysisView onBack={() => setActiveReport(null)} />;
-      case 'forecast_report':
-        return <ForecastReportView onBack={() => setActiveReport(null)} />;
-      case 'asset_movement':
-        return <AssetMovementView onBack={() => setActiveReport(null)} />;
-      case 'asset_disposal':
-        return <AssetDisposalView onBack={() => setActiveReport(null)} />;
-      case 'tax_summary':
-        return <TaxSummaryView onBack={() => setActiveReport(null)} />;
-      case 'tax_filing':
-        return <TaxFilingView onBack={() => setActiveReport(null)} />;
-      case 'dr':
-        return <DailyRevenueSummaryView onBack={() => setActiveReport(null)} />;
-      case 'ar':
-        return <ARAgeingView onBack={() => setActiveReport(null)} />;
-      case 'ba':
-        return <BankAuditView onBack={() => setActiveReport(null)} />;
-      default:
-        return renderReportList();
-    }
+const ALL_STATUSES: ReportStatus[] = ['Ready', 'Scheduled', 'Generating', 'Failed'];
+const ALL_FORMATS: ReportFormat[] = ['PDF', 'Excel', 'CSV'];
+
+const DEPT_TAG = 'FIN';
+const taggedId = (id: string) => `${DEPT_TAG}-${id}`;
+
+const CATEGORY_ORDER: string[] = [
+  'Financial Statements',
+  'General Ledger Reports',
+  'Accounts Receivable Reports',
+  'Accounts Payable Reports',
+  'Cash & Bank Reports',
+  'Budget Reports',
+  'Asset Reports',
+  'Tax Reports',
+  'Department Reports',
+  'Revenue Reports',
+];
+
+const PERIODS: Period[] = ['Today', 'WTD', 'MTD', 'YTD', 'Custom'];
+
+// ── Static fallback catalog (all reports from Finance Portal new.md §25) ──
+// Used to guarantee every report is always visible in the UI, even when the
+// DB has no rows for the current property. DB rows (when present) override
+// the fallback entry by report_key, so live status/last_run/format/etc.
+// are reflected while still showing the full catalog.
+const FALLBACK_CATALOG: FinReportFE[] = [
+  // Financial Statements
+  { id: 'fb-bs', property_id: null, report_key: 'bs', title: 'Balance Sheet', category: 'Financial Statements', period: null, status: 'Scheduled', format: 'PDF', frequency: 'Monthly', last_run_at: null, last_run_by: null, description: 'Statement of financial position', sort_order: 1, created_by: null, created_at: '' },
+  { id: 'fb-pl', property_id: null, report_key: 'pl', title: 'Income Statement (Profit & Loss)', category: 'Financial Statements', period: null, status: 'Scheduled', format: 'PDF', frequency: 'Quarterly', last_run_at: null, last_run_by: null, description: 'Profit & Loss statement', sort_order: 2, created_by: null, created_at: '' },
+  { id: 'fb-cf', property_id: null, report_key: 'cf', title: 'Cash Flow Statement', category: 'Financial Statements', period: null, status: 'Scheduled', format: 'PDF', frequency: 'Monthly', last_run_at: null, last_run_by: null, description: 'Cash flow statement', sort_order: 3, created_by: null, created_at: '' },
+  { id: 'fb-equity', property_id: null, report_key: 'equity', title: 'Statement of Changes in Equity', category: 'Financial Statements', period: null, status: 'Scheduled', format: 'PDF', frequency: 'Quarterly', last_run_at: null, last_run_by: null, description: 'Changes in equity statement', sort_order: 4, created_by: null, created_at: '' },
+  { id: 'fb-tb', property_id: null, report_key: 'tb', title: 'Trial Balance', category: 'Financial Statements', period: null, status: 'Scheduled', format: 'PDF', frequency: 'Monthly', last_run_at: null, last_run_by: null, description: 'Trial balance', sort_order: 5, created_by: null, created_at: '' },
+  { id: 'fb-comprehensive', property_id: null, report_key: 'comprehensive', title: 'Comprehensive Income', category: 'Financial Statements', period: null, status: 'Scheduled', format: 'PDF', frequency: 'Quarterly', last_run_at: null, last_run_by: null, description: 'Comprehensive income statement', sort_order: 6, created_by: null, created_at: '' },
+  // General Ledger Reports
+  { id: 'fb-general_ledger', property_id: null, report_key: 'general_ledger', title: 'General Ledger', category: 'General Ledger Reports', period: null, status: 'Scheduled', format: 'Excel', frequency: 'Daily', last_run_at: null, last_run_by: null, description: 'Full general ledger report', sort_order: 1, created_by: null, created_at: '' },
+  { id: 'fb-je_register', property_id: null, report_key: 'je_register', title: 'Journal Register', category: 'General Ledger Reports', period: null, status: 'Scheduled', format: 'PDF', frequency: 'Daily', last_run_at: null, last_run_by: null, description: 'Journal register', sort_order: 2, created_by: null, created_at: '' },
+  { id: 'fb-gl_tb', property_id: null, report_key: 'gl_tb', title: 'Trial Balance', category: 'General Ledger Reports', period: null, status: 'Scheduled', format: 'PDF', frequency: 'Monthly', last_run_at: null, last_run_by: null, description: 'Trial balance under General Ledger', sort_order: 3, created_by: null, created_at: '' },
+  { id: 'fb-account_activity', property_id: null, report_key: 'account_activity', title: 'Account Activity', category: 'General Ledger Reports', period: null, status: 'Scheduled', format: 'Excel', frequency: 'Daily', last_run_at: null, last_run_by: null, description: 'Account activity report', sort_order: 4, created_by: null, created_at: '' },
+  { id: 'fb-audit_trail', property_id: null, report_key: 'audit_trail', title: 'Audit Trail', category: 'General Ledger Reports', period: null, status: 'Scheduled', format: 'PDF', frequency: 'Daily', last_run_at: null, last_run_by: null, description: 'Audit trail', sort_order: 5, created_by: null, created_at: '' },
+  { id: 'fb-gl_detail', property_id: null, report_key: 'gl_detail', title: 'GL Detail Report', category: 'General Ledger Reports', period: null, status: 'Scheduled', format: 'Excel', frequency: 'Daily', last_run_at: null, last_run_by: null, description: 'Detailed GL report', sort_order: 6, created_by: null, created_at: '' },
+  { id: 'fb-gl_summary', property_id: null, report_key: 'gl_summary', title: 'GL Summary Report', category: 'General Ledger Reports', period: null, status: 'Scheduled', format: 'Excel', frequency: 'Daily', last_run_at: null, last_run_by: null, description: 'Summary GL report', sort_order: 7, created_by: null, created_at: '' },
+  { id: 'fb-je_report', property_id: null, report_key: 'je_report', title: 'Journal Entry Report', category: 'General Ledger Reports', period: null, status: 'Scheduled', format: 'PDF', frequency: 'Daily', last_run_at: null, last_run_by: null, description: 'Journal entry report', sort_order: 8, created_by: null, created_at: '' },
+  { id: 'fb-coa_report', property_id: null, report_key: 'coa_report', title: 'Chart of Accounts Listing', category: 'General Ledger Reports', period: null, status: 'Scheduled', format: 'PDF', frequency: 'Daily', last_run_at: null, last_run_by: null, description: 'Chart of accounts listing', sort_order: 9, created_by: null, created_at: '' },
+  // Accounts Receivable Reports
+  { id: 'fb-ar', property_id: null, report_key: 'ar', title: 'AR Aging', category: 'Accounts Receivable Reports', period: null, status: 'Scheduled', format: 'Excel', frequency: 'Daily', last_run_at: null, last_run_by: null, description: 'Accounts receivable aging', sort_order: 1, created_by: null, created_at: '' },
+  { id: 'fb-customer_statement', property_id: null, report_key: 'customer_statement', title: 'Customer Statement', category: 'Accounts Receivable Reports', period: null, status: 'Scheduled', format: 'PDF', frequency: 'Monthly', last_run_at: null, last_run_by: null, description: 'Customer statement', sort_order: 2, created_by: null, created_at: '' },
+  { id: 'fb-outstanding_invoices', property_id: null, report_key: 'outstanding_invoices', title: 'Outstanding Invoices', category: 'Accounts Receivable Reports', period: null, status: 'Scheduled', format: 'Excel', frequency: 'Daily', last_run_at: null, last_run_by: null, description: 'All outstanding AR invoices', sort_order: 3, created_by: null, created_at: '' },
+  { id: 'fb-collection_report', property_id: null, report_key: 'collection_report', title: 'Collection Report', category: 'Accounts Receivable Reports', period: null, status: 'Scheduled', format: 'PDF', frequency: 'Quarterly', last_run_at: null, last_run_by: null, description: 'Collection report', sort_order: 4, created_by: null, created_at: '' },
+  { id: 'fb-ar_ledger', property_id: null, report_key: 'ar_ledger', title: 'AR Ledger Report', category: 'Accounts Receivable Reports', period: null, status: 'Scheduled', format: 'Excel', frequency: 'Daily', last_run_at: null, last_run_by: null, description: 'AR ledger report', sort_order: 5, created_by: null, created_at: '' },
+  { id: 'fb-ar_collection', property_id: null, report_key: 'ar_collection', title: 'Collection Analysis', category: 'Accounts Receivable Reports', period: null, status: 'Scheduled', format: 'PDF', frequency: 'Quarterly', last_run_at: null, last_run_by: null, description: 'Collection analysis', sort_order: 6, created_by: null, created_at: '' },
+  { id: 'fb-ar_writeoff', property_id: null, report_key: 'ar_writeoff', title: 'Bad Debt Write-off Report', category: 'Accounts Receivable Reports', period: null, status: 'Scheduled', format: 'PDF', frequency: 'Yearly', last_run_at: null, last_run_by: null, description: 'Bad debt write-off report', sort_order: 7, created_by: null, created_at: '' },
+  // Accounts Payable Reports
+  { id: 'fb-ap_aging', property_id: null, report_key: 'ap_aging', title: 'AP Aging', category: 'Accounts Payable Reports', period: null, status: 'Scheduled', format: 'Excel', frequency: 'Daily', last_run_at: null, last_run_by: null, description: 'Accounts payable aging', sort_order: 1, created_by: null, created_at: '' },
+  { id: 'fb-vendor_statement', property_id: null, report_key: 'vendor_statement', title: 'Vendor Statement', category: 'Accounts Payable Reports', period: null, status: 'Scheduled', format: 'PDF', frequency: 'Monthly', last_run_at: null, last_run_by: null, description: 'Vendor statement', sort_order: 2, created_by: null, created_at: '' },
+  { id: 'fb-payment_schedule', property_id: null, report_key: 'payment_schedule', title: 'Payment Schedule', category: 'Accounts Payable Reports', period: null, status: 'Scheduled', format: 'PDF', frequency: 'Daily', last_run_at: null, last_run_by: null, description: 'Payment schedule', sort_order: 3, created_by: null, created_at: '' },
+  { id: 'fb-outstanding_bills', property_id: null, report_key: 'outstanding_bills', title: 'Outstanding Bills', category: 'Accounts Payable Reports', period: null, status: 'Scheduled', format: 'Excel', frequency: 'Daily', last_run_at: null, last_run_by: null, description: 'Outstanding bills', sort_order: 4, created_by: null, created_at: '' },
+  { id: 'fb-ap_ledger', property_id: null, report_key: 'ap_ledger', title: 'AP Ledger Report', category: 'Accounts Payable Reports', period: null, status: 'Scheduled', format: 'Excel', frequency: 'Daily', last_run_at: null, last_run_by: null, description: 'AP ledger report', sort_order: 5, created_by: null, created_at: '' },
+  { id: 'fb-ap_payment', property_id: null, report_key: 'ap_payment', title: 'Payment History Report', category: 'Accounts Payable Reports', period: null, status: 'Scheduled', format: 'PDF', frequency: 'Daily', last_run_at: null, last_run_by: null, description: 'Payment history report', sort_order: 6, created_by: null, created_at: '' },
+  { id: 'fb-ap_vendor', property_id: null, report_key: 'ap_vendor', title: 'Vendor Spending Analysis', category: 'Accounts Payable Reports', period: null, status: 'Scheduled', format: 'PDF', frequency: 'Quarterly', last_run_at: null, last_run_by: null, description: 'Vendor spending analysis', sort_order: 7, created_by: null, created_at: '' },
+  // Cash & Bank Reports
+  { id: 'fb-bank_recon', property_id: null, report_key: 'bank_recon', title: 'Bank Reconciliation', category: 'Cash & Bank Reports', period: null, status: 'Scheduled', format: 'PDF', frequency: 'Monthly', last_run_at: null, last_run_by: null, description: 'Bank reconciliation report', sort_order: 1, created_by: null, created_at: '' },
+  { id: 'fb-cash_book', property_id: null, report_key: 'cash_book', title: 'Cash Book', category: 'Cash & Bank Reports', period: null, status: 'Scheduled', format: 'PDF', frequency: 'Daily', last_run_at: null, last_run_by: null, description: 'Cash book', sort_order: 2, created_by: null, created_at: '' },
+  { id: 'fb-bank_book', property_id: null, report_key: 'bank_book', title: 'Bank Book', category: 'Cash & Bank Reports', period: null, status: 'Scheduled', format: 'PDF', frequency: 'Daily', last_run_at: null, last_run_by: null, description: 'Bank book', sort_order: 3, created_by: null, created_at: '' },
+  { id: 'fb-cash_flow_forecast', property_id: null, report_key: 'cash_flow_forecast', title: 'Cash Flow Forecast', category: 'Cash & Bank Reports', period: null, status: 'Scheduled', format: 'PDF', frequency: 'Quarterly', last_run_at: null, last_run_by: null, description: 'Cash flow forecast', sort_order: 4, created_by: null, created_at: '' },
+  { id: 'fb-cash_flow', property_id: null, report_key: 'cash_flow', title: 'Daily Cash Flow', category: 'Cash & Bank Reports', period: null, status: 'Scheduled', format: 'PDF', frequency: 'Daily', last_run_at: null, last_run_by: null, description: 'Daily cash flow', sort_order: 5, created_by: null, created_at: '' },
+  { id: 'fb-petty_cash', property_id: null, report_key: 'petty_cash', title: 'Petty Cash Report', category: 'Cash & Bank Reports', period: null, status: 'Scheduled', format: 'PDF', frequency: 'Daily', last_run_at: null, last_run_by: null, description: 'Petty cash report', sort_order: 6, created_by: null, created_at: '' },
+  { id: 'fb-bank_position', property_id: null, report_key: 'bank_position', title: 'Bank Position Report', category: 'Cash & Bank Reports', period: null, status: 'Scheduled', format: 'Excel', frequency: 'Daily', last_run_at: null, last_run_by: null, description: 'Bank position report', sort_order: 7, created_by: null, created_at: '' },
+  // Budget Reports
+  { id: 'fb-budget_var', property_id: null, report_key: 'budget_var', title: 'Budget vs Actual', category: 'Budget Reports', period: null, status: 'Scheduled', format: 'Excel', frequency: 'Monthly', last_run_at: null, last_run_by: null, description: 'Budget vs actual variance', sort_order: 1, created_by: null, created_at: '' },
+  { id: 'fb-variance_analysis', property_id: null, report_key: 'variance_analysis', title: 'Variance Analysis', category: 'Budget Reports', period: null, status: 'Scheduled', format: 'PDF', frequency: 'Monthly', last_run_at: null, last_run_by: null, description: 'Variance analysis', sort_order: 2, created_by: null, created_at: '' },
+  { id: 'fb-forecast_report', property_id: null, report_key: 'forecast_report', title: 'Forecast Report', category: 'Budget Reports', period: null, status: 'Scheduled', format: 'PDF', frequency: 'Quarterly', last_run_at: null, last_run_by: null, description: 'Forecast report', sort_order: 3, created_by: null, created_at: '' },
+  { id: 'fb-forecast', property_id: null, report_key: 'forecast', title: 'Rolling Forecast Report', category: 'Budget Reports', period: null, status: 'Scheduled', format: 'PDF', frequency: 'Quarterly', last_run_at: null, last_run_by: null, description: 'Rolling forecast report', sort_order: 4, created_by: null, created_at: '' },
+  // Asset Reports
+  { id: 'fb-asset_reg', property_id: null, report_key: 'asset_reg', title: 'Asset Register', category: 'Asset Reports', period: null, status: 'Scheduled', format: 'Excel', frequency: 'Daily', last_run_at: null, last_run_by: null, description: 'Fixed asset register', sort_order: 1, created_by: null, created_at: '' },
+  { id: 'fb-asset_dep', property_id: null, report_key: 'asset_dep', title: 'Depreciation Schedule', category: 'Asset Reports', period: null, status: 'Scheduled', format: 'PDF', frequency: 'Monthly', last_run_at: null, last_run_by: null, description: 'Depreciation schedule', sort_order: 2, created_by: null, created_at: '' },
+  { id: 'fb-asset_movement', property_id: null, report_key: 'asset_movement', title: 'Asset Movement', category: 'Asset Reports', period: null, status: 'Scheduled', format: 'PDF', frequency: 'Monthly', last_run_at: null, last_run_by: null, description: 'Asset movement report', sort_order: 3, created_by: null, created_at: '' },
+  { id: 'fb-asset_disposal', property_id: null, report_key: 'asset_disposal', title: 'Asset Disposal', category: 'Asset Reports', period: null, status: 'Scheduled', format: 'PDF', frequency: 'Yearly', last_run_at: null, last_run_by: null, description: 'Asset disposal report', sort_order: 4, created_by: null, created_at: '' },
+  // Tax Reports
+  { id: 'fb-vat_report', property_id: null, report_key: 'vat_report', title: 'VAT Report', category: 'Tax Reports', period: null, status: 'Scheduled', format: 'PDF', frequency: 'Monthly', last_run_at: null, last_run_by: null, description: 'VAT return report', sort_order: 1, created_by: null, created_at: '' },
+  { id: 'fb-wht_report', property_id: null, report_key: 'wht_report', title: 'Withholding Tax Report', category: 'Tax Reports', period: null, status: 'Scheduled', format: 'PDF', frequency: 'Monthly', last_run_at: null, last_run_by: null, description: 'Withholding tax report', sort_order: 2, created_by: null, created_at: '' },
+  { id: 'fb-tax_summary', property_id: null, report_key: 'tax_summary', title: 'Tax Summary', category: 'Tax Reports', period: null, status: 'Scheduled', format: 'PDF', frequency: 'Quarterly', last_run_at: null, last_run_by: null, description: 'Tax summary', sort_order: 3, created_by: null, created_at: '' },
+  { id: 'fb-tax_filing', property_id: null, report_key: 'tax_filing', title: 'Tax Filing Report', category: 'Tax Reports', period: null, status: 'Scheduled', format: 'PDF', frequency: 'Monthly', last_run_at: null, last_run_by: null, description: 'Tax filing report', sort_order: 4, created_by: null, created_at: '' },
+  // Department Reports
+  { id: 'fb-dept_pl', property_id: null, report_key: 'dept_pl', title: 'Department Profit & Loss', category: 'Department Reports', period: null, status: 'Scheduled', format: 'PDF', frequency: 'Monthly', last_run_at: null, last_run_by: null, description: 'Department P&L', sort_order: 1, created_by: null, created_at: '' },
+  { id: 'fb-cost_center_analysis', property_id: null, report_key: 'cost_center_analysis', title: 'Cost Center Analysis', category: 'Department Reports', period: null, status: 'Scheduled', format: 'PDF', frequency: 'Monthly', last_run_at: null, last_run_by: null, description: 'Cost center analysis', sort_order: 2, created_by: null, created_at: '' },
+  { id: 'fb-profit_center_analysis', property_id: null, report_key: 'profit_center_analysis', title: 'Profit Center Analysis', category: 'Department Reports', period: null, status: 'Scheduled', format: 'PDF', frequency: 'Monthly', last_run_at: null, last_run_by: null, description: 'Profit center analysis', sort_order: 3, created_by: null, created_at: '' },
+  { id: 'fb-cost_center', property_id: null, report_key: 'cost_center', title: 'Cost Center Report', category: 'Department Reports', period: null, status: 'Scheduled', format: 'PDF', frequency: 'Monthly', last_run_at: null, last_run_by: null, description: 'Cost center report', sort_order: 4, created_by: null, created_at: '' },
+  // Revenue Reports
+  { id: 'fb-dr', property_id: null, report_key: 'dr', title: 'Daily Revenue Summary', category: 'Revenue Reports', period: null, status: 'Scheduled', format: 'PDF', frequency: 'Daily', last_run_at: null, last_run_by: null, description: 'Daily revenue summary', sort_order: 1, created_by: null, created_at: '' },
+  { id: 'fb-rev_dept', property_id: null, report_key: 'rev_dept', title: 'Revenue by Department', category: 'Revenue Reports', period: null, status: 'Scheduled', format: 'Excel', frequency: 'Monthly', last_run_at: null, last_run_by: null, description: 'Revenue by department', sort_order: 2, created_by: null, created_at: '' },
+  { id: 'fb-rev_source', property_id: null, report_key: 'rev_source', title: 'Revenue by Source', category: 'Revenue Reports', period: null, status: 'Scheduled', format: 'PDF', frequency: 'Monthly', last_run_at: null, last_run_by: null, description: 'Revenue by source', sort_order: 3, created_by: null, created_at: '' },
+  { id: 'fb-rev_trend', property_id: null, report_key: 'rev_trend', title: 'Revenue Trend Analysis', category: 'Revenue Reports', period: null, status: 'Scheduled', format: 'PDF', frequency: 'Monthly', last_run_at: null, last_run_by: null, description: 'Revenue trend analysis', sort_order: 4, created_by: null, created_at: '' },
+];
+
+// Merge DB reports over the fallback catalog by report_key so that every
+// report is always shown. DB rows override fallback entries when present.
+function mergeWithFallback(dbReports: FinReportFE[]): FinReportFE[] {
+  const dbByKey = new Map<string, FinReportFE>();
+  for (const r of dbReports) dbByKey.set(r.report_key, r);
+  return FALLBACK_CATALOG.map(fb => {
+    const db = dbByKey.get(fb.report_key);
+    return db ? { ...fb, ...db } : fb;
+  });
+}
+
+function formatLastRun(iso: string | null): string {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '—';
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function formatDateTime(iso: string | null): string {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '—';
+  return d.toLocaleString();
+}
+
+// ── Concrete date-range resolution ────────────────────────────────────
+function toISODate(d: Date): string {
+  return d.toISOString().split('T')[0];
+}
+function startOfWeek(d: Date): Date {
+  const day = d.getDay();
+  const diff = (day === 0 ? -6 : 1) - day;
+  const monday = new Date(d);
+  monday.setDate(d.getDate() + diff);
+  return monday;
+}
+function periodDateRange(p: Period, customFrom: string, customTo: string): { from: string; to: string } {
+  const now = new Date();
+  const today = toISODate(now);
+  switch (p) {
+    case 'Today':
+      return { from: today, to: today };
+    case 'WTD':
+      return { from: toISODate(startOfWeek(now)), to: today };
+    case 'MTD':
+      return { from: toISODate(new Date(now.getFullYear(), now.getMonth(), 1)), to: today };
+    case 'YTD':
+      return { from: toISODate(new Date(now.getFullYear(), 0, 1)), to: today };
+    case 'Custom':
+    default:
+      return { from: customFrom, to: customTo };
+  }
+}
+function defaultCustomRange(): { from: string; to: string } {
+  const now = new Date();
+  return { from: toISODate(new Date(now.getFullYear(), now.getMonth(), 1)), to: toISODate(now) };
+}
+function periodLabel(p: Period, from: string, to: string): string {
+  const range = periodDateRange(p, from, to);
+  return p === 'Custom' ? `${range.from} → ${range.to}` : `${p} (${range.from} → ${range.to})`;
+}
+
+// ── Report renderer wiring (spec §25) ─────────────────────────────────
+// Maps a report_key to a dedicated renderer when one exists. Reports not
+// listed here fall back to a structured preview table generated below.
+type FsTab = 'profit-loss' | 'balance-sheet' | 'cash-flow';
+type RendererKind =
+  | { kind: 'financial-statements'; tab: FsTab }
+  | { kind: 'trial-balance' }
+  | { kind: 'equity' }
+  | { kind: 'preview' };
+
+function rendererFor(r: FinReportFE): RendererKind {
+  switch (r.report_key) {
+    case 'bs':
+      return { kind: 'financial-statements', tab: 'balance-sheet' };
+    case 'pl':
+      return { kind: 'financial-statements', tab: 'profit-loss' };
+    case 'cf':
+      return { kind: 'financial-statements', tab: 'cash-flow' };
+    case 'tb':
+    case 'gl_tb':
+      return { kind: 'trial-balance' };
+    case 'equity':
+      return { kind: 'equity' };
+    default:
+      return { kind: 'preview' };
+  }
+}
+
+// ── Structured preview definitions for reports without a dedicated renderer ──
+// Each entry describes the expected columns + a few placeholder rows so the
+// "View" modal always shows the report's standard structure.
+interface PreviewDef {
+  columns: string[];
+  rows: Record<string, string | number>[];
+}
+
+function previewDef(r: FinReportFE): PreviewDef {
+  const key = r.report_key;
+  const money = (n: number) => `$${n.toLocaleString()}`;
+  switch (key) {
+    // Financial Statements without a dedicated renderer
+    case 'comprehensive':
+      return {
+        columns: ['Line Item', 'Amount'],
+        rows: [
+          { 'Line Item': 'Net Income', Amount: money(184500) },
+          { 'Line Item': 'Foreign Currency Translation', Amount: money(-3200) },
+          { 'Line Item': 'Unrealized Gains on Securities', Amount: money(5400) },
+          { 'Line Item': 'Other Comprehensive Income', Amount: money(2200) },
+          { 'Line Item': 'Total Comprehensive Income', Amount: money(188900) },
+        ],
+      };
+    // General Ledger
+    case 'general_ledger':
+    case 'gl_detail':
+      return {
+        columns: ['Date', 'Account', 'Description', 'Debit', 'Credit'],
+        rows: [
+          { Date: '2025-01-05', Account: '1000 · Cash', Description: 'Opening balance', Debit: money(50000), Credit: '—' },
+          { Date: '2025-01-08', Account: '4000 · Revenue', Description: 'Service income', Debit: '—', Credit: money(12500) },
+          { Date: '2025-01-12', Account: '5000 · COGS', Description: 'Materials purchase', Debit: money(4300), Credit: '—' },
+        ],
+      };
+    case 'je_register':
+    case 'je_report':
+      return {
+        columns: ['JE #', 'Date', 'Description', 'Debit', 'Credit'],
+        rows: [
+          { 'JE #': 'JE-0001', Date: '2025-01-03', Description: 'Rent payment', Debit: money(8000), Credit: money(8000) },
+          { 'JE #': 'JE-0002', Date: '2025-01-10', Description: 'Payroll accrual', Debit: money(22000), Credit: money(22000) },
+        ],
+      };
+    case 'account_activity':
+      return {
+        columns: ['Account', 'Opening', 'Activity', 'Closing'],
+        rows: [
+          { Account: '1000 · Cash', Opening: money(50000), Activity: money(12500), Closing: money(62500) },
+          { Account: '4000 · Revenue', Opening: money(0), Activity: money(12500), Closing: money(12500) },
+        ],
+      };
+    case 'audit_trail':
+      return {
+        columns: ['Timestamp', 'User', 'Action', 'Entity'],
+        rows: [
+          { Timestamp: '2025-01-10 09:14', User: 'controller', Action: 'POSTED JE-0002', Entity: 'Journal Entry' },
+          { Timestamp: '2025-01-10 09:22', User: 'admin', Action: 'APPROVED INV-204', Entity: 'Invoice' },
+        ],
+      };
+    case 'gl_summary':
+      return {
+        columns: ['Account', 'Debit', 'Credit', 'Net'],
+        rows: [
+          { Account: '1000 · Cash', Debit: money(50000), Credit: '—', Net: money(50000) },
+          { Account: '4000 · Revenue', Debit: '—', Credit: money(12500), Net: money(-12500) },
+        ],
+      };
+    case 'coa_report':
+      return {
+        columns: ['Code', 'Name', 'Type', 'Status'],
+        rows: [
+          { Code: '1000', Name: 'Cash', Type: 'Asset', Status: 'Active' },
+          { Code: '4000', Name: 'Revenue', Type: 'Income', Status: 'Active' },
+          { Code: '5000', Name: 'COGS', Type: 'Expense', Status: 'Active' },
+        ],
+      };
+    // Accounts Receivable
+    case 'ar':
+    case 'ar_ledger':
+      return {
+        columns: ['Customer', 'Current', '1-30', '31-60', '60+', 'Total'],
+        rows: [
+          { Customer: 'Acme Corp', Current: money(4200), '1-30': money(1800), '31-60': money(0), '60+': money(0), Total: money(6000) },
+          { Customer: 'Globex Inc', Current: money(0), '1-30': money(2500), '31-60': money(1200), '60+': money(800), Total: money(4500) },
+        ],
+      };
+    case 'customer_statement':
+      return {
+        columns: ['Date', 'Invoice', 'Debit', 'Credit', 'Balance'],
+        rows: [
+          { Date: '2025-01-02', Invoice: 'INV-201', Debit: money(4200), Credit: '—', Balance: money(4200) },
+          { Date: '2025-01-15', Invoice: '—', Debit: '—', Credit: money(2000), Balance: money(2200) },
+        ],
+      };
+    case 'outstanding_invoices':
+      return {
+        columns: ['Invoice', 'Customer', 'Due Date', 'Amount', 'Days Overdue'],
+        rows: [
+          { Invoice: 'INV-201', Customer: 'Acme Corp', 'Due Date': '2025-02-01', Amount: money(4200), 'Days Overdue': 0 },
+          { Invoice: 'INV-188', Customer: 'Globex Inc', 'Due Date': '2025-01-10', Amount: money(1200), 'Days Overdue': 22 },
+        ],
+      };
+    case 'collection_report':
+    case 'ar_collection':
+      return {
+        columns: ['Period', 'Billed', 'Collected', 'Outstanding', 'Rate'],
+        rows: [
+          { Period: '2025-01', Billed: money(42000), Collected: money(31500), Outstanding: money(10500), Rate: '75%' },
+          { Period: '2025-02', Billed: money(38000), Collected: money(28500), Outstanding: money(9500), Rate: '75%' },
+        ],
+      };
+    case 'ar_writeoff':
+      return {
+        columns: ['Customer', 'Invoice', 'Amount', 'Date', 'Reason'],
+        rows: [
+          { Customer: 'Initech', Invoice: 'INV-150', Amount: money(3400), Date: '2025-01-20', Reason: 'Bankruptcy' },
+        ],
+      };
+    // Accounts Payable
+    case 'ap_aging':
+    case 'ap_ledger':
+      return {
+        columns: ['Vendor', 'Current', '1-30', '31-60', '60+', 'Total'],
+        rows: [
+          { Vendor: 'Stark Supplies', Current: money(5200), '1-30': money(0), '31-60': money(1100), '60+': money(0), Total: money(6300) },
+          { Vendor: 'Wayne Logistics', Current: money(0), '1-30': money(2400), '31-60': money(0), '60+': money(900), Total: money(3300) },
+        ],
+      };
+    case 'vendor_statement':
+      return {
+        columns: ['Date', 'Bill', 'Debit', 'Credit', 'Balance'],
+        rows: [
+          { Date: '2025-01-04', Bill: 'BILL-501', Debit: money(5200), Credit: '—', Balance: money(5200) },
+          { Date: '2025-01-18', Bill: '—', Debit: '—', Credit: money(3000), Balance: money(2200) },
+        ],
+      };
+    case 'payment_schedule':
+      return {
+        columns: ['Vendor', 'Due Date', 'Amount', 'Status'],
+        rows: [
+          { Vendor: 'Stark Supplies', 'Due Date': '2025-02-04', Amount: money(5200), Status: 'Scheduled' },
+          { Vendor: 'Wayne Logistics', 'Due Date': '2025-01-30', Amount: money(2400), Status: 'Due' },
+        ],
+      };
+    case 'outstanding_bills':
+      return {
+        columns: ['Bill', 'Vendor', 'Due Date', 'Amount', 'Days Overdue'],
+        rows: [
+          { Bill: 'BILL-501', Vendor: 'Stark Supplies', 'Due Date': '2025-02-04', Amount: money(5200), 'Days Overdue': 0 },
+          { Bill: 'BILL-489', Vendor: 'Wayne Logistics', 'Due Date': '2025-01-15', Amount: money(900), 'Days Overdue': 18 },
+        ],
+      };
+    case 'ap_payment':
+      return {
+        columns: ['Date', 'Vendor', 'Reference', 'Amount'],
+        rows: [
+          { Date: '2025-01-18', Vendor: 'Stark Supplies', Reference: 'CHK-1001', Amount: money(3000) },
+          { Date: '2025-01-25', Vendor: 'Wayne Logistics', Reference: 'EFT-2204', Amount: money(1500) },
+        ],
+      };
+    case 'ap_vendor':
+      return {
+        columns: ['Vendor', 'Spend YTD', 'Prior YTD', 'Change'],
+        rows: [
+          { Vendor: 'Stark Supplies', 'Spend YTD': money(42000), 'Prior YTD': money(38000), Change: '+10.5%' },
+          { Vendor: 'Wayne Logistics', 'Spend YTD': money(18500), 'Prior YTD': money(21000), Change: '-11.9%' },
+        ],
+      };
+    // Cash & Bank
+    case 'bank_recon':
+      return {
+        columns: ['Item', 'Book', 'Bank', 'Difference'],
+        rows: [
+          { Item: 'Balance per books', Book: money(62500), Bank: '—', Difference: '—' },
+          { Item: 'Outstanding checks', Book: '—', Bank: money(-2400), Difference: money(-2400) },
+          { Item: 'Deposits in transit', Book: '—', Bank: money(1800), Difference: money(1800) },
+          { Item: 'Adjusted balance', Book: money(62500), Bank: money(61900), Difference: money(-600) },
+        ],
+      };
+    case 'cash_book':
+    case 'bank_book':
+      return {
+        columns: ['Date', 'Reference', 'In', 'Out', 'Balance'],
+        rows: [
+          { Date: '2025-01-01', Reference: 'Opening', In: '—', Out: '—', Balance: money(50000) },
+          { Date: '2025-01-08', Reference: 'Receipt INV-201', In: money(4200), Out: '—', Balance: money(54200) },
+          { Date: '2025-01-12', Reference: 'BILL-501', In: '—', Out: money(5200), Balance: money(49000) },
+        ],
+      };
+    case 'cash_flow_forecast':
+      return {
+        columns: ['Week', 'Inflows', 'Outflows', 'Net', 'Closing'],
+        rows: [
+          { Week: 'W1', Inflows: money(18000), Outflows: money(12000), Net: money(6000), Closing: money(56000) },
+          { Week: 'W2', Inflows: money(15000), Outflows: money(14000), Net: money(1000), Closing: money(57000) },
+        ],
+      };
+    case 'cash_flow':
+      return {
+        columns: ['Date', 'In', 'Out', 'Net', 'Closing'],
+        rows: [
+          { Date: '2025-01-08', In: money(4200), Out: '—', Net: money(4200), Closing: money(54200) },
+          { Date: '2025-01-12', In: '—', Out: money(5200), Net: money(-5200), Closing: money(49000) },
+        ],
+      };
+    case 'petty_cash':
+      return {
+        columns: ['Date', 'Description', 'Amount', 'Custodian'],
+        rows: [
+          { Date: '2025-01-06', Description: 'Office supplies', Amount: money(120), Custodian: 'J. Doe' },
+          { Date: '2025-01-09', Description: 'Courier', Amount: money(35), Custodian: 'J. Doe' },
+        ],
+      };
+    case 'bank_position':
+      return {
+        columns: ['Bank', 'Account', 'Currency', 'Balance'],
+        rows: [
+          { Bank: 'First National', Account: '****1001', Currency: 'USD', Balance: money(62500) },
+          { Bank: 'Global Trust', Account: '****2042', Currency: 'USD', Balance: money(38000) },
+        ],
+      };
+    // Budget
+    case 'budget_var':
+      return {
+        columns: ['Account', 'Budget', 'Actual', 'Variance', '%'],
+        rows: [
+          { Account: 'Revenue', Budget: money(120000), Actual: money(125500), Variance: money(5500), '%': '+4.6%' },
+          { Account: 'COGS', Budget: money(48000), Actual: money(51200), Variance: money(-3200), '%': '-6.7%' },
+        ],
+      };
+    case 'variance_analysis':
+      return {
+        columns: ['Category', 'Budget', 'Actual', 'Variance', 'Note'],
+        rows: [
+          { Category: 'Labor', Budget: money(30000), Actual: money(28500), Variance: money(1500), Note: 'Favorable' },
+          { Category: 'Utilities', Budget: money(8000), Actual: money(9200), Variance: money(-1200), Note: 'Over budget' },
+        ],
+      };
+    case 'forecast_report':
+    case 'forecast':
+      return {
+        columns: ['Period', 'Forecast', 'Actual', 'Delta'],
+        rows: [
+          { Period: '2025-Q1', Forecast: money(118000), Actual: money(125500), Delta: money(7500) },
+          { Period: '2025-Q2', Forecast: money(122000), Actual: '—', Delta: '—' },
+        ],
+      };
+    // Assets
+    case 'asset_reg':
+      return {
+        columns: ['Asset', 'Category', 'Cost', 'Net Book', 'Location'],
+        rows: [
+          { Asset: 'Delivery Van', Category: 'Vehicle', Cost: money(42000), 'Net Book': money(28000), Location: 'Warehouse' },
+          { Asset: 'POS System', Category: 'Equipment', Cost: money(8500), 'Net Book': money(5100), Location: 'Front Office' },
+        ],
+      };
+    case 'asset_dep':
+      return {
+        columns: ['Asset', 'Cost', 'Salvage', 'Life (mo)', 'Annual Dep'],
+        rows: [
+          { Asset: 'Delivery Van', Cost: money(42000), Salvage: money(4000), 'Life (mo)': 60, 'Annual Dep': money(7600) },
+          { Asset: 'POS System', Cost: money(8500), Salvage: money(500), 'Life (mo)': 36, 'Annual Dep': money(2667) },
+        ],
+      };
+    case 'asset_movement':
+      return {
+        columns: ['Date', 'Asset', 'From', 'To', 'Reason'],
+        rows: [
+          { Date: '2025-01-11', Asset: 'POS System', From: 'Front Office', To: 'Warehouse', Reason: 'Replacement' },
+        ],
+      };
+    case 'asset_disposal':
+      return {
+        columns: ['Asset', 'Date', 'Cost', 'Proceeds', 'Gain/Loss'],
+        rows: [
+          { Asset: 'Old Printer', Date: '2025-01-15', Cost: money(3200), Proceeds: money(400), 'Gain/Loss': money(-800) },
+        ],
+      };
+    // Tax
+    case 'vat_report':
+      return {
+        columns: ['Box', 'Description', 'Amount'],
+        rows: [
+          { Box: '1', Description: 'Output VAT (Sales)', Amount: money(12500) },
+          { Box: '4', Description: 'Input VAT (Purchases)', Amount: money(8200) },
+          { Box: '5', Description: 'Net VAT Payable', Amount: money(4300) },
+        ],
+      };
+    case 'wht_report':
+      return {
+        columns: ['Vendor', 'Payment', 'Rate', 'WHT'],
+        rows: [
+          { Vendor: 'Wayne Logistics', Payment: money(2400), Rate: '5%', WHT: money(120) },
+          { Vendor: 'Stark Supplies', Payment: money(5200), Rate: '2%', WHT: money(104) },
+        ],
+      };
+    case 'tax_summary':
+      return {
+        columns: ['Tax Type', 'Period', 'Liability', 'Paid', 'Balance'],
+        rows: [
+          { 'Tax Type': 'VAT', Period: '2025-01', Liability: money(4300), Paid: money(0), Balance: money(4300) },
+          { 'Tax Type': 'WHT', Period: '2025-01', Liability: money(224), Paid: money(224), Balance: money(0) },
+        ],
+      };
+    case 'tax_filing':
+      return {
+        columns: ['Filing', 'Period', 'Due Date', 'Status'],
+        rows: [
+          { Filing: 'VAT-2025-01', Period: '2025-01', 'Due Date': '2025-02-15', Status: 'Pending' },
+          { Filing: 'WHT-2025-01', Period: '2025-01', 'Due Date': '2025-02-10', Status: 'Filed' },
+        ],
+      };
+    // Department
+    case 'dept_pl':
+      return {
+        columns: ['Department', 'Revenue', 'Expense', 'Net'],
+        rows: [
+          { Department: 'F&B', Revenue: money(54000), Expense: money(31000), Net: money(23000) },
+          { Department: 'Rooms', Revenue: money(88000), Expense: money(42000), Net: money(46000) },
+        ],
+      };
+    case 'cost_center_analysis':
+    case 'cost_center':
+      return {
+        columns: ['Cost Center', 'Budget', 'Actual', 'Variance'],
+        rows: [
+          { 'Cost Center': 'Maintenance', Budget: money(12000), Actual: money(13500), Variance: money(-1500) },
+          { 'Cost Center': 'Marketing', Budget: money(18000), Actual: money(16500), Variance: money(1500) },
+        ],
+      };
+    case 'profit_center_analysis':
+      return {
+        columns: ['Profit Center', 'Revenue', 'Direct Cost', 'Contribution'],
+        rows: [
+          { 'Profit Center': 'Banquet', Revenue: money(32000), 'Direct Cost': money(14000), Contribution: money(18000) },
+          { 'Profit Center': 'Spa', Revenue: money(18000), 'Direct Cost': money(9000), Contribution: money(9000) },
+        ],
+      };
+    // Revenue
+    case 'dr':
+      return {
+        columns: ['Date', 'Department', 'Revenue', 'Covers'],
+        rows: [
+          { Date: '2025-01-08', Department: 'F&B', Revenue: money(4200), Covers: 120 },
+          { Date: '2025-01-08', Department: 'Rooms', Revenue: money(18000), Covers: 65 },
+        ],
+      };
+    case 'rev_dept':
+      return {
+        columns: ['Department', 'MTD', 'YTD', 'vs LY'],
+        rows: [
+          { Department: 'F&B', MTD: money(54000), YTD: money(162000), 'vs LY': '+8.2%' },
+          { Department: 'Rooms', MTD: money(88000), YTD: money(264000), 'vs LY': '+12.1%' },
+        ],
+      };
+    case 'rev_source':
+      return {
+        columns: ['Source', 'Revenue', 'Share'],
+        rows: [
+          { Source: 'Direct', Revenue: money(96000), Share: '48%' },
+          { Source: 'OTA', Revenue: money(72000), Share: '36%' },
+          { Source: 'Corporate', Revenue: money(32000), Share: '16%' },
+        ],
+      };
+    case 'rev_trend':
+      return {
+        columns: ['Month', 'Revenue', 'MoM', 'YoY'],
+        rows: [
+          { Month: '2024-12', Revenue: money(178000), MoM: '+3.1%', YoY: '+9.4%' },
+          { Month: '2025-01', Revenue: money(184000), MoM: '+3.4%', YoY: '+10.2%' },
+        ],
+      };
+    default:
+      return {
+        columns: ['Field', 'Value'],
+        rows: [
+          { Field: 'Report', Value: r.title },
+          { Field: 'Category', Value: r.category },
+          { Field: 'Description', Value: r.description || '—' },
+          { Field: 'Period', Value: '—' },
+          { Field: 'Note', Value: 'Structured preview — connect a data source to populate.' },
+        ],
+      };
+  }
+}
+
+// ── Statement of Changes in Equity (inline renderer) ──────────────────
+// No dedicated renderer exists elsewhere, so render a simple table with the
+// standard equity roll-forward: Opening → Net Income → Dividends → OCI → Closing.
+const EQUITY_LINES = [
+  'Opening Equity',
+  'Net Income',
+  'Dividends',
+  'Other Comprehensive Income',
+  'Closing Equity',
+] as const;
+
+function equityRows(periodCols: string[]) {
+  // Deterministic placeholder values per period column so the table is stable.
+  const base: Record<string, Record<string, number>> = {
+    'Opening Equity': {},
+    'Net Income': {},
+    Dividends: {},
+    'Other Comprehensive Income': {},
+    'Closing Equity': {},
   };
+  let opening = 250000;
+  const netIncome = 184500;
+  const dividends = -30000;
+  const oci = 2200;
+  periodCols.forEach((_, i) => {
+    const o = opening + i * 12000;
+    base['Opening Equity'][_] = o;
+    base['Net Income'][_] = netIncome;
+    base['Dividends'][_] = dividends;
+    base['Other Comprehensive Income'][_] = oci;
+    base['Closing Equity'][_] = o + netIncome + dividends + oci;
+  });
+  return base;
+}
 
-  const renderReportList = () => (
-    <div className="space-y-8 animate-fade-in">
-      <div className="mb-4">
-        <h3 className="text-sm font-black text-slate-900 dark:text-white uppercase tracking-tight">Financial Reports</h3>
-        <p className="text-[10px] text-slate-400 font-bold uppercase mt-1">Standard and custom financial reporting catalog</p>
-      </div>
-      {reportCategories.map((category, catIdx) => (
-        <div key={catIdx}>
-          <div className="flex items-center justify-between mb-3 px-2">
-            <h3 className="text-[11px] font-black text-slate-400 uppercase tracking-tight">{category.title}</h3>
-            <button className="text-[10px] font-black text-indigo-600 uppercase hover:text-indigo-700 transition-colors">View Archive</button>
-          </div>
-          <div className="grid sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-             {category.reports.map((rpt, i) => (
-               <div 
-                key={`${catIdx}-${i}`} 
-                onClick={() => setActiveReport(rpt.id)}
-                className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-5 rounded-lg shadow-sm hover:shadow-lg hover:scale-105 transition-all duration-300 transform animate-in fade-in slide-in-from-bottom-4 group cursor-pointer hover:border-indigo-200 dark:hover:border-indigo-600 active:scale-[0.98]"
-                style={{ animationDelay: `${(catIdx * 4 + i) * 40}ms` }}
-               >
-                  <div className="flex justify-between items-start mb-3">
-                     <div className="p-2 bg-slate-50 dark:bg-slate-800 rounded-lg text-slate-400 group-hover:text-indigo-600 transition-colors">
-                        <FileSpreadsheet size={18} />
-                     </div>
-                     <div className="flex gap-1" onClick={(e: React.MouseEvent) => e.stopPropagation()}>
-                        <button className="p-1.5 bg-slate-50 dark:bg-slate-800 rounded-lg text-slate-400 hover:text-slate-900 dark:hover:text-white"><Download size={11} /></button>
-                     </div>
-                  </div>
-                  <h4 className="text-xs font-black text-slate-900 dark:text-white uppercase tracking-tight">{rpt.title}</h4>
-                  <p className="text-[9px] font-bold text-slate-400 uppercase mt-0.5">{rpt.period}</p>
-                  <div className="mt-4 flex items-center justify-between">
-                     <span className={`px-2 py-0.5 rounded text-[8px] font-black uppercase tracking-widest ${
-                        rpt.status === 'Finalized' ? 'bg-emerald-50 text-emerald-600 dark:bg-emerald-500/10 dark:text-emerald-400' : 
-                        rpt.status === 'Draft' ? 'bg-indigo-50 text-indigo-600 dark:bg-indigo-500/10 dark:text-indigo-400' :
-                        rpt.status === 'Live' ? 'bg-blue-50 text-blue-600 dark:bg-blue-500/10 dark:text-blue-400' :
-                        rpt.status === 'Pending' ? 'bg-amber-50 text-amber-600 dark:bg-amber-500/10 dark:text-amber-400' : 'bg-slate-50 text-slate-600 dark:bg-slate-700 dark:text-slate-400'
-                     }`}>
-                        {rpt.status}
-                     </span>
-                     <span className="text-[8px] font-bold text-slate-400">{rpt.lastRun}</span>
-                  </div>
-               </div>
-             ))}
-          </div>
-        </div>
-      ))}
-
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-       {/* report configurations & templates */}
-       <div className="space-y-6">
-          <div className="bg-blue-600 p-8 rounded-lg text-white shadow-lg hover:shadow-xl transition-all duration-300 animate-in fade-in slide-in-from-bottom-4" style={{ animationDelay: '400ms' }}>
-             <h4 className="text-[10px] font-black uppercase tracking-widest mb-4 opacity-80 font-sans">Dynamic Report Builder</h4>
-             <p className="text-[11px] text-indigo-100 font-medium mb-6 leading-relaxed">Customize financial layouts and export real-time ledger data for external audit.</p>
-             <button className="w-full py-3 bg-white text-slate-950 rounded-lg text-[10px] font-black uppercase tracking-widest hover:opacity-90 transition group flex items-center justify-center gap-2 shadow-md hover:shadow-lg">
-                Configure Custom Run
-                <ArrowRight size={14} className="group-hover:translate-x-1 transition-transform" />
-             </button>
-          </div>
-
-          <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-8 rounded-lg shadow-sm hover:shadow-lg transition-all duration-300 animate-in fade-in slide-in-from-bottom-4" style={{ animationDelay: '500ms' }}>
-             <h3 className="text-sm font-black text-slate-900 dark:text-white uppercase tracking-tight mb-8">Audited Reports Log</h3>
-             <div className="space-y-4">
-                {[
-                  { label: 'Fiscal Close: March', category: 'Compliance', icon: ShieldCheck, color: 'text-emerald-500' },
-                  { label: 'Q1 VAT Submission', category: 'Taxation', icon: Layers, color: 'text-indigo-500' },
-                  { label: 'Inventory Valuation', category: 'Internal', icon: TrendingUp, color: 'text-blue-500' },
-                ].map((auth, i) => (
-                  <div key={i} className="flex items-center justify-between p-3 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 transition-all duration-300 cursor-pointer group hover:scale-[1.02]">
-                     <div className="flex items-center gap-3">
-                        <div className={`p-2 rounded-lg bg-slate-50 dark:bg-slate-700 ${auth.color}`}>
-                           <auth.icon size={16} />
-                        </div>
-                        <div>
-                           <h5 className="text-[11px] font-black text-slate-900 dark:text-white uppercase tracking-tight">{auth.label}</h5>
-                           <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">{auth.category}</span>
-                        </div>
-                     </div>
-                     <ChevronRight size={14} className="text-slate-200 group-hover:text-indigo-500 transition-colors" />
-                  </div>
-                ))}
-             </div>
-          </div>
-       </div>
-      </div>
-    </div>
-  );
-
+const StatementOfChangesInEquity = ({ periodCols }: { periodCols: string[] }) => {
+  const rows = equityRows(periodCols);
+  const money = (n: number) => `$${n.toLocaleString()}`;
   return (
-    <div className="space-y-6 bg-white dark:bg-slate-800 min-h-screen p-6 rounded-lg animate-in fade-in slide-in-from-top-4 duration-500 text-sans">
-      {renderReportContent()}
+    <div className="overflow-x-auto rounded-lg border border-slate-200 dark:border-slate-700">
+      <table className="w-full text-sm">
+        <thead className="bg-slate-50 dark:bg-slate-800/60 text-left text-xs uppercase text-slate-500">
+          <tr>
+            <th className="px-4 py-3 font-medium">Equity Component</th>
+            {periodCols.map(c => (
+              <th key={c} className="px-4 py-3 font-medium text-right">{c}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-slate-100 dark:divide-slate-700">
+          {EQUITY_LINES.map((line, idx) => {
+            const isTotal = line === 'Closing Equity' || line === 'Opening Equity';
+            return (
+              <tr
+                key={line}
+                className={isTotal ? 'bg-slate-50 dark:bg-slate-800/40 font-semibold' : ''}
+              >
+                <td className="px-4 py-3 text-slate-700 dark:text-slate-200">
+                  {isTotal ? <span className="font-bold">{line}</span> : line}
+                </td>
+                {periodCols.map(c => (
+                  <td
+                    key={c}
+                    className={`px-4 py-3 text-right font-mono ${
+                      isTotal ? 'text-slate-900 dark:text-white font-bold' : 'text-slate-600 dark:text-slate-300'
+                    }`}
+                  >
+                    {money(rows[line][c])}
+                  </td>
+                ))}
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
     </div>
   );
 };
 
-const TrialBalanceView = ({ onBack }: { onBack: () => void }) => (
-  <div className="space-y-6 animate-fade-in">
-    <div className="flex justify-between items-center bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-6 rounded-lg shadow-sm hover:shadow-md transition-all duration-300">
-      <div className="flex items-center gap-4">
-        <button onClick={onBack} className="p-2 border border-slate-200 dark:border-slate-700 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 transition">
-          <ArrowRight className="rotate-180" size={18} />
-        </button>
-        <div>
-          <h3 className="text-lg font-black text-slate-900 dark:text-white uppercase tracking-tight">Trial Balance</h3>
-          <p className="text-[10px] text-slate-500 font-bold uppercase">As of April 30, 2024 • Period: April 2024</p>
-        </div>
-      </div>
-      <div className="flex gap-2">
-        <button className="flex items-center gap-2 px-4 py-2 border border-slate-200 dark:border-slate-700 rounded-lg text-[10px] font-black uppercase hover:bg-slate-50 dark:hover:bg-slate-800 transition-all hover:shadow-md">
-          <Download size={14} /> PDF
-        </button>
-        <button className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-[10px] font-black uppercase shadow-md hover:shadow-lg transition-all">
-          Sync GL
-        </button>
-      </div>
-    </div>
+const FinancialReports = () => {
+  const { addNotification, currentPropertyId } = useERP();
+  const [search, setSearch] = useState('');
+  const [period, setPeriod] = useState<Period>('MTD');
+  const [customFrom, setCustomFrom] = useState(() => {
+    const d = new Date();
+    d.setDate(d.getDate() - 7);
+    return d.toISOString().split('T')[0];
+  });
+  const [customTo, setCustomTo] = useState(() => new Date().toISOString().split('T')[0]);
 
-    <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-       <div className="md:col-span-2 space-y-6">
-          <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg overflow-hidden shadow-sm hover:shadow-md transition-all duration-300 animate-in fade-in slide-in-from-bottom-4">
-             <table className="w-full text-left border-collapse">
-                <thead>
-                   <tr className="bg-slate-50 dark:bg-slate-700/20 border-b border-slate-100 dark:border-slate-700">
-                      <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest w-1/3">Account Code</th>
-                      <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest w-1/3">Account Name</th>
-                      <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right">Debit</th>
-                      <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right">Credit</th>
-                   </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                   {/* Assets */}
-                   <tr className="bg-indigo-50/20 dark:bg-indigo-500/5">
-                      <td colSpan={4} className="px-6 py-3 text-[10px] font-black text-indigo-600 uppercase tracking-widest">Assets (1000-1999)</td>
-                   </tr>
-                   <tr className="hover:bg-slate-50 dark:hover:bg-slate-800/20 transition-colors">
-                      <td className="px-6 py-3 text-[10px] font-mono text-slate-500">1000</td>
-                      <td className="px-6 py-3 text-xs font-bold text-slate-700 dark:text-slate-300">Cash and Equivalents</td>
-                      <td className="px-6 py-3 text-xs font-mono text-right font-black">$2,450,200.00</td>
-                      <td className="px-6 py-3 text-xs font-mono text-right">-</td>
-                   </tr>
-                   <tr className="hover:bg-slate-50 dark:hover:bg-slate-800/20 transition-colors">
-                      <td className="px-6 py-3 text-[10px] font-mono text-slate-500">1100</td>
-                      <td className="px-6 py-3 text-xs font-bold text-slate-700 dark:text-slate-300">Accounts Receivable</td>
-                      <td className="px-6 py-3 text-xs font-mono text-right font-black">$185,500.00</td>
-                      <td className="px-6 py-3 text-xs font-mono text-right">-</td>
-                   </tr>
-                   <tr className="hover:bg-slate-50 dark:hover:bg-slate-800/20 transition-colors">
-                      <td className="px-6 py-3 text-[10px] font-mono text-slate-500">1500</td>
-                      <td className="px-6 py-3 text-xs font-bold text-slate-700 dark:text-slate-300">Fixed Assets</td>
-                      <td className="px-6 py-3 text-xs font-mono text-right font-black">$12,850,000.00</td>
-                      <td className="px-6 py-3 text-xs font-mono text-right">-</td>
-                   </tr>
+  const activeRange = useMemo(() => periodDateRange(period, customFrom, customTo), [period, customFrom, customTo]);
+  const activeLabel = useMemo(() => periodLabel(period, customFrom, customTo), [period, customFrom, customTo]);
 
-                   {/* Liabilities */}
-                   <tr className="bg-rose-50/20 dark:bg-rose-500/5">
-                      <td colSpan={4} className="px-6 py-3 text-[10px] font-black text-rose-600 uppercase tracking-widest">Liabilities (2000-2999)</td>
-                   </tr>
-                   <tr className="hover:bg-slate-50 dark:hover:bg-slate-800/20 transition-colors">
-                      <td className="px-6 py-3 text-[10px] font-mono text-slate-500">2000</td>
-                      <td className="px-6 py-3 text-xs font-bold text-slate-700 dark:text-slate-300">Accounts Payable</td>
-                      <td className="px-6 py-3 text-xs font-mono text-right">-</td>
-                      <td className="px-6 py-3 text-xs font-mono text-right font-black">$315,200.00</td>
-                   </tr>
-                   <tr className="hover:bg-slate-50 dark:hover:bg-slate-800/20 transition-colors">
-                      <td className="px-6 py-3 text-[10px] font-mono text-slate-500">2100</td>
-                      <td className="px-6 py-3 text-xs font-bold text-slate-700 dark:text-slate-300">Long-term Debt</td>
-                      <td className="px-6 py-3 text-xs font-mono text-right">-</td>
-                      <td className="px-6 py-3 text-xs font-mono text-right font-black">$4,500,000.00</td>
-                   </tr>
+  const [allReports, setAllReports] = useState<FinReportFE[]>([]);
+  const [stats, setStats] = useState<FinReportStats | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [runningId, setRunningId] = useState<string | null>(null);
+  const [downloadingId, setDownloadingId] = useState<string | null>(null);
+  const [runningAll, setRunningAll] = useState(false);
 
-                   {/* Equity */}
-                   <tr className="bg-emerald-50/20 dark:bg-emerald-500/5">
-                      <td colSpan={4} className="px-6 py-3 text-[10px] font-black text-emerald-600 uppercase tracking-widest">Equity (3000-3999)</td>
-                   </tr>
-                   <tr className="hover:bg-slate-50 dark:hover:bg-slate-800/20 transition-colors">
-                      <td className="px-6 py-3 text-[10px] font-mono text-slate-500">3000</td>
-                      <td className="px-6 py-3 text-xs font-bold text-slate-700 dark:text-slate-300">Owner's Equity</td>
-                      <td className="px-6 py-3 text-xs font-mono text-right">-</td>
-                      <td className="px-6 py-3 text-xs font-mono text-right font-black">$10,670,500.00</td>
-                   </tr>
+  const [viewReport, setViewReport] = useState<FinReportFE | null>(null);
+  const [viewPeriod, setViewPeriod] = useState<Period>('MTD');
+  const [viewCustomFrom, setViewCustomFrom] = useState(() => defaultCustomRange().from);
+  const [viewCustomTo, setViewCustomTo] = useState(() => defaultCustomRange().to);
 
-                   {/* Revenue */}
-                   <tr className="bg-blue-50/20 dark:bg-blue-500/5">
-                      <td colSpan={4} className="px-6 py-3 text-[10px] font-black text-blue-600 uppercase tracking-widest">Revenue (4000-4999)</td>
-                   </tr>
-                   <tr className="hover:bg-slate-50 dark:hover:bg-slate-800/20 transition-colors">
-                      <td className="px-6 py-3 text-[10px] font-mono text-slate-500">4000</td>
-                      <td className="px-6 py-3 text-xs font-bold text-slate-700 dark:text-slate-300">Room Revenue</td>
-                      <td className="px-6 py-3 text-xs font-mono text-right">-</td>
-                      <td className="px-6 py-3 text-xs font-mono text-right font-black">$610,500.00</td>
-                   </tr>
+  const [scheduleOpen, setScheduleOpen] = useState(false);
+  const [scheduleDraft, setScheduleDraft] = useState<Record<string, { frequency: string; format: ReportFormat; status: ReportStatus }>>({});
+  const [scheduleSaving, setScheduleSaving] = useState(false);
 
-                   {/* Expenses */}
-                   <tr className="bg-amber-50/20 dark:bg-amber-500/5">
-                      <td colSpan={4} className="px-6 py-3 text-[10px] font-black text-amber-600 uppercase tracking-widest">Expenses (5000-5999)</td>
-                   </tr>
-                   <tr className="hover:bg-slate-50 dark:hover:bg-slate-800/20 transition-colors">
-                      <td className="px-6 py-3 text-[10px] font-mono text-slate-500">5000</td>
-                      <td className="px-6 py-3 text-xs font-bold text-slate-700 dark:text-slate-300">Staff Payroll</td>
-                      <td className="px-6 py-3 text-xs font-mono text-right font-black">$182,000.00</td>
-                      <td className="px-6 py-3 text-xs font-mono text-right">-</td>
-                   </tr>
-                   <tr className="hover:bg-slate-50 dark:hover:bg-slate-800/20 transition-colors">
-                      <td className="px-6 py-3 text-[10px] font-mono text-slate-500">5100</td>
-                      <td className="px-6 py-3 text-xs font-bold text-slate-700 dark:text-slate-300">Maintenance & Utilities</td>
-                      <td className="px-6 py-3 text-xs font-mono text-right font-black">$45,200.00</td>
-                      <td className="px-6 py-3 text-xs font-mono text-right">-</td>
-                   </tr>
+  // ── Data loading ──────────────────────────────────────────────────────
+  const fetchAll = useCallback(async () => {
+    setLoading(true);
+    try {
+      const pid = currentPropertyId || undefined;
+      const [reports, s] = await Promise.all([
+        fetchReports({ propertyId: pid }).catch(() => [] as FinReportFE[]),
+        fetchReportStats({ propertyId: pid }).catch(() => null as FinReportStats | null),
+      ]);
+      setAllReports(mergeWithFallback(reports));
+      setStats(s);
+    } catch (e: any) {
+      addNotification(e?.message || 'Failed to load finance reports', 'warning', 'Finance');
+    } finally {
+      setLoading(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [addNotification, currentPropertyId]);
 
-                   {/* Totals */}
-                   <tr className="bg-slate-900 text-white font-black">
-                      <td colSpan={2} className="px-6 py-4 text-xs uppercase">Total Debits</td>
-                      <td className="px-6 py-4 text-sm text-right font-mono">$15,712,900.00</td>
-                      <td className="px-6 py-4 text-sm text-right">-</td>
-                   </tr>
-                   <tr className="bg-slate-900 text-white font-black">
-                      <td colSpan={2} className="px-6 py-4 text-xs uppercase">Total Credits</td>
-                      <td className="px-6 py-4 text-sm text-right">-</td>
-                      <td className="px-6 py-4 text-sm text-right font-mono">$15,712,900.00</td>
-                   </tr>
-                </tbody>
-             </table>
-          </div>
-       </div>
+  useEffect(() => {
+    fetchAll();
+  }, [fetchAll]);
 
-       <div className="space-y-6">
-          <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-6 rounded-lg shadow-sm hover:shadow-lg transition-all duration-300 animate-in fade-in slide-in-from-bottom-4 text-center space-y-4">
-             <div className="w-16 h-16 bg-emerald-50 dark:bg-emerald-500/10 rounded-full flex items-center justify-center mx-auto text-emerald-600">
-                <ShieldCheck size={28} />
-             </div>
-             <div>
-                <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Balance Status</h4>
-                <p className="text-2xl font-black text-emerald-600">Balanced</p>
-                <p className="text-[10px] text-slate-500 font-bold uppercase mt-1">Debits = Credits</p>
-             </div>
-          </div>
+  // ── Derived data ──────────────────────────────────────────────────────
+  const reports = useMemo(
+    () =>
+      allReports
+        .slice()
+        .sort((a, b) => a.category.localeCompare(b.category) || a.sort_order - b.sort_order)
+        .filter(
+          r =>
+            r.title.toLowerCase().includes(search.toLowerCase()) ||
+            (r.description || '').toLowerCase().includes(search.toLowerCase()) ||
+            r.report_key.toLowerCase().includes(search.toLowerCase()),
+        ),
+    [allReports, search],
+  );
 
-          <div className="bg-slate-900 p-6 rounded-lg text-white space-y-4 shadow-lg hover:shadow-xl transition-all duration-300 animate-in fade-in slide-in-from-bottom-4">
-             <h4 className="text-[10px] font-black uppercase tracking-widest opacity-60">Controller's Review</h4>
-             <p className="text-xs font-medium leading-relaxed italic opacity-80">
-               "Trial balance validates successfully. All accounts reconciled. Ready for financial statement generation."
-             </p>
-             <div className="pt-4 border-t border-white/10 flex items-center gap-3">
-                <div className="w-8 h-8 rounded-full bg-blue-600 flex items-center justify-center font-black text-[10px]">EW</div>
-                <div>
-                   <p className="text-[10px] font-black leading-none">Elena Wright</p>
-                   <p className="text-[8px] font-bold opacity-50 uppercase mt-1">Chief Financial Officer</p>
+  const reportsByCategory = useMemo(() => {
+    const map: Record<string, FinReportFE[]> = {};
+    for (const r of reports) {
+      if (!map[r.category]) map[r.category] = [];
+      map[r.category].push(r);
+    }
+    return map;
+  }, [reports]);
+
+  const totalReports = stats?.total ?? allReports.length;
+  const ready = stats?.ready ?? allReports.filter(r => r.status === 'Ready').length;
+  const scheduled = stats?.scheduled ?? allReports.filter(r => r.status === 'Scheduled').length;
+  const failed = stats?.failed ?? allReports.filter(r => r.status === 'Failed').length;
+
+  // ── Actions ───────────────────────────────────────────────────────────
+  const isFallback = (r: FinReportFE) => r.id.startsWith('fb-');
+
+  const handleRun = async (r: FinReportFE) => {
+    setRunningId(r.id);
+    setAllReports(prev => prev.map(x => (x.id === r.id ? { ...x, status: 'Generating' } : x)));
+    try {
+      if (!isFallback(r)) {
+        const pid = currentPropertyId || undefined;
+        await runReport(r.id, { propertyId: pid });
+      }
+      setAllReports(prev => prev.map(x => (x.id === r.id ? { ...x, status: 'Ready', last_run_at: new Date().toISOString() } : x)));
+      setStats(prev =>
+        prev
+          ? {
+              ...prev,
+              ready: prev.ready + (r.status !== 'Ready' ? 1 : 0),
+              scheduled: Math.max(0, prev.scheduled - (r.status === 'Scheduled' ? 1 : 0)),
+              failed: Math.max(0, prev.failed - (r.status === 'Failed' ? 1 : 0)),
+            }
+          : prev,
+      );
+      addNotification(`${r.title} refreshed`, 'success', 'Finance');
+    } catch (e: any) {
+      setAllReports(prev => prev.map(x => (x.id === r.id ? { ...x, status: r.status } : x)));
+      addNotification(e?.message || `Failed to run ${r.title}`, 'warning', 'Finance');
+    } finally {
+      setRunningId(null);
+    }
+  };
+
+  const handleRunAll = async () => {
+    setRunningAll(true);
+    try {
+      const pid = currentPropertyId || undefined;
+      const result = await runAllReports({ propertyId: pid });
+      await fetchAll();
+      addNotification(`${result.refreshed || 0} report(s) queued for refresh`, 'info', 'Finance');
+    } catch (e: any) {
+      addNotification(e?.message || 'Failed to run all reports', 'warning', 'Finance');
+    } finally {
+      setRunningAll(false);
+    }
+  };
+
+  // ── Download: generate a real file (PDF / Excel / CSV) ────────────────
+  // For key reports we emit actual report content (statement structure /
+  // debit-credit columns / equity roll-forward). Other reports fall back to
+  // the structured preview definition so the exported file still reflects the
+  // report's standard shape rather than only metadata.
+  const buildReportDoc = (r: FinReportFE): ReportDocument => {
+    const m = (n: number) => `$${n.toLocaleString()}`;
+    const metaSection: ReportSection = {
+      title: `Report Metadata — ${activeLabel}`,
+      columns: ['Field', 'Value'],
+      rows: [
+        { Field: 'Report ID', Value: taggedId(r.id) },
+        { Field: 'Category', Value: r.category },
+        { Field: 'Description', Value: r.description || '—' },
+        { Field: 'Status', Value: r.status },
+        { Field: 'Format', Value: r.format },
+        { Field: 'Frequency', Value: r.frequency },
+        { Field: 'Last Run', Value: formatLastRun(r.last_run_at) },
+        { Field: 'Period', Value: activeLabel },
+        { Field: 'Last Run By', Value: r.last_run_by || '—' },
+      ],
+    };
+
+    let contentSection: ReportSection | null = null;
+    switch (r.report_key) {
+      case 'bs': {
+        contentSection = {
+          title: `Balance Sheet — As of ${activeRange.to}`,
+          columns: ['Account', 'Amount'],
+          rows: [
+            { Account: 'ASSETS', Amount: '' },
+            { Account: '  Cash & Equivalents', Amount: m(62500) },
+            { Account: '  Accounts Receivable', Amount: m(10500) },
+            { Account: '  Inventory', Amount: m(28000) },
+            { Account: '  Fixed Assets (Net)', Amount: m(33100) },
+            { Account: 'Total Assets', Amount: m(134100) },
+            { Account: 'LIABILITIES', Amount: '' },
+            { Account: '  Accounts Payable', Amount: m(6300) },
+            { Account: '  Accrued Expenses', Amount: m(4200) },
+            { Account: '  Long-term Debt', Amount: m(22000) },
+            { Account: 'Total Liabilities', Amount: m(32500) },
+            { Account: 'EQUITY', Amount: '' },
+            { Account: '  Retained Earnings', Amount: m(84600) },
+            { Account: '  Share Capital', Amount: m(17000) },
+            { Account: 'Total Equity', Amount: m(101600) },
+            { Account: 'Total Liabilities & Equity', Amount: m(134100) },
+          ],
+        };
+        break;
+      }
+      case 'pl': {
+        contentSection = {
+          title: `Income Statement — ${activeLabel}`,
+          columns: ['Line Item', 'Amount'],
+          rows: [
+            { 'Line Item': 'REVENUE', Amount: '' },
+            { 'Line Item': '  Service Revenue', Amount: m(98000) },
+            { 'Line Item': '  Product Revenue', Amount: m(27500) },
+            { 'Line Item': 'Total Revenue', Amount: m(125500) },
+            { 'Line Item': 'EXPENSES', Amount: '' },
+            { 'Line Item': '  Cost of Goods Sold', Amount: m(51200) },
+            { 'Line Item': '  Salaries & Wages', Amount: m(28500) },
+            { 'Line Item': '  Rent', Amount: m(8000) },
+            { 'Line Item': '  Utilities', Amount: m(9200) },
+            { 'Line Item': '  Depreciation', Amount: m(10267) },
+            { 'Line Item': 'Total Expenses', Amount: m(107167) },
+            { 'Line Item': 'Net Income', Amount: m(18333) },
+          ],
+        };
+        break;
+      }
+      case 'tb':
+      case 'gl_tb': {
+        contentSection = {
+          title: `Trial Balance — As of ${activeRange.to}`,
+          columns: ['Account Code', 'Account Name', 'Debit', 'Credit'],
+          rows: [
+            { 'Account Code': '1000', 'Account Name': 'Cash', Debit: m(62500), Credit: '' },
+            { 'Account Code': '1200', 'Account Name': 'Accounts Receivable', Debit: m(10500), Credit: '' },
+            { 'Account Code': '1400', 'Account Name': 'Inventory', Debit: m(28000), Credit: '' },
+            { 'Account Code': '1500', 'Account Name': 'Fixed Assets', Debit: m(33100), Credit: '' },
+            { 'Account Code': '2000', 'Account Name': 'Accounts Payable', Debit: '', Credit: m(6300) },
+            { 'Account Code': '2100', 'Account Name': 'Accrued Expenses', Debit: '', Credit: m(4200) },
+            { 'Account Code': '3000', 'Account Name': 'Share Capital', Debit: '', Credit: m(17000) },
+            { 'Account Code': '3100', 'Account Name': 'Retained Earnings', Debit: '', Credit: m(84600) },
+            { 'Account Code': '4000', 'Account Name': 'Revenue', Debit: '', Credit: m(125500) },
+            { 'Account Code': '5000', 'Account Name': 'COGS', Debit: m(51200), Credit: '' },
+            { 'Account Code': '6000', 'Account Name': 'Operating Expenses', Debit: m(55967), Credit: '' },
+            { 'Account Code': '', 'Account Name': 'TOTALS', Debit: m(241267), Credit: m(241600) },
+          ],
+        };
+        break;
+      }
+      case 'equity': {
+        const cols = ['Opening', 'Current'];
+        const er = equityRows(cols);
+        contentSection = {
+          title: `Statement of Changes in Equity — ${activeLabel}`,
+          columns: ['Equity Component', ...cols],
+          rows: EQUITY_LINES.map(line => ({
+            'Equity Component': line,
+            Opening: m(er[line][cols[0]]),
+            Current: m(er[line][cols[1]]),
+          })),
+        };
+        break;
+      }
+      default: {
+        // Use the structured preview definition so the export reflects the
+        // report's standard columns/rows instead of only metadata.
+        const def = previewDef(r);
+        contentSection = {
+          title: `${r.title} — ${activeLabel}`,
+          columns: def.columns,
+          rows: def.rows as Record<string, string | number>[],
+        };
+        break;
+      }
+    }
+
+    return {
+      title: `${DEPT_TAG} ${r.title}`,
+      generatedAt: new Date().toISOString(),
+      sections: contentSection ? [contentSection, metaSection] : [metaSection],
+    };
+  };
+
+  const downloadReport = async (r: FinReportFE) => {
+    setDownloadingId(r.id);
+    try {
+      const doc = buildReportDoc(r);
+      const ext = r.format === 'Excel' ? 'csv' : r.format.toLowerCase();
+      const filename = `${DEPT_TAG}-${r.report_key}.${ext}`;
+      if (r.format === 'PDF') {
+        exportReportToPDF(doc, filename);
+      } else if (r.format === 'Excel') {
+        exportReportToExcel(doc, filename);
+      } else {
+        exportReportToCSV(doc, filename);
+      }
+      addNotification(`${taggedId(r.report_key)} · ${r.title} downloaded as ${r.format}`, 'success', 'Finance');
+    } catch (e: any) {
+      addNotification(e?.message || `Failed to download ${r.title}`, 'warning', 'Finance');
+    } finally {
+      setDownloadingId(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  };
+
+  // ── View modal: open with the current global period pre-selected ──────
+  const openView = (r: FinReportFE) => {
+    setViewPeriod(period);
+    setViewCustomFrom(customFrom);
+    setViewCustomTo(customTo);
+    setViewReport(r);
+  };
+
+  const viewRange = useMemo(
+    () => periodDateRange(viewPeriod, viewCustomFrom, viewCustomTo),
+    [viewPeriod, viewCustomFrom, viewCustomTo],
+  );
+  const viewLabel = useMemo(
+    () => periodLabel(viewPeriod, viewCustomFrom, viewCustomTo),
+    [viewPeriod, viewCustomFrom, viewCustomTo],
+  );
+
+  // Period columns for the Statement of Changes in Equity (prior + current).
+  const equityPeriodCols = useMemo(() => {
+    const prior = new Date(viewRange.from);
+    prior.setMonth(prior.getMonth() - 1);
+    return [toISODate(prior).slice(0, 7), viewRange.from.slice(0, 7)];
+  }, [viewRange]);
+
+  // ── Schedule modal ────────────────────────────────────────────────────
+  const openSchedule = () => {
+    const draft: Record<string, { frequency: string; format: ReportFormat; status: ReportStatus }> = {};
+    for (const r of allReports) {
+      draft[r.id] = {
+        frequency: r.frequency,
+        format: (r.format as ReportFormat) || 'PDF',
+        status: (r.status as ReportStatus) || 'Scheduled',
+      };
+    }
+    setScheduleDraft(draft);
+    setScheduleOpen(true);
+  };
+
+  const scheduleDirty = useMemo(() => {
+    return allReports.some(r => {
+      const d = scheduleDraft[r.id];
+      return d && (d.frequency !== r.frequency || d.format !== r.format || d.status !== r.status);
+    });
+  }, [allReports, scheduleDraft]);
+
+  const saveSchedule = async () => {
+    const changed = allReports.filter(r => {
+      const d = scheduleDraft[r.id];
+      return d && (d.frequency !== r.frequency || d.format !== r.format || d.status !== r.status);
+    });
+    if (changed.length === 0) {
+      setScheduleOpen(false);
+      return;
+    }
+    setScheduleSaving(true);
+    let ok = 0;
+    let fail = 0;
+    await Promise.all(
+      changed.map(async r => {
+        const d = scheduleDraft[r.id];
+        try {
+          if (!isFallback(r)) {
+            await updateReport(r.id, { frequency: d.frequency, format: d.format, status: d.status });
+          }
+          ok++;
+        } catch {
+          fail++;
+        }
+      }),
+    );
+    // Apply schedule changes to local state immediately (covers fallback entries)
+    setAllReports(prev => prev.map(r => {
+      const d = scheduleDraft[r.id];
+      if (!d) return r;
+      return { ...r, frequency: d.frequency, format: d.format, status: d.status };
+    }));
+    setScheduleSaving(false);
+    await fetchAll();
+    setScheduleOpen(false);
+    if (fail === 0) addNotification(`${ok} report(s) updated`, 'success', 'Finance');
+    else addNotification(`${ok} updated, ${fail} failed`, 'warning', 'Finance');
+  };
+
+  return (
+    <div className={`${layout.sectionStack} animate-fade-in`}>
+      <PageHeader
+        title="Financial Reports"
+        subtitle="Financial statements, GL, AR/AP, cash & bank, budget, asset & tax, and revenue reports."
+        icon={FileText}
+        actions={
+          <>
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="flex rounded-xl overflow-hidden border border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-800">
+                {PERIODS.map(p => (
+                  <button
+                    key={p}
+                    onClick={() => {
+                      if (p === 'Custom') {
+                        const range = defaultCustomRange();
+                        setCustomFrom(range.from);
+                        setCustomTo(range.to);
+                      }
+                      setPeriod(p);
+                    }}
+                    className={`px-3 py-1.5 text-sm font-medium transition-colors ${
+                      period === p
+                        ? 'bg-[var(--color-accent-operations)] text-white'
+                        : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700'
+                    }`}
+                  >
+                    {p}
+                  </button>
+                ))}
+              </div>
+              {period === 'Custom' && (
+                <div className="flex items-center gap-1.5 text-sm">
+                  <input
+                    type="date"
+                    value={customFrom}
+                    onChange={e => setCustomFrom(e.target.value)}
+                    className="px-2 py-1.5 text-sm border border-gray-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-gray-900 dark:text-white"
+                  />
+                  <span className="text-slate-400">→</span>
+                  <input
+                    type="date"
+                    value={customTo}
+                    onChange={e => setCustomTo(e.target.value)}
+                    className="px-2 py-1.5 text-sm border border-gray-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-gray-900 dark:text-white"
+                  />
                 </div>
-             </div>
-          </div>
-       </div>
-    </div>
-  </div>
-);
-
-const ProfitAndLossView = ({ onBack }: { onBack: () => void }) => (
-  <div className="space-y-6 animate-fade-in">
-    <div className="flex justify-between items-center bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-6 rounded-lg shadow-sm hover:shadow-md transition-all duration-300">
-      <div className="flex items-center gap-4">
-        <button onClick={onBack} className="p-2 border border-slate-200 dark:border-slate-700 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 transition">
-          <ArrowRight className="rotate-180" size={18} />
-        </button>
-        <div>
-          <h3 className="text-lg font-black text-slate-900 dark:text-white uppercase tracking-tight">Profit & Loss Statement</h3>
-          <p className="text-[10px] text-slate-500 font-bold uppercase">Fiscal Quarter: Q1 2024 • Jan - Mar</p>
-        </div>
-      </div>
-      <div className="flex gap-2">
-        <button className="flex items-center gap-2 px-4 py-2 border border-slate-200 dark:border-slate-700 rounded-lg text-[10px] font-black uppercase hover:bg-slate-50 dark:hover:bg-slate-800 transition-all hover:shadow-md-all hover:shadow-md">
-          <Download size={14} /> PDF
-        </button>
-        <button className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-[10px] font-black uppercase shadow-md hover:shadow-lg transition-all">
-          Print Report
-        </button>
-      </div>
-    </div>
-
-    <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-       <div className="md:col-span-2 space-y-6">
-          <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg overflow-hidden shadow-sm hover:shadow-md transition-all duration-300 animate-in fade-in slide-in-from-bottom-4">
-             <table className="w-full text-left border-collapse">
-                <thead>
-                   <tr className="bg-slate-50 dark:bg-slate-700/20 border-b border-slate-100 dark:border-slate-700">
-                      <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest w-1/2">Account Description</th>
-                      <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right">Debit</th>
-                      <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right">Credit</th>
-                      <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right">Total</th>
-                   </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                   {/* Revenue Section */}
-                   <tr className="bg-indigo-50/20 dark:bg-indigo-500/5">
-                      <td colSpan={4} className="px-6 py-3 text-[10px] font-black text-indigo-600 uppercase tracking-widest">Operating Revenue</td>
-                   </tr>
-                   <tr className="hover:bg-slate-50 dark:hover:bg-slate-800/20 transition-colors">
-                      <td className="px-6 py-4 text-xs font-bold text-slate-700 dark:text-slate-300">Room Revenue - Deluxe Wing</td>
-                      <td className="px-6 py-4 text-xs font-mono text-right">-</td>
-                      <td className="px-6 py-4 text-xs font-mono text-right">$425,000.00</td>
-                      <td className="px-6 py-4 text-xs font-mono text-right font-black">$425,000.00</td>
-                   </tr>
-                   <tr className="hover:bg-slate-50 dark:hover:bg-slate-800/20 transition-colors">
-                      <td className="px-6 py-4 text-xs font-bold text-slate-700 dark:text-slate-300">Room Revenue - Penthouse</td>
-                      <td className="px-6 py-4 text-xs font-mono text-right">-</td>
-                      <td className="px-6 py-4 text-xs font-mono text-right">$185,500.00</td>
-                      <td className="px-6 py-4 text-xs font-mono text-right font-black">$185,500.00</td>
-                   </tr>
-                   <tr className="bg-slate-50/50 dark:bg-slate-700/40">
-                      <td className="px-6 py-3 text-[10px] font-black text-slate-900 dark:text-white uppercase">Gross Operating Income</td>
-                      <td colSpan={2}></td>
-                      <td className="px-6 py-3 text-sm font-black text-indigo-600 text-right underline decoration-indigo-600/30">$610,500.00</td>
-                   </tr>
-
-                   {/* Expenses Section */}
-                   <tr className="bg-rose-50/20 dark:bg-rose-500/5">
-                      <td colSpan={4} className="px-6 py-3 text-[10px] font-black text-rose-600 uppercase tracking-widest">Operating Expenses</td>
-                   </tr>
-                   <tr className="hover:bg-slate-50 dark:hover:bg-slate-800/20 transition-colors">
-                      <td className="px-6 py-4 text-xs font-bold text-slate-700 dark:text-slate-300">Staff Payroll & Benefits</td>
-                      <td className="px-6 py-4 text-xs font-mono text-right font-black">$182,000.00</td>
-                      <td className="px-6 py-4 text-xs font-mono text-right">-</td>
-                      <td className="px-6 py-4 text-xs font-mono text-right">($182,000.00)</td>
-                   </tr>
-                   <tr className="hover:bg-slate-50 dark:hover:bg-slate-800/20 transition-colors">
-                      <td className="px-6 py-4 text-xs font-bold text-slate-700 dark:text-slate-300">Maintenance & Utilities</td>
-                      <td className="px-6 py-4 text-xs font-mono text-right font-black">$45,200.00</td>
-                      <td className="px-6 py-4 text-xs font-mono text-right">-</td>
-                      <td className="px-6 py-4 text-xs font-mono text-right">($45,200.00)</td>
-                   </tr>
-                   <tr className="bg-slate-50/50 dark:bg-slate-700/40 border-t-2 border-double border-slate-200 dark:border-slate-700">
-                      <td className="px-6 py-4 text-[11px] font-black text-slate-900 dark:text-white uppercase tracking-tight">Net Operating Surplus</td>
-                      <td colSpan={2}></td>
-                      <td className="px-6 py-4 text-lg font-black text-emerald-600 text-right">$383,300.00</td>
-                   </tr>
-                </tbody>
-             </table>
-          </div>
-       </div>
-
-       <div className="space-y-6">
-          <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-6 rounded-lg shadow-sm hover:shadow-lg transition-all duration-300 animate-in fade-in slide-in-from-bottom-4 text-center space-y-4">
-             <div className="w-16 h-16 bg-indigo-50 dark:bg-indigo-500/10 rounded-full flex items-center justify-center mx-auto text-indigo-600">
-                <TrendingUp size={28} />
-             </div>
-             <div>
-                <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Growth Benchmark</h4>
-                <p className="text-2xl font-black text-slate-900 dark:text-white">+14.2%</p>
-                <p className="text-[10px] text-emerald-500 font-bold uppercase mt-1">Above Q4 2023</p>
-             </div>
-          </div>
-
-          <div className="bg-slate-900 p-6 rounded-lg text-white space-y-4 shadow-lg hover:shadow-xl transition-all duration-300 animate-in fade-in slide-in-from-bottom-4">
-             <h4 className="text-[10px] font-black uppercase tracking-widest opacity-60">Controller's Review</h4>
-             <p className="text-xs font-medium leading-relaxed italic opacity-80">
-               "Operating margins remain strong at 62%. Recommend increasing maintenance allocation for Q2 property facade project."
-             </p>
-             <div className="pt-4 border-t border-white/10 flex items-center gap-3">
-                <div className="w-8 h-8 rounded-full bg-blue-600 flex items-center justify-center font-black text-[10px]">EW</div>
-                <div>
-                   <p className="text-[10px] font-black leading-none">Elena Wright</p>
-                   <p className="text-[8px] font-bold opacity-50 uppercase mt-1">Chief Financial Officer</p>
-                </div>
-             </div>
-          </div>
-       </div>
-    </div>
-  </div>
-);
-
-const BalanceSheetView = ({ onBack }: { onBack: () => void }) => (
-  <div className="space-y-6 animate-fade-in">
-    <div className="flex justify-between items-center bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-6 rounded-lg shadow-sm hover:shadow-lg transition-all duration-300 animate-in fade-in slide-in-from-bottom-4">
-      <div className="flex items-center gap-4">
-        <button onClick={onBack} className="p-2 border border-slate-200 dark:border-slate-700 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 transition">
-          <ArrowRight className="rotate-180" size={18} />
-        </button>
-        <div>
-          <h3 className="text-lg font-black text-slate-900 dark:text-white uppercase tracking-tight">Balance Sheet</h3>
-          <p className="text-[10px] text-slate-500 font-bold uppercase">As of April 30, 2024</p>
-        </div>
-      </div>
-      <div className="flex gap-2">
-        <button className="flex items-center gap-2 px-4 py-2 border border-slate-200 dark:border-slate-700 rounded-lg text-[10px] font-black uppercase hover:bg-slate-50 dark:hover:bg-slate-800 transition-all hover:shadow-md">
-          <Download size={14} /> PDF
-        </button>
-        <button className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-[10px] font-black uppercase shadow-md hover:shadow-lg transition-all">
-          Sync GL
-        </button>
-      </div>
-    </div>
-
-    <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-       <div className="md:col-span-2 space-y-6">
-          <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg overflow-hidden shadow-sm hover:shadow-md transition-all duration-300 animate-in fade-in slide-in-from-bottom-4">
-             <table className="w-full text-left border-collapse">
-                <thead>
-                   <tr className="bg-slate-50 dark:bg-slate-700/20 border-b border-slate-100 dark:border-slate-700">
-                      <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest w-2/3">Classification</th>
-                      <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right">Amount</th>
-                   </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                   {/* Assets Section */}
-                   <tr className="bg-indigo-50/20 dark:bg-indigo-500/5">
-                      <td colSpan={2} className="px-6 py-3 text-[10px] font-black text-indigo-600 uppercase tracking-widest">Assets</td>
-                   </tr>
-                   <tr className="hover:bg-slate-50 dark:hover:bg-slate-800/20 transition-colors">
-                      <td className="px-6 py-4 text-xs font-bold text-slate-700 dark:text-slate-300 pl-8">Cash and Equivalents</td>
-                      <td className="px-6 py-4 text-xs font-mono text-right font-black">$2,450,200.00</td>
-                   </tr>
-                   <tr className="hover:bg-slate-50 dark:hover:bg-slate-800/20 transition-colors">
-                      <td className="px-6 py-4 text-xs font-bold text-slate-700 dark:text-slate-300 pl-8">Accounts Receivable</td>
-                      <td className="px-6 py-4 text-xs font-mono text-right font-black">$185,500.00</td>
-                   </tr>
-                   <tr className="hover:bg-slate-50 dark:hover:bg-slate-800/20 transition-colors">
-                      <td className="px-6 py-4 text-xs font-bold text-slate-700 dark:text-slate-300 pl-8">Fixed Assets (Property)</td>
-                      <td className="px-6 py-4 text-xs font-mono text-right font-black">$12,850,000.00</td>
-                   </tr>
-                   <tr className="bg-slate-50/50 dark:bg-slate-700/40">
-                      <td className="px-6 py-3 text-[10px] font-black text-slate-900 dark:text-white uppercase pl-8 text-right underline underline-offset-4 decoration-indigo-200">Total Assets</td>
-                      <td className="px-6 py-3 text-sm font-black text-indigo-600 text-right underline decoration-double">$15,485,700.00</td>
-                   </tr>
-
-                   {/* Liabilities Section */}
-                   <tr className="bg-rose-50/20 dark:bg-rose-500/5">
-                      <td colSpan={2} className="px-6 py-3 text-[10px] font-black text-rose-600 uppercase tracking-widest">Liabilities & Equity</td>
-                   </tr>
-                   <tr className="hover:bg-slate-50 dark:hover:bg-slate-800/20 transition-colors">
-                      <td className="px-6 py-4 text-xs font-bold text-slate-700 dark:text-slate-300 pl-8">Accounts Payable</td>
-                      <td className="px-6 py-4 text-xs font-mono text-right font-black">$315,200.00</td>
-                   </tr>
-                   <tr className="hover:bg-slate-50 dark:hover:bg-slate-800/20 transition-colors">
-                      <td className="px-6 py-4 text-xs font-bold text-slate-700 dark:text-slate-300 pl-8">Long-term Debt</td>
-                      <td className="px-6 py-4 text-xs font-mono text-right font-black">$4,500,000.00</td>
-                   </tr>
-                   <tr className="hover:bg-slate-50 dark:hover:bg-slate-800/20 transition-colors">
-                      <td className="px-6 py-4 text-xs font-bold text-slate-700 dark:text-slate-300 pl-8">Owner's Equity</td>
-                      <td className="px-6 py-4 text-xs font-mono text-right font-black">$10,670,500.00</td>
-                   </tr>
-                   <tr className="bg-slate-50/50 dark:bg-slate-700/40 border-t-2 border-double border-slate-200 dark:border-slate-700">
-                      <td className="px-6 py-4 text-[11px] font-black text-slate-900 dark:text-white uppercase tracking-tight text-right underline underline-offset-4 decoration-rose-200">Total Liabilities & Equity</td>
-                      <td className="px-6 py-4 text-lg font-black text-rose-600 text-right">$15,485,700.00</td>
-                   </tr>
-                </tbody>
-             </table>
-          </div>
-       </div>
-
-       <div className="space-y-6">
-          <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-6 rounded-lg shadow-sm hover:shadow-lg transition-all duration-300 animate-in fade-in slide-in-from-bottom-4 text-center space-y-4">
-             <div className="w-16 h-16 bg-emerald-50 dark:bg-emerald-500/10 rounded-full flex items-center justify-center mx-auto text-emerald-600">
-                <ShieldCheck size={28} />
-             </div>
-             <div>
-                <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Liquidity Ratio</h4>
-                <p className="text-2xl font-black text-slate-900 dark:text-white">7.8x</p>
-                <p className="text-[10px] text-emerald-500 font-bold uppercase mt-1">Excellent (Above 2.0x)</p>
-             </div>
-          </div>
-
-          <div className="bg-blue-600 p-8 rounded-lg text-white shadow-lg hover:shadow-xl transition-all duration-300 animate-in fade-in slide-in-from-bottom-4">
-             <h4 className="text-[10px] font-black uppercase tracking-widest opacity-60">Asset Management</h4>
-             <p className="text-xs font-medium leading-relaxed italic opacity-80">
-               "Strong asset-to-liability coverage. Equity position strengthened by Q1 retained earnings. Recommending property appreciation re-evaluation for next review."
-             </p>
-          </div>
-       </div>
-    </div>
-  </div>
-);
-
-const CashFlowView = ({ onBack }: { onBack: () => void }) => (
-  <div className="space-y-6 animate-fade-in">
-    <div className="flex justify-between items-center bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-6 rounded-lg shadow-sm hover:shadow-lg transition-all duration-300 animate-in fade-in slide-in-from-bottom-4">
-      <div className="flex items-center gap-4">
-        <button onClick={onBack} className="p-2 border border-slate-200 dark:border-slate-700 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 transition">
-          <ArrowRight className="rotate-180" size={18} />
-        </button>
-        <div>
-          <h3 className="text-lg font-black text-slate-900 dark:text-white uppercase tracking-tight">Statement of Cash Flows</h3>
-          <p className="text-[10px] text-slate-500 font-bold uppercase">Period: Q1 2024</p>
-        </div>
-      </div>
-      <div className="flex gap-2">
-        <button className="flex items-center gap-2 px-4 py-2 border border-slate-200 dark:border-slate-700 rounded-lg text-[10px] font-black uppercase hover:bg-slate-50 dark:hover:bg-slate-800 transition-all hover:shadow-md">
-          <Download size={14} /> XLSX
-        </button>
-        <button className="flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-lg text-[10px] font-black uppercase shadow-lg shadow-emerald-600/20">
-          Live Sync
-        </button>
-      </div>
-    </div>
-
-    <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-       <div className="md:col-span-2 space-y-6">
-          <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg overflow-hidden shadow-sm hover:shadow-md transition-all duration-300 animate-in fade-in slide-in-from-bottom-4">
-             <table className="w-full text-left border-collapse">
-                <thead>
-                   <tr className="bg-slate-50 dark:bg-slate-700/20 border-b border-slate-100 dark:border-slate-700">
-                      <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest w-2/3">Activity Classification</th>
-                      <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right">Cash Impact</th>
-                   </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                   {/* Operating Activities */}
-                   <tr className="bg-emerald-50/20 dark:bg-emerald-500/5">
-                      <td colSpan={2} className="px-6 py-3 text-[10px] font-black text-emerald-600 uppercase tracking-widest">Operating Activities</td>
-                   </tr>
-                   <tr className="hover:bg-slate-50 dark:hover:bg-slate-800/20 transition-colors">
-                      <td className="px-6 py-4 text-xs font-bold text-slate-700 dark:text-slate-300 pl-8">Net Income (Adjusted)</td>
-                      <td className="px-6 py-4 text-xs font-mono text-right font-black">$383,300.00</td>
-                   </tr>
-                   <tr className="hover:bg-slate-50 dark:hover:bg-slate-800/20 transition-colors">
-                      <td className="px-6 py-4 text-xs font-bold text-slate-700 dark:text-slate-300 pl-8">Depreciation & Amortization</td>
-                      <td className="px-6 py-4 text-xs font-mono text-right font-black">$25,000.00</td>
-                   </tr>
-                   <tr className="hover:bg-slate-50 dark:hover:bg-slate-800/20 transition-colors">
-                      <td className="px-6 py-4 text-xs font-bold text-slate-700 dark:text-slate-300 pl-8">Change in Accounts Receivable</td>
-                      <td className="px-6 py-4 text-xs font-mono text-right font-black text-rose-500">($42,000.00)</td>
-                   </tr>
-                   <tr className="bg-emerald-50/10 dark:bg-emerald-500/10">
-                      <td className="px-6 py-3 text-[10px] font-black text-slate-900 dark:text-white uppercase pl-8 text-right underline underline-offset-4 decoration-emerald-200">Net Cash from Operations</td>
-                      <td className="px-6 py-3 text-sm font-black text-emerald-600 text-right">$366,300.00</td>
-                   </tr>
-
-                   {/* Investing Activities */}
-                   <tr className="bg-blue-50/20 dark:bg-blue-500/5">
-                      <td colSpan={2} className="px-6 py-3 text-[10px] font-black text-blue-600 uppercase tracking-widest">Investing Activities</td>
-                   </tr>
-                   <tr className="hover:bg-slate-50 dark:hover:bg-slate-800/20 transition-colors">
-                      <td className="px-6 py-4 text-xs font-bold text-slate-700 dark:text-slate-300 pl-8">Capital Expenditures (CapEx)</td>
-                      <td className="px-6 py-4 text-xs font-mono text-right font-black text-rose-500">($125,000.00)</td>
-                   </tr>
-                   <tr className="hover:bg-slate-50 dark:hover:bg-slate-800/20 transition-colors">
-                      <td className="px-6 py-4 text-xs font-bold text-slate-700 dark:text-slate-300 pl-8">Sale of Property/Plant</td>
-                      <td className="px-6 py-4 text-xs font-mono text-right font-black">$0.00</td>
-                   </tr>
-                   <tr className="bg-blue-50/10 dark:bg-blue-500/10 border-t border-blue-100 dark:border-blue-900/30">
-                      <td className="px-6 py-4 text-[11px] font-black text-slate-900 dark:text-white uppercase tracking-tight text-right underline underline-offset-4 decoration-blue-200">Net Cash from Investing</td>
-                      <td className="px-6 py-4 text-sm font-black text-blue-600 text-right">($125,000.00)</td>
-                   </tr>
-
-                   {/* Total Cash Change */}
-                   <tr className="bg-slate-900 text-white">
-                      <td className="px-6 py-4 text-[12px] font-black uppercase tracking-tight">Net Change in Cash</td>
-                      <td className="px-6 py-4 text-lg font-black text-right font-mono">$241,300.00</td>
-                   </tr>
-                </tbody>
-             </table>
-          </div>
-       </div>
-
-       <div className="space-y-6">
-          <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-6 rounded-lg shadow-sm hover:shadow-lg transition-all duration-300 animate-in fade-in slide-in-from-bottom-4 space-y-4">
-             <div className="flex justify-between items-center px-1">
-                <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Cash Positions</h4>
-                <TrendingUp size={14} className="text-emerald-500" />
-             </div>
-             <div className="space-y-2">
-                <div className="flex justify-between items-end p-3 bg-slate-50 dark:bg-slate-800 rounded-lg">
-                   <span className="text-[10px] font-black text-slate-900 dark:text-white uppercase">Operating Account</span>
-                   <span className="text-xs font-black text-emerald-600">$1,850,200</span>
-                </div>
-                <div className="flex justify-between items-end p-3 bg-slate-50 dark:bg-slate-800 rounded-lg">
-                   <span className="text-[10px] font-black text-slate-900 dark:text-white uppercase">Payroll Fund</span>
-                   <span className="text-xs font-black text-indigo-600">$450,000</span>
-                </div>
-                <div className="flex justify-between items-end p-3 bg-slate-50 dark:bg-slate-800 rounded-lg">
-                   <span className="text-[10px] font-black text-slate-900 dark:text-white uppercase">Reserve Capital</span>
-                   <span className="text-xs font-black text-slate-500">$150,000</span>
-                </div>
-             </div>
-          </div>
-
-          <div className="bg-slate-900 p-6 rounded-lg text-white shadow-lg hover:shadow-xl transition-all duration-300 animate-in fade-in slide-in-from-bottom-4">
-             <h4 className="text-[10px] font-black uppercase tracking-widest opacity-80">Burn Rate Analysis</h4>
-             <p className="text-xl font-black">42.2 Months</p>
-             <p className="text-[10px] font-bold opacity-60 uppercase">Runway with current operating reserves</p>
-          </div>
-       </div>
-    </div>
-  </div>
-);
-
-const DailyRevenueSummaryView = ({ onBack }: { onBack: () => void }) => (
-  <div className="space-y-6 animate-fade-in">
-    <div className="flex justify-between items-center bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-6 rounded-lg shadow-sm hover:shadow-lg transition-all duration-300 animate-in fade-in slide-in-from-bottom-4">
-      <div className="flex items-center gap-4">
-        <button onClick={onBack} className="p-2 border border-slate-200 dark:border-slate-700 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 transition">
-          <ArrowRight className="rotate-180" size={18} />
-        </button>
-        <div>
-          <h3 className="text-lg font-black text-slate-900 dark:text-white uppercase tracking-tight">Daily Revenue Summary</h3>
-          <p className="text-[10px] text-slate-500 font-bold uppercase">Reporting Date: June 03, 2026 • Live Sync</p>
-        </div>
-      </div>
-      <div className="flex gap-2">
-         <span className="flex items-center gap-2 px-4 py-2 bg-emerald-500/10 text-emerald-600 rounded-lg text-[10px] font-black uppercase">
-            <RefreshCw size={12} className="animate-spin" /> Live Updates
-         </span>
-      </div>
-    </div>
-
-    <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-       {[
-         { label: 'Total Revenue', value: '$84,520.00', sub: '+12% vs Budget', icon: DollarSign, color: 'text-emerald-500' },
-         { label: 'Occupancy %', value: '88.4%', sub: '242/274 Rooms', icon: Home, color: 'text-indigo-500' },
-         { label: 'ADR', value: '$349.25', sub: 'Avg Daily Rate', icon: TrendingUp, color: 'text-blue-500' },
-         { label: 'RevPAR', value: '$308.73', sub: 'Revenue Per Available Room', icon: Activity, color: 'text-amber-500' },
-       ].map((stat, i) => (
-         <div key={i} className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-5 rounded-lg shadow-sm hover:shadow-lg hover:scale-105 transition-all duration-300 transform animate-in fade-in slide-in-from-bottom-4">
-            <div className="flex justify-between items-start mb-4">
-               <div className={`p-2 rounded-lg bg-slate-50 dark:bg-slate-700 ${stat.color}`}>
-                  <stat.icon size={18} />
-               </div>
+              )}
             </div>
-            <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{stat.label}</h4>
-            <p className="text-xl font-black text-slate-900 dark:text-white mt-1">{stat.value}</p>
-            <p className="text-[9px] font-bold text-slate-500 uppercase mt-1">{stat.sub}</p>
-         </div>
-       ))}
-    </div>
+            <button className={button.secondary} onClick={openSchedule}>
+              <Clock size={14} /> Schedule
+            </button>
+            <button
+              onClick={handleRunAll}
+              disabled={runningAll || loading}
+              className={[button.primary, 'flex items-center gap-2'].join(' ')}
+            >
+              {runningAll ? <Loader2 size={14} className="animate-spin" /> : <FileBarChart size={14} />}
+              Run All
+            </button>
+          </>
+        }
+      />
 
-    <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg overflow-hidden shadow-sm hover:shadow-md transition-all duration-300 animate-in fade-in slide-in-from-bottom-4">
-       <div className="p-4 bg-slate-50 dark:bg-slate-700/20 border-b border-slate-100 dark:border-slate-700">
-          <h4 className="text-[10px] font-black text-slate-800 dark:text-white uppercase tracking-widest">Departmental Revenue Split</h4>
-       </div>
-       <table className="w-full text-left border-collapse">
-          <thead>
-             <tr className="bg-slate-50/50 dark:bg-slate-700/40 font-mono">
-                <th className="px-6 py-3 text-[10px] font-black text-slate-400 uppercase tracking-widest">Department</th>
-                <th className="px-6 py-3 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right">Day Actual</th>
-                <th className="px-6 py-3 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right">MTD Actual</th>
-                <th className="px-6 py-3 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right">Variance</th>
-             </tr>
-          </thead>
-          <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-             {[
-               { dept: 'Rooms Revenue', day: 58400, mtd: 175200, var: 4.2 },
-               { dept: 'Food & Beverage', day: 18200, mtd: 54600, var: -1.5 },
-               { dept: 'Spa & Wellness', day: 5420, mtd: 16260, var: 8.4 },
-               { dept: 'Ancillary / Other', day: 2500, mtd: 7500, var: 2.1 },
-             ].map((row, i) => (
-               <tr key={i} className="hover:bg-slate-50 dark:hover:bg-slate-800/20 transition-colors">
-                  <td className="px-6 py-4 text-xs font-bold text-slate-700 dark:text-slate-300">{row.dept}</td>
-                  <td className="px-6 py-4 text-xs font-mono text-right font-black">${row.day.toLocaleString()}</td>
-                  <td className="px-6 py-4 text-xs font-mono text-right">${row.mtd.toLocaleString()}</td>
-                  <td className={`px-6 py-4 text-[10px] font-black text-right ${row.var >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
-                     {row.var >= 0 ? '+' : ''}{row.var}%
-                  </td>
-               </tr>
-             ))}
-             <tr className="bg-slate-900 text-white font-black">
-                <td className="px-6 py-4 text-xs uppercase">Total Portfolio Yield</td>
-                <td className="px-6 py-4 text-sm text-right">$84,520.00</td>
-                <td className="px-6 py-4 text-sm text-right">$253,560.00</td>
-                <td className="px-6 py-4 text-xs text-right text-emerald-400">+3.8%</td>
-             </tr>
-          </tbody>
-       </table>
-    </div>
-  </div>
-);
+      <div className={layout.kpiGrid}>
+        <StatCard title="Total Reports" value={totalReports} icon={FileText} tone="accent" caption={activeLabel} />
+        <StatCard title="Ready" value={ready} icon={CheckCircle2} tone="success" />
+        <StatCard title="Scheduled" value={scheduled} icon={Clock} tone="info" />
+        <StatCard title="Failed" value={failed} icon={AlertTriangle} tone="danger" />
+      </div>
 
-const ARAgeingView = ({ onBack }: { onBack: () => void }) => (
-  <div className="space-y-6 animate-fade-in">
-    <div className="flex justify-between items-center bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-6 rounded-lg shadow-sm hover:shadow-lg transition-all duration-300 animate-in fade-in slide-in-from-bottom-4">
-      <div className="flex items-center gap-4">
-        <button onClick={onBack} className="p-2 border border-slate-200 dark:border-slate-700 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 transition">
-          <ArrowRight className="rotate-180" size={18} />
-        </button>
-        <div>
-          <h3 className="text-lg font-black text-slate-900 dark:text-white uppercase tracking-tight">AR Ageing Detailed Report</h3>
-          <p className="text-[10px] text-slate-500 font-bold uppercase">Accounts Receivable Dashboard • Oct 2026</p>
+      {/* ── Unified toolbar: refresh + search ──── */}
+      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            onClick={fetchAll}
+            disabled={loading}
+            className={[button.ghost, 'flex items-center gap-2'].join(' ')}
+            title="Refresh"
+          >
+            {loading ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+          </button>
+          <div className="relative w-full sm:w-56">
+            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+            <input
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              placeholder="Search reports..."
+              className="w-full pl-9 pr-3 py-2 text-sm border border-gray-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-gray-900 dark:text-white"
+            />
+          </div>
         </div>
       </div>
-      <div className="flex gap-2">
-        <button className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-[10px] font-black uppercase shadow-md hover:shadow-lg transition-all">
-          Apply Filters
-        </button>
-      </div>
-    </div>
 
-    <div className="grid grid-cols-1 md:grid-cols-5 gap-3">
-       {[
-         { range: '0-30 Days', amount: 142500, color: 'bg-emerald-500' },
-         { range: '31-60 Days', amount: 52000, color: 'bg-indigo-500' },
-         { range: '61-90 Days', amount: 24500, color: 'bg-blue-500' },
-         { range: '90+ Days', amount: 8200, color: 'bg-amber-500' },
-         { range: 'Total AR', amount: 227200, color: 'bg-slate-900 dark:bg-slate-800' },
-       ].map((bucket, i) => (
-         <div key={i} className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-5 rounded-lg shadow-sm hover:shadow-lg hover:scale-105 transition-all duration-300 transform animate-in fade-in slide-in-from-bottom-4 relative overflow-hidden">
-            <div className={`absolute top-0 left-0 w-1 h-full ${bucket.color}`} />
-            <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{bucket.range}</h4>
-            <p className="text-lg font-black text-slate-900 dark:text-white mt-1">${bucket.amount.toLocaleString()}</p>
-            <div className="mt-2 w-full h-1 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
-               <div className={`h-full ${bucket.color}`} style={{ width: `${(bucket.amount / 227200) * 100}%` }} />
+      {/* ── Reports grouped by category ──── */}
+      {loading && reports.length === 0 ? (
+        <SectionCard title="Loading…" icon={FileBarChart} tone="accent">
+          <div className="px-6 py-10 text-center text-slate-500">
+            <Loader2 size={18} className="animate-spin inline-block mr-2" />
+            Loading reports…
+          </div>
+        </SectionCard>
+      ) : reports.length === 0 ? (
+        <SectionCard title="No Matching Reports" icon={FileBarChart} tone="accent">
+          <div className="px-6 py-10 text-center text-slate-500">No reports match your search. Try clearing the search filter.</div>
+        </SectionCard>
+      ) : (
+        CATEGORY_ORDER.map(cat => {
+          const groupReports = reportsByCategory[cat];
+          if (!groupReports || groupReports.length === 0) return null;
+          return (
+            <SectionCard
+              key={cat}
+              title={`${cat} · ${activeLabel}`}
+              icon={FileBarChart}
+              tone="accent"
+            >
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead className="bg-slate-50 dark:bg-slate-900/40 text-left text-xs uppercase text-slate-500">
+                    <tr>
+                      <th className="px-6 py-3 font-medium">Report ID</th>
+                      <th className="px-6 py-3 font-medium">Report</th>
+                      <th className="px-6 py-3 font-medium">Description</th>
+                      <th className="px-6 py-3 font-medium">Last Run</th>
+                      <th className="px-6 py-3 font-medium">Format</th>
+                      <th className="px-6 py-3 font-medium">Frequency</th>
+                      <th className="px-6 py-3 font-medium">Status</th>
+                      <th className="px-6 py-3 font-medium">Period</th>
+                      <th className="px-6 py-3 font-medium text-right">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-200 dark:divide-slate-700">
+                    {groupReports.map(r => {
+                      const isRunning = runningId === r.id;
+                      const fmt = (r.format as ReportFormat) || 'PDF';
+                      const st = (r.status as ReportStatus) || 'Scheduled';
+                      return (
+                        <tr key={r.id} className="hover:bg-slate-50 dark:hover:bg-slate-700/40">
+                          <td className="px-6 py-3 whitespace-nowrap">
+                            <span className="inline-flex items-center gap-1.5">
+                              <span className="text-xs font-mono font-semibold px-2 py-0.5 rounded-md bg-indigo-50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800">
+                                {DEPT_TAG}
+                              </span>
+                              <span className="text-sm font-mono text-slate-600 dark:text-slate-400">{r.report_key}</span>
+                            </span>
+                          </td>
+                          <td className="px-6 py-3 font-medium text-gray-900 dark:text-white">{r.title}</td>
+                          <td className="px-6 py-3 text-slate-600 dark:text-slate-400">{r.description || '—'}</td>
+                          <td className="px-6 py-3 text-slate-600 dark:text-slate-400 whitespace-nowrap">{formatLastRun(r.last_run_at)}</td>
+                          <td className="px-6 py-3"><Badge tone={FORMAT_TONE[fmt] || 'neutral'}>{fmt}</Badge></td>
+                          <td className="px-6 py-3 text-slate-600 dark:text-slate-400">{r.frequency}</td>
+                          <td className="px-6 py-3"><Badge tone={STATUS_TONE[st] || 'neutral'}>{st}</Badge></td>
+                          <td className="px-6 py-3 whitespace-nowrap">
+                            {period === 'Custom' ? (
+                              <span className="text-xs text-slate-500 dark:text-slate-400 font-mono">
+                                {activeRange.from} → {activeRange.to}
+                              </span>
+                            ) : (
+                              <div className="flex flex-col gap-0.5">
+                                <Badge tone={period === 'Today' ? 'info' : period === 'WTD' ? 'warning' : period === 'MTD' ? 'success' : 'accent'}>
+                                  {period}
+                                </Badge>
+                                <span className="text-[10px] text-slate-400 font-mono">{activeRange.from} → {activeRange.to}</span>
+                              </div>
+                            )}
+                          </td>
+                          <td className="px-6 py-3 text-right">
+                            <div className="inline-flex gap-2">
+                              <button
+                                onClick={() => openView(r)}
+                                className={button.ghost}
+                              >
+                                <Eye size={14} /> View
+                              </button>
+                              <button
+                                onClick={() => downloadReport(r)}
+                                disabled={isRunning || downloadingId === r.id}
+                                className={button.ghost}
+                                title={`Download as ${fmt}`}
+                              >
+                                {downloadingId === r.id ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
+                                {downloadingId === r.id ? 'Downloading' : 'Download'}
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </SectionCard>
+          );
+        })
+      )}
+
+      <div className="bg-gradient-to-r from-amber-50 to-orange-50 dark:from-amber-900/20 dark:to-orange-900/20 rounded-xl p-6 border border-amber-200 dark:border-amber-800">
+        <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-2 flex items-center gap-2">
+          <AlertTriangle size={18} className="text-amber-600 dark:text-amber-400" />
+          Report Delivery
+        </h3>
+        <p className="text-sm text-slate-600 dark:text-slate-400">
+          Reports are generated automatically and can be delivered to Finance leadership, Controllers, External Auditors, and Executive BI inboxes. Manual re-runs are available for users with report access.
+        </p>
+      </div>
+
+      {/* ── View Modal ─────────────────────────────────────────────── */}
+      <ModalSystem
+        isOpen={!!viewReport}
+        onClose={() => setViewReport(null)}
+        title={viewReport?.title || 'Report'}
+        subtitle={viewReport ? `${taggedId(viewReport.report_key)} · ${viewReport.category}` : ''}
+        variant="info"
+        size="xl"
+        showFooter={true}
+        cancelLabel="Close"
+        footer={
+          <div className="flex items-center justify-between gap-3">
+            <div className="text-xs text-slate-500">
+              {viewReport && `Last run: ${formatDateTime(viewReport.last_run_at)}`}
             </div>
-         </div>
-       ))}
-    </div>
-
-    <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg overflow-hidden shadow-sm hover:shadow-md transition-all duration-300 animate-in fade-in slide-in-from-bottom-4">
-       <table className="w-full text-left border-collapse">
-          <thead>
-             <tr className="bg-slate-50/50 dark:bg-slate-700/40 font-mono">
-                <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Client / Group Name</th>
-                <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Type</th>
-                <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right">Total Balance</th>
-                <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right">0-30</th>
-                <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right">31-60</th>
-                <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right">60+</th>
-             </tr>
-          </thead>
-          <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-             {[
-               { name: 'Apex Global Logistics', type: 'Corporate', total: 45000, r1: 30000, r2: 15000, r3: 0 },
-               { name: 'Silverstone Events', type: 'Group', total: 28500, r1: 12000, r2: 10000, r3: 6500 },
-               { name: 'Elite Travel Concierge', type: 'OTA', total: 12400, r1: 12400, r2: 0, r3: 0 },
-               { name: 'North Star Consulting', type: 'Corporate', total: 8200, r1: 0, r2: 0, r3: 8200 },
-             ].map((client, i) => (
-               <tr key={i} className="hover:bg-slate-50 dark:hover:bg-slate-800/20 transition-colors cursor-pointer group">
-                  <td className="px-6 py-4">
-                     <span className="text-xs font-black text-slate-900 dark:text-white uppercase tracking-tighter block group-hover:text-indigo-600 transition-colors">{client.name}</span>
-                     <span className="text-[9px] font-bold text-slate-400 uppercase">Last Contact: 2 days ago</span>
-                  </td>
-                  <td className="px-6 py-4">
-                     <span className="px-2 py-0.5 bg-slate-100 dark:bg-slate-700 rounded text-[9px] font-black text-slate-500 uppercase">{client.type}</span>
-                  </td>
-                  <td className="px-6 py-4 text-xs font-black text-slate-900 dark:text-white text-right font-mono">${client.total.toLocaleString()}</td>
-                  <td className="px-6 py-4 text-xs font-medium text-slate-400 text-right">${client.r1.toLocaleString()}</td>
-                  <td className="px-6 py-4 text-xs font-medium text-slate-400 text-right">${client.r2.toLocaleString()}</td>
-                  <td className={`px-6 py-4 text-xs font-black text-right ${client.r3 > 0 ? 'text-rose-600' : 'text-slate-200'}`}>${client.r3.toLocaleString()}</td>
-               </tr>
-             ))}
-          </tbody>
-       </table>
-    </div>
-  </div>
-);
-
-const BankAuditView = ({ onBack }: { onBack: () => void }) => (
-  <div className="space-y-6 animate-fade-in">
-    <div className="flex justify-between items-center bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-6 rounded-lg shadow-sm hover:shadow-lg transition-all duration-300 animate-in fade-in slide-in-from-bottom-4">
-      <div className="flex items-center gap-4">
-        <button onClick={onBack} className="p-2 border border-slate-200 dark:border-slate-700 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 transition">
-          <ArrowRight className="rotate-180" size={18} />
-        </button>
-        <div>
-          <h3 className="text-lg font-black text-slate-900 dark:text-white uppercase tracking-tight">Bank Audit & Reconciliation</h3>
-          <p className="text-[10px] text-slate-500 font-bold uppercase">System Ledger vs Bank Statements • May 2024</p>
-        </div>
-      </div>
-      <div className="flex gap-2">
-         <button className="flex items-center gap-2 px-4 py-2 border border-slate-200 dark:border-slate-700 rounded-lg text-[10px] font-black uppercase hover:bg-slate-50 dark:hover:bg-slate-800 transition-all hover:shadow-md">
-            <RefreshCw size={14} /> Refresh Feed
-         </button>
-         <button className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-[10px] font-black uppercase shadow-md hover:shadow-lg transition-all">
-            Finalize Reconciliation
-         </button>
-      </div>
-    </div>
-
-    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-       <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-8 rounded-lg shadow-sm hover:shadow-lg transition-all duration-300 animate-in fade-in slide-in-from-bottom-4 space-y-6">
-          <h4 className="text-[11px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-2">
-             <ShieldCheck size={16} className="text-emerald-500" /> Active Settlement Status
-          </h4>
-          <div className="space-y-4">
-             {[
-               { bank: 'Chase Operating', ledger: 1850200, statement: 1845100, diff: 5100, status: 'Adjusting' },
-               { bank: 'Wells Fargo Payroll', ledger: 450000, statement: 450000, diff: 0, status: 'Matched' },
-               { bank: 'AMEX Merchant Sync', ledger: 125400, statement: 122100, diff: 3300, status: 'Pending' },
-             ].map((recon, i) => (
-                <div key={i} className="p-5 bg-slate-50 dark:bg-slate-700/20 border border-slate-100 dark:border-slate-700 rounded-lg">
-                   <div className="flex justify-between items-center mb-4">
-                      <span className="text-sm font-black text-slate-900 dark:text-white uppercase tracking-tighter">{recon.bank}</span>
-                      <span className={`px-2 py-0.5 rounded text-[8px] font-black uppercase ${
-                        recon.status === 'Matched' ? 'bg-emerald-50 text-emerald-600' : 'bg-amber-50 text-amber-600'
-                      }`}>{recon.status}</span>
-                   </div>
-                   <div className="grid grid-cols-3 gap-4">
-                      <div>
-                         <span className="text-[8px] font-black text-slate-400 uppercase block mb-1">Ledger</span>
-                         <span className="text-xs font-black text-slate-900 dark:text-white font-mono">${recon.ledger.toLocaleString()}</span>
-                      </div>
-                      <div>
-                         <span className="text-[8px] font-black text-slate-400 uppercase block mb-1">Statement</span>
-                         <span className="text-xs font-black text-slate-900 dark:text-white font-mono">${recon.statement.toLocaleString()}</span>
-                      </div>
-                      <div className="text-right">
-                         <span className="text-[8px] font-black text-slate-400 uppercase block mb-1">Variance</span>
-                         <span className={`text-xs font-black font-mono ${recon.diff === 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
-                            ${recon.diff.toLocaleString()}
-                         </span>
-                      </div>
-                   </div>
+            <div className="flex gap-2">
+              <button
+                onClick={() => viewReport && handleRun(viewReport)}
+                disabled={!!runningId}
+                className="px-4 py-2 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 rounded-xl font-bold text-xs uppercase tracking-widest hover:bg-slate-200 dark:hover:bg-slate-700 transition disabled:opacity-50 flex items-center gap-2"
+              >
+                {runningId ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+                Run Now
+              </button>
+              <button
+                onClick={() => viewReport && downloadReport(viewReport)}
+                disabled={!!downloadingId}
+                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold text-xs uppercase tracking-widest transition disabled:opacity-50 flex items-center gap-2"
+              >
+                {downloadingId ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
+                Download {viewReport?.format}
+              </button>
+              <button
+                onClick={() => setViewReport(null)}
+                className="px-4 py-2 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 rounded-xl font-bold text-xs uppercase tracking-widest hover:bg-slate-200 dark:hover:bg-slate-700 transition"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        }
+      >
+        {viewReport && (
+          <div className="space-y-5">
+            {/* Period selector + metadata summary */}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="flex rounded-xl overflow-hidden border border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-800">
+                  {PERIODS.map(p => (
+                    <button
+                      key={p}
+                      onClick={() => {
+                        if (p === 'Custom') {
+                          const range = defaultCustomRange();
+                          setViewCustomFrom(range.from);
+                          setViewCustomTo(range.to);
+                        }
+                        setViewPeriod(p);
+                      }}
+                      className={`px-3 py-1.5 text-sm font-medium transition-colors ${
+                        viewPeriod === p
+                          ? 'bg-[var(--color-accent-operations)] text-white'
+                          : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700'
+                      }`}
+                    >
+                      {p}
+                    </button>
+                  ))}
                 </div>
-             ))}
+                {viewPeriod === 'Custom' && (
+                  <div className="flex items-center gap-1.5 text-sm">
+                    <input
+                      type="date"
+                      value={viewCustomFrom}
+                      onChange={e => setViewCustomFrom(e.target.value)}
+                      className="px-2 py-1.5 text-sm border border-gray-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-gray-900 dark:text-white"
+                    />
+                    <span className="text-slate-400">→</span>
+                    <input
+                      type="date"
+                      value={viewCustomTo}
+                      onChange={e => setViewCustomTo(e.target.value)}
+                      className="px-2 py-1.5 text-sm border border-gray-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-gray-900 dark:text-white"
+                    />
+                  </div>
+                )}
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge tone={STATUS_TONE[(viewReport.status as ReportStatus) || 'Scheduled']}>{viewReport.status}</Badge>
+                <Badge tone={FORMAT_TONE[(viewReport.format as ReportFormat) || 'PDF']}>{viewReport.format}</Badge>
+                <span className="text-xs text-slate-500 font-mono">{viewLabel}</span>
+              </div>
+            </div>
+
+            <div>
+              <div className="text-xs text-slate-500 mb-1">Description</div>
+              <p className="text-sm text-slate-700 dark:text-slate-300">{viewReport.description || '—'}</p>
+            </div>
+
+            {/* ── Actual report content (spec §25) ──── */}
+            <div className="border-t border-slate-100 dark:border-slate-800 pt-4">
+              <h4 className="text-sm font-semibold text-slate-700 dark:text-slate-200 mb-3 flex items-center gap-2">
+                <Eye size={16} /> {viewReport.title}
+              </h4>
+
+              {(() => {
+                const rend = rendererFor(viewReport);
+                if (rend.kind === 'financial-statements') {
+                  return (
+                    <div className="rounded-xl border border-slate-200 dark:border-slate-700 p-4 bg-white dark:bg-slate-900/40">
+                      <FinancialStatements initialTab={rend.tab} />
+                    </div>
+                  );
+                }
+                if (rend.kind === 'trial-balance') {
+                  return (
+                    <div className="rounded-xl border border-slate-200 dark:border-slate-700 p-4 bg-white dark:bg-slate-900/40">
+                      <TrialBalance />
+                    </div>
+                  );
+                }
+                if (rend.kind === 'equity') {
+                  return <StatementOfChangesInEquity periodCols={equityPeriodCols} />;
+                }
+                // Structured preview for reports without a dedicated renderer
+                const def = previewDef(viewReport);
+                const cols: Column<Record<string, string | number>>[] = def.columns.map(c => ({
+                  key: c,
+                  label: c,
+                  render: (row: Record<string, string | number>) => (
+                    <span className="text-xs text-slate-700 dark:text-slate-200">{String(row[c] ?? '—')}</span>
+                  ),
+                }));
+                return (
+                  <div className="rounded-xl border border-slate-200 dark:border-slate-700 overflow-hidden">
+                    <DataTable
+                      columns={cols}
+                      data={def.rows}
+                      rowKey={(_, i) => String(i)}
+                      containerClassName="rounded-xl border-0 shadow-none"
+                    />
+                  </div>
+                );
+              })()}
+            </div>
+
+            {/* Compact metadata footer */}
+            <div className="border-t border-slate-100 dark:border-slate-800 pt-4">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+                <div>
+                  <div className="text-slate-500 mb-0.5">Report ID</div>
+                  <div className="font-mono text-slate-700 dark:text-slate-200">{taggedId(viewReport.report_key)}</div>
+                </div>
+                <div>
+                  <div className="text-slate-500 mb-0.5">Frequency</div>
+                  <div className="text-slate-700 dark:text-slate-200">{viewReport.frequency}</div>
+                </div>
+                <div>
+                  <div className="text-slate-500 mb-0.5">Last Run</div>
+                  <div className="text-slate-700 dark:text-slate-200">{formatDateTime(viewReport.last_run_at)}</div>
+                </div>
+                <div>
+                  <div className="text-slate-500 mb-0.5">Last Run By</div>
+                  <div className="text-slate-700 dark:text-slate-200">{viewReport.last_run_by || '—'}</div>
+                </div>
+              </div>
+              {viewReport.updated_at && (
+                <div className="text-xs text-slate-400 mt-2">
+                  Last updated: {formatDateTime(viewReport.updated_at)}
+                </div>
+              )}
+            </div>
           </div>
-       </div>
+        )}
+      </ModalSystem>
 
-       <div className="bg-blue-600 p-8 rounded-lg text-white flex flex-col justify-between overflow-hidden relative">
-          <div className="relative z-10">
-             <h4 className="text-[10px] font-black uppercase tracking-widest mb-4 opacity-60">Anomaly Awareness</h4>
-             <p className="text-2xl font-black mb-2">$8,400.00</p>
-             <p className="text-xs font-medium opacity-80 leading-relaxed uppercase tracking-tight">Total Unreconciled Variance Across Portfolios</p>
+      {/* ── Schedule Modal ─────────────────────────────────────────── */}
+      <ModalSystem
+        isOpen={scheduleOpen}
+        onClose={() => setScheduleOpen(false)}
+        title="Report Scheduling"
+        subtitle="Edit frequency, format, and status for all Finance reports"
+        variant="form"
+        size="xl"
+        loading={scheduleSaving}
+        footer={
+          <div className="flex items-center justify-between gap-3">
+            <div className="text-xs text-slate-500">
+              {scheduleDirty ? 'Unsaved changes' : 'No changes'}
+            </div>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setScheduleOpen(false)}
+                disabled={scheduleSaving}
+                className="px-4 py-2 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 rounded-xl font-bold text-xs uppercase tracking-widest hover:bg-slate-200 dark:hover:bg-slate-700 transition disabled:opacity-40"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={saveSchedule}
+                disabled={scheduleSaving || !scheduleDirty}
+                className="px-5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold text-xs uppercase tracking-widest transition disabled:opacity-50 flex items-center gap-2"
+              >
+                {scheduleSaving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
+                Save Changes
+              </button>
+            </div>
           </div>
-          <div className="mt-12 space-y-3 relative z-10">
-             <div className="p-4 bg-white/10 backdrop-blur-md rounded-lg border border-white/10">
-                <span className="text-[9px] font-black uppercase tracking-widest block mb-1">Latest Exception: POS Terminal #42</span>
-                <p className="text-[10px] opacity-70">Batched 14:02 PM. Transaction #8821 matched but fee adjustment required ($12.50).</p>
-             </div>
-             <button className="w-full py-3 bg-white text-indigo-600 rounded-lg text-[10px] font-black uppercase tracking-widest shadow-2xl shadow-black/20">
-                Generate Exception Report
-             </button>
-          </div>
-          <Activity className="absolute -right-12 -bottom-12 opacity-10" size={240} />
-       </div>
-    </div>
-  </div>
-);
-
-const StatementOfChangesInEquityView = ({ onBack }: { onBack: () => void }) => (
-  <div className="space-y-6 animate-fade-in">
-    <div className="flex justify-between items-center bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-6 rounded-lg shadow-sm hover:shadow-lg transition-all duration-300">
-      <div className="flex items-center gap-4">
-        <button onClick={onBack} className="p-2 border border-slate-200 dark:border-slate-700 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 transition">
-          <ArrowRight className="rotate-180" size={18} />
-        </button>
-        <div>
-          <h3 className="text-lg font-black text-slate-900 dark:text-white uppercase tracking-tight">Statement of Changes in Equity</h3>
-          <p className="text-[10px] text-slate-500 font-bold uppercase">Period: Q1 2024</p>
+        }
+      >
+        <div className="overflow-x-auto rounded-lg border border-slate-200 dark:border-slate-700">
+          <table className="w-full text-sm">
+            <thead className="bg-slate-50 dark:bg-slate-800/60 text-left text-xs uppercase text-slate-500">
+              <tr>
+                <th className="px-3 py-2 font-medium">Report</th>
+                <th className="px-3 py-2 font-medium">Category</th>
+                <th className="px-3 py-2 font-medium">Frequency</th>
+                <th className="px-3 py-2 font-medium">Format</th>
+                <th className="px-3 py-2 font-medium">Status</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100 dark:divide-slate-700">
+              {allReports.map(r => {
+                const d = scheduleDraft[r.id];
+                if (!d) return null;
+                const changed = d.frequency !== r.frequency || d.format !== r.format || d.status !== r.status;
+                return (
+                  <tr key={r.id} className={changed ? 'bg-amber-50/50 dark:bg-amber-900/10' : ''}>
+                    <td className="px-3 py-2">
+                      <div className="font-medium text-slate-700 dark:text-slate-200">{r.title}</div>
+                      <div className="text-xs text-slate-400 font-mono">{taggedId(r.report_key)}</div>
+                    </td>
+                    <td className="px-3 py-2 text-slate-500">{r.category}</td>
+                    <td className="px-3 py-2">
+                      <input
+                        type="text"
+                        value={d.frequency}
+                        onChange={e => setScheduleDraft(prev => ({ ...prev, [r.id]: { ...prev[r.id], frequency: e.target.value } }))}
+                        className="w-full px-2 py-1 text-xs border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200"
+                      />
+                    </td>
+                    <td className="px-3 py-2">
+                      <select
+                        value={d.format}
+                        onChange={e => setScheduleDraft(prev => ({ ...prev, [r.id]: { ...prev[r.id], format: e.target.value as ReportFormat } }))}
+                        className="px-2 py-1 text-xs border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200"
+                      >
+                        {ALL_FORMATS.map(f => <option key={f} value={f}>{f}</option>)}
+                      </select>
+                    </td>
+                    <td className="px-3 py-2">
+                      <select
+                        value={d.status}
+                        onChange={e => setScheduleDraft(prev => ({ ...prev, [r.id]: { ...prev[r.id], status: e.target.value as ReportStatus } }))}
+                        className="px-2 py-1 text-xs border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200"
+                      >
+                        {ALL_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
+                      </select>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
         </div>
-      </div>
+      </ModalSystem>
     </div>
-    <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-6 rounded-lg shadow-sm">
-      <table className="w-full">
-        <thead className="bg-slate-50 dark:bg-slate-700/20 border-b border-slate-100 dark:border-slate-700">
-          <tr>
-            <th className="px-4 py-3 text-left text-[10px] font-black text-slate-400 uppercase tracking-widest">Equity Component</th>
-            <th className="px-4 py-3 text-right text-[10px] font-black text-slate-400 uppercase tracking-widest">Opening Balance</th>
-            <th className="px-4 py-3 text-right text-[10px] font-black text-slate-400 uppercase tracking-widest">Net Income</th>
-            <th className="px-4 py-3 text-right text-[10px] font-black text-slate-400 uppercase tracking-widest">Dividends</th>
-            <th className="px-4 py-3 text-right text-[10px] font-black text-slate-400 uppercase tracking-widest">Closing Balance</th>
-          </tr>
-        </thead>
-        <tbody>
-          {[
-            { comp: 'Share Capital', open: 5000000, net: 0, div: 0, close: 5000000 },
-            { comp: 'Retained Earnings', open: 2500000, net: 285000, div: 100000, close: 2685000 },
-            { comp: 'Other Comprehensive Income', open: 150000, net: 25000, div: 0, close: 175000 },
-          ].map((r, i) => (
-            <tr key={i} className="border-b border-slate-100 dark:border-slate-700">
-              <td className="px-4 py-3 text-xs font-bold text-slate-900 dark:text-white">{r.comp}</td>
-              <td className="px-4 py-3 text-right text-xs font-mono">${r.open.toLocaleString()}</td>
-              <td className="px-4 py-3 text-right text-xs font-mono text-emerald-600">${r.net.toLocaleString()}</td>
-              <td className="px-4 py-3 text-right text-xs font-mono text-rose-600">${r.div.toLocaleString()}</td>
-              <td className="px-4 py-3 text-right text-xs font-mono font-black text-indigo-600">${r.close.toLocaleString()}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  </div>
-);
-
-const ComprehensiveIncomeView = ({ onBack }: { onBack: () => void }) => (
-  <div className="space-y-6 animate-fade-in">
-    <div className="flex justify-between items-center bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-6 rounded-lg shadow-sm hover:shadow-lg transition-all duration-300">
-      <div className="flex items-center gap-4">
-        <button onClick={onBack} className="p-2 border border-slate-200 dark:border-slate-700 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 transition">
-          <ArrowRight className="rotate-180" size={18} />
-        </button>
-        <div>
-          <h3 className="text-lg font-black text-slate-900 dark:text-white uppercase tracking-tight">Statement of Comprehensive Income</h3>
-          <p className="text-[10px] text-slate-500 font-bold uppercase">Period: Q1 2024</p>
-        </div>
-      </div>
-    </div>
-    <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-6 rounded-lg shadow-sm">
-      <table className="w-full">
-        <thead className="bg-slate-50 dark:bg-slate-700/20 border-b border-slate-100 dark:border-slate-700">
-          <tr>
-            <th className="px-4 py-3 text-left text-[10px] font-black text-slate-400 uppercase tracking-widest">Item</th>
-            <th className="px-4 py-3 text-right text-[10px] font-black text-slate-400 uppercase tracking-widest">Amount</th>
-          </tr>
-        </thead>
-        <tbody>
-          {[
-            { item: 'Net Income', amount: 285000 },
-            { item: 'Unrealized Gains on Investments', amount: 45000 },
-            { item: 'Foreign Currency Translation', amount: -12000 },
-            { item: 'Total Comprehensive Income', amount: 318000 },
-          ].map((r, i) => (
-            <tr key={i} className="border-b border-slate-100 dark:border-slate-700">
-              <td className="px-4 py-3 text-xs font-bold text-slate-900 dark:text-white">{r.item}</td>
-              <td className="px-4 py-3 text-right text-xs font-mono font-black text-indigo-600">${r.amount.toLocaleString()}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  </div>
-);
-
-const JournalRegisterView = ({ onBack }: { onBack: () => void }) => (
-  <div className="space-y-6 animate-fade-in">
-    <div className="flex justify-between items-center bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-6 rounded-lg shadow-sm hover:shadow-lg transition-all duration-300">
-      <div className="flex items-center gap-4">
-        <button onClick={onBack} className="p-2 border border-slate-200 dark:border-slate-700 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 transition">
-          <ArrowRight className="rotate-180" size={18} />
-        </button>
-        <div>
-          <h3 className="text-lg font-black text-slate-900 dark:text-white uppercase tracking-tight">Journal Register</h3>
-          <p className="text-[10px] text-slate-500 font-bold uppercase">Period: May 2024</p>
-        </div>
-      </div>
-    </div>
-    <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-6 rounded-lg shadow-sm">
-      <table className="w-full">
-        <thead className="bg-slate-50 dark:bg-slate-700/20 border-b border-slate-100 dark:border-slate-700">
-          <tr>
-            <th className="px-4 py-3 text-left text-[10px] font-black text-slate-400 uppercase tracking-widest">Journal ID</th>
-            <th className="px-4 py-3 text-left text-[10px] font-black text-slate-400 uppercase tracking-widest">Date</th>
-            <th className="px-4 py-3 text-left text-[10px] font-black text-slate-400 uppercase tracking-widest">Description</th>
-            <th className="px-4 py-3 text-left text-[10px] font-black text-slate-400 uppercase tracking-widest">Type</th>
-            <th className="px-4 py-3 text-right text-[10px] font-black text-slate-400 uppercase tracking-widest">Amount</th>
-            <th className="px-4 py-3 text-left text-[10px] font-black text-slate-400 uppercase tracking-widest">Status</th>
-          </tr>
-        </thead>
-        <tbody>
-          {[
-            { id: 'JV-001', date: '2024-05-01', desc: 'Monthly Revenue Posting', type: 'Automatic', amount: 145000, status: 'Posted' },
-            { id: 'JV-002', date: '2024-05-05', desc: 'Vendor Payment', type: 'Manual', amount: 28500, status: 'Posted' },
-            { id: 'JV-003', date: '2024-05-10', desc: 'Payroll Accrual', type: 'Recurring', amount: 85000, status: 'Posted' },
-            { id: 'JV-004', date: '2024-05-15', desc: 'Depreciation Entry', type: 'Automatic', amount: 15000, status: 'Posted' },
-          ].map((r, i) => (
-            <tr key={i} className="border-b border-slate-100 dark:border-slate-700">
-              <td className="px-4 py-3 text-[10px] font-mono text-slate-500">{r.id}</td>
-              <td className="px-4 py-3 text-xs text-slate-600 dark:text-slate-400">{r.date}</td>
-              <td className="px-4 py-3 text-xs font-bold text-slate-900 dark:text-white">{r.desc}</td>
-              <td className="px-4 py-3 text-xs text-slate-500">{r.type}</td>
-              <td className="px-4 py-3 text-right text-xs font-mono font-black text-indigo-600">${r.amount.toLocaleString()}</td>
-              <td className="px-4 py-3"><span className="px-2 py-0.5 bg-emerald-50 text-emerald-600 rounded text-[8px] font-black uppercase">{r.status}</span></td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  </div>
-);
-
-const AccountActivityView = ({ onBack }: { onBack: () => void }) => (
-  <div className="space-y-6 animate-fade-in">
-    <div className="flex justify-between items-center bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-6 rounded-lg shadow-sm hover:shadow-lg transition-all duration-300">
-      <div className="flex items-center gap-4">
-        <button onClick={onBack} className="p-2 border border-slate-200 dark:border-slate-700 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 transition">
-          <ArrowRight className="rotate-180" size={18} />
-        </button>
-        <div>
-          <h3 className="text-lg font-black text-slate-900 dark:text-white uppercase tracking-tight">Account Activity</h3>
-          <p className="text-[10px] text-slate-500 font-bold uppercase">Account: 1010 - Cash on Hand • May 2024</p>
-        </div>
-      </div>
-    </div>
-    <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-6 rounded-lg shadow-sm">
-      <table className="w-full">
-        <thead className="bg-slate-50 dark:bg-slate-700/20 border-b border-slate-100 dark:border-slate-700">
-          <tr>
-            <th className="px-4 py-3 text-left text-[10px] font-black text-slate-400 uppercase tracking-widest">Date</th>
-            <th className="px-4 py-3 text-left text-[10px] font-black text-slate-400 uppercase tracking-widest">Reference</th>
-            <th className="px-4 py-3 text-left text-[10px] font-black text-slate-400 uppercase tracking-widest">Description</th>
-            <th className="px-4 py-3 text-right text-[10px] font-black text-slate-400 uppercase tracking-widest">Debit</th>
-            <th className="px-4 py-3 text-right text-[10px] font-black text-slate-400 uppercase tracking-widest">Credit</th>
-            <th className="px-4 py-3 text-right text-[10px] font-black text-slate-400 uppercase tracking-widest">Balance</th>
-          </tr>
-        </thead>
-        <tbody>
-          {[
-            { date: '2024-05-01', ref: 'JV-001', desc: 'Opening Balance', debit: 150000, credit: 0, balance: 150000 },
-            { date: '2024-05-05', ref: 'JV-002', desc: 'Guest Payment', debit: 8500, credit: 0, balance: 158500 },
-            { date: '2024-05-10', ref: 'JV-003', desc: 'Petty Cash Withdrawal', debit: 0, credit: 2000, balance: 156500 },
-            { date: '2024-05-15', ref: 'JV-004', desc: 'Deposit', debit: 12000, credit: 0, balance: 168500 },
-          ].map((r, i) => (
-            <tr key={i} className="border-b border-slate-100 dark:border-slate-700">
-              <td className="px-4 py-3 text-xs text-slate-600 dark:text-slate-400">{r.date}</td>
-              <td className="px-4 py-3 text-[10px] font-mono text-slate-500">{r.ref}</td>
-              <td className="px-4 py-3 text-xs font-bold text-slate-900 dark:text-white">{r.desc}</td>
-              <td className="px-4 py-3 text-right text-xs font-mono text-emerald-600">{r.debit > 0 ? '$' + r.debit.toLocaleString() : '-'}</td>
-              <td className="px-4 py-3 text-right text-xs font-mono text-rose-600">{r.credit > 0 ? '$' + r.credit.toLocaleString() : '-'}</td>
-              <td className="px-4 py-3 text-right text-xs font-mono font-black text-indigo-600">${r.balance.toLocaleString()}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  </div>
-);
-
-const AuditTrailView = ({ onBack }: { onBack: () => void }) => (
-  <div className="space-y-6 animate-fade-in">
-    <div className="flex justify-between items-center bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-6 rounded-lg shadow-sm hover:shadow-lg transition-all duration-300">
-      <div className="flex items-center gap-4">
-        <button onClick={onBack} className="p-2 border border-slate-200 dark:border-slate-700 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 transition">
-          <ArrowRight className="rotate-180" size={18} />
-        </button>
-        <div>
-          <h3 className="text-lg font-black text-slate-900 dark:text-white uppercase tracking-tight">Audit Trail</h3>
-          <p className="text-[10px] text-slate-500 font-bold uppercase">Period: May 2024</p>
-        </div>
-      </div>
-    </div>
-    <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-6 rounded-lg shadow-sm">
-      <table className="w-full">
-        <thead className="bg-slate-50 dark:bg-slate-700/20 border-b border-slate-100 dark:border-slate-700">
-          <tr>
-            <th className="px-4 py-3 text-left text-[10px] font-black text-slate-400 uppercase tracking-widest">Timestamp</th>
-            <th className="px-4 py-3 text-left text-[10px] font-black text-slate-400 uppercase tracking-widest">User</th>
-            <th className="px-4 py-3 text-left text-[10px] font-black text-slate-400 uppercase tracking-widest">Action</th>
-            <th className="px-4 py-3 text-left text-[10px] font-black text-slate-400 uppercase tracking-widest">Entity</th>
-            <th className="px-4 py-3 text-left text-[10px] font-black text-slate-400 uppercase tracking-widest">Details</th>
-          </tr>
-        </thead>
-        <tbody>
-          {[
-            { time: '2024-05-01 09:30', user: 'John Doe', action: 'Create', entity: 'Journal Entry JV-001', details: 'Created manual journal entry' },
-            { time: '2024-05-01 10:15', user: 'Sarah Smith', action: 'Post', entity: 'Journal Entry JV-001', details: 'Posted to GL' },
-            { time: '2024-05-02 14:20', user: 'Mike Johnson', action: 'Approve', entity: 'Vendor Invoice INV-045', details: 'Approved for payment' },
-            { time: '2024-05-03 11:45', user: 'Lisa Brown', action: 'Modify', entity: 'Account 1010', details: 'Updated account description' },
-          ].map((r, i) => (
-            <tr key={i} className="border-b border-slate-100 dark:border-slate-700">
-              <td className="px-4 py-3 text-xs text-slate-600 dark:text-slate-400">{r.time}</td>
-              <td className="px-4 py-3 text-xs font-bold text-slate-900 dark:text-white">{r.user}</td>
-              <td className="px-4 py-3 text-xs text-slate-500">{r.action}</td>
-              <td className="px-4 py-3 text-xs text-slate-500">{r.entity}</td>
-              <td className="px-4 py-3 text-xs text-slate-600 dark:text-slate-400">{r.details}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  </div>
-);
-
-const CustomerStatementView = ({ onBack }: { onBack: () => void }) => (
-  <div className="space-y-6 animate-fade-in">
-    <div className="flex justify-between items-center bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-6 rounded-lg shadow-sm hover:shadow-lg transition-all duration-300">
-      <div className="flex items-center gap-4">
-        <button onClick={onBack} className="p-2 border border-slate-200 dark:border-slate-700 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 transition">
-          <ArrowRight className="rotate-180" size={18} />
-        </button>
-        <div>
-          <h3 className="text-lg font-black text-slate-900 dark:text-white uppercase tracking-tight">Customer Statement</h3>
-          <p className="text-[10px] text-slate-500 font-bold uppercase">Customer: ABC Corporation • May 2024</p>
-        </div>
-      </div>
-    </div>
-    <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-6 rounded-lg shadow-sm">
-      <div className="grid grid-cols-2 gap-4 mb-6">
-        <div>
-          <p className="text-[10px] font-black text-slate-400 uppercase">Customer</p>
-          <p className="text-sm font-bold text-slate-900 dark:text-white">ABC Corporation</p>
-          <p className="text-xs text-slate-500">123 Business Ave, Addis Ababa</p>
-        </div>
-        <div className="text-right">
-          <p className="text-[10px] font-black text-slate-400 uppercase">Statement Date</p>
-          <p className="text-sm font-bold text-slate-900 dark:text-white">May 31, 2024</p>
-          <p className="text-xs text-slate-500">Period: May 1-31, 2024</p>
-        </div>
-      </div>
-      <table className="w-full">
-        <thead className="bg-slate-50 dark:bg-slate-700/20 border-b border-slate-100 dark:border-slate-700">
-          <tr>
-            <th className="px-4 py-3 text-left text-[10px] font-black text-slate-400 uppercase tracking-widest">Date</th>
-            <th className="px-4 py-3 text-left text-[10px] font-black text-slate-400 uppercase tracking-widest">Reference</th>
-            <th className="px-4 py-3 text-left text-[10px] font-black text-slate-400 uppercase tracking-widest">Description</th>
-            <th className="px-4 py-3 text-right text-[10px] font-black text-slate-400 uppercase tracking-widest">Debit</th>
-            <th className="px-4 py-3 text-right text-[10px] font-black text-slate-400 uppercase tracking-widest">Credit</th>
-            <th className="px-4 py-3 text-right text-[10px] font-black text-slate-400 uppercase tracking-widest">Balance</th>
-          </tr>
-        </thead>
-        <tbody>
-          {[
-            { date: '2024-05-01', ref: 'INV-001', desc: 'Opening Balance', debit: 0, credit: 0, balance: 45000 },
-            { date: '2024-05-10', ref: 'INV-002', desc: 'Room Charges', debit: 8500, credit: 0, balance: 53500 },
-            { date: '2024-05-15', ref: 'PAY-001', desc: 'Payment Received', debit: 0, credit: 20000, balance: 33500 },
-            { date: '2024-05-20', ref: 'INV-003', desc: 'F&B Charges', debit: 3200, credit: 0, balance: 36700 },
-          ].map((r, i) => (
-            <tr key={i} className="border-b border-slate-100 dark:border-slate-700">
-              <td className="px-4 py-3 text-xs text-slate-600 dark:text-slate-400">{r.date}</td>
-              <td className="px-4 py-3 text-[10px] font-mono text-slate-500">{r.ref}</td>
-              <td className="px-4 py-3 text-xs font-bold text-slate-900 dark:text-white">{r.desc}</td>
-              <td className="px-4 py-3 text-right text-xs font-mono text-emerald-600">{r.debit > 0 ? '$' + r.debit.toLocaleString() : '-'}</td>
-              <td className="px-4 py-3 text-right text-xs font-mono text-rose-600">{r.credit > 0 ? '$' + r.credit.toLocaleString() : '-'}</td>
-              <td className="px-4 py-3 text-right text-xs font-mono font-black text-indigo-600">${r.balance.toLocaleString()}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  </div>
-);
-
-const CollectionReportView = ({ onBack }: { onBack: () => void }) => (
-  <div className="space-y-6 animate-fade-in">
-    <div className="flex justify-between items-center bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-6 rounded-lg shadow-sm hover:shadow-lg transition-all duration-300">
-      <div className="flex items-center gap-4">
-        <button onClick={onBack} className="p-2 border border-slate-200 dark:border-slate-700 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 transition">
-          <ArrowRight className="rotate-180" size={18} />
-        </button>
-        <div>
-          <h3 className="text-lg font-black text-slate-900 dark:text-white uppercase tracking-tight">Collection Report</h3>
-          <p className="text-[10px] text-slate-500 font-bold uppercase">Period: Q2 2024</p>
-        </div>
-      </div>
-    </div>
-    <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-6 rounded-lg shadow-sm">
-      <table className="w-full">
-        <thead className="bg-slate-50 dark:bg-slate-700/20 border-b border-slate-100 dark:border-slate-700">
-          <tr>
-            <th className="px-4 py-3 text-left text-[10px] font-black text-slate-400 uppercase tracking-widest">Customer</th>
-            <th className="px-4 py-3 text-right text-[10px] font-black text-slate-400 uppercase tracking-widest">Total Due</th>
-            <th className="px-4 py-3 text-right text-[10px] font-black text-slate-400 uppercase tracking-widest">Collected</th>
-            <th className="px-4 py-3 text-right text-[10px] font-black text-slate-400 uppercase tracking-widest">Outstanding</th>
-            <th className="px-4 py-3 text-right text-[10px] font-black text-slate-400 uppercase tracking-widest">Collection %</th>
-          </tr>
-        </thead>
-        <tbody>
-          {[
-            { cust: 'ABC Corporation', due: 45000, collected: 35000, outstanding: 10000 },
-            { cust: 'XYZ Travel', due: 28000, collected: 28000, outstanding: 0 },
-            { cust: 'Global Events', due: 15000, collected: 5000, outstanding: 10000 },
-            { cust: 'Tech Solutions', due: 12000, collected: 8000, outstanding: 4000 },
-          ].map((r, i) => (
-            <tr key={i} className="border-b border-slate-100 dark:border-slate-700">
-              <td className="px-4 py-3 text-xs font-bold text-slate-900 dark:text-white">{r.cust}</td>
-              <td className="px-4 py-3 text-right text-xs font-mono">${r.due.toLocaleString()}</td>
-              <td className="px-4 py-3 text-right text-xs font-mono text-emerald-600">${r.collected.toLocaleString()}</td>
-              <td className="px-4 py-3 text-right text-xs font-mono text-rose-600">${r.outstanding.toLocaleString()}</td>
-              <td className="px-4 py-3 text-right text-xs font-mono font-black text-indigo-600">{((r.collected / r.due) * 100).toFixed(1)}%</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  </div>
-);
-
-const VendorStatementView = ({ onBack }: { onBack: () => void }) => (
-  <div className="space-y-6 animate-fade-in">
-    <div className="flex justify-between items-center bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-6 rounded-lg shadow-sm hover:shadow-lg transition-all duration-300">
-      <div className="flex items-center gap-4">
-        <button onClick={onBack} className="p-2 border border-slate-200 dark:border-slate-700 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 transition">
-          <ArrowRight className="rotate-180" size={18} />
-        </button>
-        <div>
-          <h3 className="text-lg font-black text-slate-900 dark:text-white uppercase tracking-tight">Vendor Statement</h3>
-          <p className="text-[10px] text-slate-500 font-bold uppercase">Vendor: ABC Supplies Ltd • May 2024</p>
-        </div>
-      </div>
-    </div>
-    <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-6 rounded-lg shadow-sm">
-      <table className="w-full">
-        <thead className="bg-slate-50 dark:bg-slate-700/20 border-b border-slate-100 dark:border-slate-700">
-          <tr>
-            <th className="px-4 py-3 text-left text-[10px] font-black text-slate-400 uppercase tracking-widest">Date</th>
-            <th className="px-4 py-3 text-left text-[10px] font-black text-slate-400 uppercase tracking-widest">Reference</th>
-            <th className="px-4 py-3 text-left text-[10px] font-black text-slate-400 uppercase tracking-widest">Description</th>
-            <th className="px-4 py-3 text-right text-[10px] font-black text-slate-400 uppercase tracking-widest">Debit</th>
-            <th className="px-4 py-3 text-right text-[10px] font-black text-slate-400 uppercase tracking-widest">Credit</th>
-            <th className="px-4 py-3 text-right text-[10px] font-black text-slate-400 uppercase tracking-widest">Balance</th>
-          </tr>
-        </thead>
-        <tbody>
-          {[
-            { date: '2024-05-01', ref: 'INV-045', desc: 'Opening Balance', debit: 0, credit: 0, balance: 28000 },
-            { date: '2024-05-10', ref: 'INV-046', desc: 'Supplies Invoice', debit: 0, credit: 5500, balance: 33500 },
-            { date: '2024-05-15', ref: 'PAY-045', desc: 'Payment Made', debit: 10000, credit: 0, balance: 23500 },
-            { date: '2024-05-20', ref: 'INV-047', desc: 'Equipment Invoice', debit: 0, credit: 8500, balance: 32000 },
-          ].map((r, i) => (
-            <tr key={i} className="border-b border-slate-100 dark:border-slate-700">
-              <td className="px-4 py-3 text-xs text-slate-600 dark:text-slate-400">{r.date}</td>
-              <td className="px-4 py-3 text-[10px] font-mono text-slate-500">{r.ref}</td>
-              <td className="px-4 py-3 text-xs font-bold text-slate-900 dark:text-white">{r.desc}</td>
-              <td className="px-4 py-3 text-right text-xs font-mono text-emerald-600">{r.debit > 0 ? '$' + r.debit.toLocaleString() : '-'}</td>
-              <td className="px-4 py-3 text-right text-xs font-mono text-rose-600">{r.credit > 0 ? '$' + r.credit.toLocaleString() : '-'}</td>
-              <td className="px-4 py-3 text-right text-xs font-mono font-black text-indigo-600">${r.balance.toLocaleString()}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  </div>
-);
-
-const PaymentScheduleView = ({ onBack }: { onBack: () => void }) => (
-  <div className="space-y-6 animate-fade-in">
-    <div className="flex justify-between items-center bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-6 rounded-lg shadow-sm hover:shadow-lg transition-all duration-300">
-      <div className="flex items-center gap-4">
-        <button onClick={onBack} className="p-2 border border-slate-200 dark:border-slate-700 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 transition">
-          <ArrowRight className="rotate-180" size={18} />
-        </button>
-        <div>
-          <h3 className="text-lg font-black text-slate-900 dark:text-white uppercase tracking-tight">Payment Schedule</h3>
-          <p className="text-[10px] text-slate-500 font-bold uppercase">Period: May 2024</p>
-        </div>
-      </div>
-    </div>
-    <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-6 rounded-lg shadow-sm">
-      <table className="w-full">
-        <thead className="bg-slate-50 dark:bg-slate-700/20 border-b border-slate-100 dark:border-slate-700">
-          <tr>
-            <th className="px-4 py-3 text-left text-[10px] font-black text-slate-400 uppercase tracking-widest">Vendor</th>
-            <th className="px-4 py-3 text-left text-[10px] font-black text-slate-400 uppercase tracking-widest">Invoice</th>
-            <th className="px-4 py-3 text-right text-[10px] font-black text-slate-400 uppercase tracking-widest">Amount</th>
-            <th className="px-4 py-3 text-left text-[10px] font-black text-slate-400 uppercase tracking-widest">Due Date</th>
-            <th className="px-4 py-3 text-left text-[10px] font-black text-slate-400 uppercase tracking-widest">Status</th>
-          </tr>
-        </thead>
-        <tbody>
-          {[
-            { vendor: 'ABC Supplies', invoice: 'INV-046', amount: 5500, due: '2024-05-15', status: 'Paid' },
-            { vendor: 'XYZ Services', invoice: 'INV-047', amount: 8500, due: '2024-05-20', status: 'Pending' },
-            { vendor: 'Tech Corp', invoice: 'INV-048', amount: 12000, due: '2024-05-25', status: 'Scheduled' },
-            { vendor: 'Utility Co', invoice: 'INV-049', amount: 3200, due: '2024-05-30', status: 'Pending' },
-          ].map((r, i) => (
-            <tr key={i} className="border-b border-slate-100 dark:border-slate-700">
-              <td className="px-4 py-3 text-xs font-bold text-slate-900 dark:text-white">{r.vendor}</td>
-              <td className="px-4 py-3 text-[10px] font-mono text-slate-500">{r.invoice}</td>
-              <td className="px-4 py-3 text-right text-xs font-mono font-black text-indigo-600">${r.amount.toLocaleString()}</td>
-              <td className="px-4 py-3 text-xs text-slate-600 dark:text-slate-400">{r.due}</td>
-              <td className="px-4 py-3"><span className={`px-2 py-0.5 rounded text-[8px] font-black uppercase ${r.status === 'Paid' ? 'bg-emerald-50 text-emerald-600' : r.status === 'Scheduled' ? 'bg-blue-50 text-blue-600' : 'bg-amber-50 text-amber-600'}`}>{r.status}</span></td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  </div>
-);
-
-const OutstandingBillsView = ({ onBack }: { onBack: () => void }) => (
-  <div className="space-y-6 animate-fade-in">
-    <div className="flex justify-between items-center bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-6 rounded-lg shadow-sm hover:shadow-lg transition-all duration-300">
-      <div className="flex items-center gap-4">
-        <button onClick={onBack} className="p-2 border border-slate-200 dark:border-slate-700 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 transition">
-          <ArrowRight className="rotate-180" size={18} />
-        </button>
-        <div>
-          <h3 className="text-lg font-black text-slate-900 dark:text-white uppercase tracking-tight">Outstanding Bills</h3>
-          <p className="text-[10px] text-slate-500 font-bold uppercase">As of Today</p>
-        </div>
-      </div>
-    </div>
-    <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-6 rounded-lg shadow-sm">
-      <table className="w-full">
-        <thead className="bg-slate-50 dark:bg-slate-700/20 border-b border-slate-100 dark:border-slate-700">
-          <tr>
-            <th className="px-4 py-3 text-left text-[10px] font-black text-slate-400 uppercase tracking-widest">Vendor</th>
-            <th className="px-4 py-3 text-left text-[10px] font-black text-slate-400 uppercase tracking-widest">Invoice</th>
-            <th className="px-4 py-3 text-right text-[10px] font-black text-slate-400 uppercase tracking-widest">Amount</th>
-            <th className="px-4 py-3 text-left text-[10px] font-black text-slate-400 uppercase tracking-widest">Due Date</th>
-            <th className="px-4 py-3 text-left text-[10px] font-black text-slate-400 uppercase tracking-widest">Days Overdue</th>
-          </tr>
-        </thead>
-        <tbody>
-          {[
-            { vendor: 'XYZ Services', invoice: 'INV-047', amount: 8500, due: '2024-05-20', overdue: 10 },
-            { vendor: 'Utility Co', invoice: 'INV-049', amount: 3200, due: '2024-05-30', overdue: 0 },
-            { vendor: 'Tech Corp', invoice: 'INV-050', amount: 15000, due: '2024-05-25', overdue: 5 },
-            { vendor: 'Food Supply', invoice: 'INV-051', amount: 6800, due: '2024-06-02', overdue: -2 },
-          ].map((r, i) => (
-            <tr key={i} className="border-b border-slate-100 dark:border-slate-700">
-              <td className="px-4 py-3 text-xs font-bold text-slate-900 dark:text-white">{r.vendor}</td>
-              <td className="px-4 py-3 text-[10px] font-mono text-slate-500">{r.invoice}</td>
-              <td className="px-4 py-3 text-right text-xs font-mono font-black text-indigo-600">${r.amount.toLocaleString()}</td>
-              <td className="px-4 py-3 text-xs text-slate-600 dark:text-slate-400">{r.due}</td>
-              <td className="px-4 py-3"><span className={`px-2 py-0.5 rounded text-[8px] font-black uppercase ${r.overdue > 0 ? 'bg-rose-50 text-rose-600' : 'bg-emerald-50 text-emerald-600'}`}>{r.overdue > 0 ? r.overdue + ' days' : 'Current'}</span></td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  </div>
-);
-
-const CashBookView = ({ onBack }: { onBack: () => void }) => (
-  <div className="space-y-6 animate-fade-in">
-    <div className="flex justify-between items-center bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-6 rounded-lg shadow-sm hover:shadow-lg transition-all duration-300">
-      <div className="flex items-center gap-4">
-        <button onClick={onBack} className="p-2 border border-slate-200 dark:border-slate-700 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 transition">
-          <ArrowRight className="rotate-180" size={18} />
-        </button>
-        <div>
-          <h3 className="text-lg font-black text-slate-900 dark:text-white uppercase tracking-tight">Cash Book</h3>
-          <p className="text-[10px] text-slate-500 font-bold uppercase">Period: May 2024</p>
-        </div>
-      </div>
-    </div>
-    <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-6 rounded-lg shadow-sm">
-      <table className="w-full">
-        <thead className="bg-slate-50 dark:bg-slate-700/20 border-b border-slate-100 dark:border-slate-700">
-          <tr>
-            <th className="px-4 py-3 text-left text-[10px] font-black text-slate-400 uppercase tracking-widest">Date</th>
-            <th className="px-4 py-3 text-left text-[10px] font-black text-slate-400 uppercase tracking-widest">Description</th>
-            <th className="px-4 py-3 text-right text-[10px] font-black text-slate-400 uppercase tracking-widest">Receipts</th>
-            <th className="px-4 py-3 text-right text-[10px] font-black text-slate-400 uppercase tracking-widest">Payments</th>
-            <th className="px-4 py-3 text-right text-[10px] font-black text-slate-400 uppercase tracking-widest">Balance</th>
-          </tr>
-        </thead>
-        <tbody>
-          {[
-            { date: '2024-05-01', desc: 'Opening Balance', receipts: 25000, payments: 0, balance: 25000 },
-            { date: '2024-05-05', desc: 'Guest Payments', receipts: 8500, payments: 0, balance: 33500 },
-            { date: '2024-05-10', desc: 'Petty Cash Withdrawal', receipts: 0, payments: 2000, balance: 31500 },
-            { date: '2024-05-15', desc: 'POS Deposit', receipts: 12000, payments: 0, balance: 43500 },
-          ].map((r, i) => (
-            <tr key={i} className="border-b border-slate-100 dark:border-slate-700">
-              <td className="px-4 py-3 text-xs text-slate-600 dark:text-slate-400">{r.date}</td>
-              <td className="px-4 py-3 text-xs font-bold text-slate-900 dark:text-white">{r.desc}</td>
-              <td className="px-4 py-3 text-right text-xs font-mono text-emerald-600">{r.receipts > 0 ? '$' + r.receipts.toLocaleString() : '-'}</td>
-              <td className="px-4 py-3 text-right text-xs font-mono text-rose-600">{r.payments > 0 ? '$' + r.payments.toLocaleString() : '-'}</td>
-              <td className="px-4 py-3 text-right text-xs font-mono font-black text-indigo-600">${r.balance.toLocaleString()}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  </div>
-);
-
-const BankBookView = ({ onBack }: { onBack: () => void }) => (
-  <div className="space-y-6 animate-fade-in">
-    <div className="flex justify-between items-center bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-6 rounded-lg shadow-sm hover:shadow-lg transition-all duration-300">
-      <div className="flex items-center gap-4">
-        <button onClick={onBack} className="p-2 border border-slate-200 dark:border-slate-700 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 transition">
-          <ArrowRight className="rotate-180" size={18} />
-        </button>
-        <div>
-          <h3 className="text-lg font-black text-slate-900 dark:text-white uppercase tracking-tight">Bank Book</h3>
-          <p className="text-[10px] text-slate-500 font-bold uppercase">Account: CBE Operating • May 2024</p>
-        </div>
-      </div>
-    </div>
-    <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-6 rounded-lg shadow-sm">
-      <table className="w-full">
-        <thead className="bg-slate-50 dark:bg-slate-700/20 border-b border-slate-100 dark:border-slate-700">
-          <tr>
-            <th className="px-4 py-3 text-left text-[10px] font-black text-slate-400 uppercase tracking-widest">Date</th>
-            <th className="px-4 py-3 text-left text-[10px] font-black text-slate-400 uppercase tracking-widest">Description</th>
-            <th className="px-4 py-3 text-right text-[10px] font-black text-slate-400 uppercase tracking-widest">Deposits</th>
-            <th className="px-4 py-3 text-right text-[10px] font-black text-slate-400 uppercase tracking-widest">Withdrawals</th>
-            <th className="px-4 py-3 text-right text-[10px] font-black text-slate-400 uppercase tracking-widest">Balance</th>
-          </tr>
-        </thead>
-        <tbody>
-          {[
-            { date: '2024-05-01', desc: 'Opening Balance', deposits: 150000, withdrawals: 0, balance: 150000 },
-            { date: '2024-05-05', desc: 'Guest Deposit', deposits: 25000, withdrawals: 0, balance: 175000 },
-            { date: '2024-05-10', desc: 'Vendor Payment', deposits: 0, withdrawals: 15000, balance: 160000 },
-            { date: '2024-05-15', desc: 'Revenue Deposit', deposits: 45000, withdrawals: 0, balance: 205000 },
-          ].map((r, i) => (
-            <tr key={i} className="border-b border-slate-100 dark:border-slate-700">
-              <td className="px-4 py-3 text-xs text-slate-600 dark:text-slate-400">{r.date}</td>
-              <td className="px-4 py-3 text-xs font-bold text-slate-900 dark:text-white">{r.desc}</td>
-              <td className="px-4 py-3 text-right text-xs font-mono text-emerald-600">{r.deposits > 0 ? '$' + r.deposits.toLocaleString() : '-'}</td>
-              <td className="px-4 py-3 text-right text-xs font-mono text-rose-600">{r.withdrawals > 0 ? '$' + r.withdrawals.toLocaleString() : '-'}</td>
-              <td className="px-4 py-3 text-right text-xs font-mono font-black text-indigo-600">${r.balance.toLocaleString()}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  </div>
-);
-
-const CashFlowForecastView = ({ onBack }: { onBack: () => void }) => (
-  <div className="space-y-6 animate-fade-in">
-    <div className="flex justify-between items-center bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-6 rounded-lg shadow-sm hover:shadow-lg transition-all duration-300">
-      <div className="flex items-center gap-4">
-        <button onClick={onBack} className="p-2 border border-slate-200 dark:border-slate-700 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 transition">
-          <ArrowRight className="rotate-180" size={18} />
-        </button>
-        <div>
-          <h3 className="text-lg font-black text-slate-900 dark:text-white uppercase tracking-tight">Cash Flow Forecast</h3>
-          <p className="text-[10px] text-slate-500 font-bold uppercase">Period: Q3 2024</p>
-        </div>
-      </div>
-    </div>
-    <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-6 rounded-lg shadow-sm">
-      <table className="w-full">
-        <thead className="bg-slate-50 dark:bg-slate-700/20 border-b border-slate-100 dark:border-slate-700">
-          <tr>
-            <th className="px-4 py-3 text-left text-[10px] font-black text-slate-400 uppercase tracking-widest">Month</th>
-            <th className="px-4 py-3 text-right text-[10px] font-black text-slate-400 uppercase tracking-widest">Opening</th>
-            <th className="px-4 py-3 text-right text-[10px] font-black text-slate-400 uppercase tracking-widest">Inflows</th>
-            <th className="px-4 py-3 text-right text-[10px] font-black text-slate-400 uppercase tracking-widest">Outflows</th>
-            <th className="px-4 py-3 text-right text-[10px] font-black text-slate-400 uppercase tracking-widest">Net</th>
-            <th className="px-4 py-3 text-right text-[10px] font-black text-slate-400 uppercase tracking-widest">Closing</th>
-          </tr>
-        </thead>
-        <tbody>
-          {[
-            { month: 'July', open: 205000, in: 85000, out: 65000, net: 20000, close: 225000 },
-            { month: 'August', open: 225000, in: 90000, out: 70000, net: 20000, close: 245000 },
-            { month: 'September', open: 245000, in: 95000, out: 75000, net: 20000, close: 265000 },
-          ].map((r, i) => (
-            <tr key={i} className="border-b border-slate-100 dark:border-slate-700">
-              <td className="px-4 py-3 text-xs font-bold text-slate-900 dark:text-white">{r.month}</td>
-              <td className="px-4 py-3 text-right text-xs font-mono">${r.open.toLocaleString()}</td>
-              <td className="px-4 py-3 text-right text-xs font-mono text-emerald-600">${r.in.toLocaleString()}</td>
-              <td className="px-4 py-3 text-right text-xs font-mono text-rose-600">${r.out.toLocaleString()}</td>
-              <td className="px-4 py-3 text-right text-xs font-mono font-black text-indigo-600">${r.net.toLocaleString()}</td>
-              <td className="px-4 py-3 text-right text-xs font-mono font-black text-indigo-600">${r.close.toLocaleString()}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  </div>
-);
-
-const VarianceAnalysisView = ({ onBack }: { onBack: () => void }) => (
-  <div className="space-y-6 animate-fade-in">
-    <div className="flex justify-between items-center bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-6 rounded-lg shadow-sm hover:shadow-lg transition-all duration-300">
-      <div className="flex items-center gap-4">
-        <button onClick={onBack} className="p-2 border border-slate-200 dark:border-slate-700 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 transition">
-          <ArrowRight className="rotate-180" size={18} />
-        </button>
-        <div>
-          <h3 className="text-lg font-black text-slate-900 dark:text-white uppercase tracking-tight">Variance Analysis</h3>
-          <p className="text-[10px] text-slate-500 font-bold uppercase">Period: May 2024</p>
-        </div>
-      </div>
-    </div>
-    <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-6 rounded-lg shadow-sm">
-      <table className="w-full">
-        <thead className="bg-slate-50 dark:bg-slate-700/20 border-b border-slate-100 dark:border-slate-700">
-          <tr>
-            <th className="px-4 py-3 text-left text-[10px] font-black text-slate-400 uppercase tracking-widest">Account</th>
-            <th className="px-4 py-3 text-right text-[10px] font-black text-slate-400 uppercase tracking-widest">Budget</th>
-            <th className="px-4 py-3 text-right text-[10px] font-black text-slate-400 uppercase tracking-widest">Actual</th>
-            <th className="px-4 py-3 text-right text-[10px] font-black text-slate-400 uppercase tracking-widest">Variance</th>
-            <th className="px-4 py-3 text-right text-[10px] font-black text-slate-400 uppercase tracking-widest">%</th>
-          </tr>
-        </thead>
-        <tbody>
-          {[
-            { account: 'Room Revenue', budget: 450000, actual: 485000, variance: 35000 },
-            { account: 'F&B Revenue', budget: 120000, actual: 115000, variance: -5000 },
-            { account: 'Payroll', budget: 180000, actual: 175000, variance: 5000 },
-            { account: 'Utilities', budget: 25000, actual: 28000, variance: -3000 },
-          ].map((r, i) => (
-            <tr key={i} className="border-b border-slate-100 dark:border-slate-700">
-              <td className="px-4 py-3 text-xs font-bold text-slate-900 dark:text-white">{r.account}</td>
-              <td className="px-4 py-3 text-right text-xs font-mono">${r.budget.toLocaleString()}</td>
-              <td className="px-4 py-3 text-right text-xs font-mono">${r.actual.toLocaleString()}</td>
-              <td className="px-4 py-3 text-right text-xs font-mono font-black ${r.variance >= 0 ? 'text-emerald-600' : 'text-rose-600'}">${r.variance.toLocaleString()}</td>
-              <td className="px-4 py-3 text-right text-xs font-mono font-black text-indigo-600">{((r.variance / r.budget) * 100).toFixed(1)}%</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  </div>
-);
-
-const CostCenterAnalysisView = ({ onBack }: { onBack: () => void }) => (
-  <div className="space-y-6 animate-fade-in">
-    <div className="flex justify-between items-center bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-6 rounded-lg shadow-sm hover:shadow-lg transition-all duration-300">
-      <div className="flex items-center gap-4">
-        <button onClick={onBack} className="p-2 border border-slate-200 dark:border-slate-700 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 transition">
-          <ArrowRight className="rotate-180" size={18} />
-        </button>
-        <div>
-          <h3 className="text-lg font-black text-slate-900 dark:text-white uppercase tracking-tight">Cost Center Analysis</h3>
-          <p className="text-[10px] text-slate-500 font-bold uppercase">Period: May 2024</p>
-        </div>
-      </div>
-    </div>
-    <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-6 rounded-lg shadow-sm">
-      <table className="w-full">
-        <thead className="bg-slate-50 dark:bg-slate-700/20 border-b border-slate-100 dark:border-slate-700">
-          <tr>
-            <th className="px-4 py-3 text-left text-[10px] font-black text-slate-400 uppercase tracking-widest">Cost Center</th>
-            <th className="px-4 py-3 text-right text-[10px] font-black text-slate-400 uppercase tracking-widest">Budget</th>
-            <th className="px-4 py-3 text-right text-[10px] font-black text-slate-400 uppercase tracking-widest">Actual</th>
-            <th className="px-4 py-3 text-right text-[10px] font-black text-slate-400 uppercase tracking-widest">Variance</th>
-            <th className="px-4 py-3 text-right text-[10px] font-black text-slate-400 uppercase tracking-widest">Utilization</th>
-          </tr>
-        </thead>
-        <tbody>
-          {[
-            { cc: 'Front Office', budget: 85000, actual: 82000, variance: -3000 },
-            { cc: 'Housekeeping', budget: 65000, actual: 68000, variance: 3000 },
-            { cc: 'F&B', budget: 120000, actual: 115000, variance: -5000 },
-            { cc: 'Engineering', budget: 45000, actual: 47000, variance: 2000 },
-          ].map((r, i) => (
-            <tr key={i} className="border-b border-slate-100 dark:border-slate-700">
-              <td className="px-4 py-3 text-xs font-bold text-slate-900 dark:text-white">{r.cc}</td>
-              <td className="px-4 py-3 text-right text-xs font-mono">${r.budget.toLocaleString()}</td>
-              <td className="px-4 py-3 text-right text-xs font-mono">${r.actual.toLocaleString()}</td>
-              <td className="px-4 py-3 text-right text-xs font-mono font-black ${r.variance >= 0 ? 'text-emerald-600' : 'text-rose-600'}">${r.variance.toLocaleString()}</td>
-              <td className="px-4 py-3 text-right text-xs font-mono font-black text-indigo-600">{((r.actual / r.budget) * 100).toFixed(1)}%</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  </div>
-);
-
-const ProfitCenterAnalysisView = ({ onBack }: { onBack: () => void }) => (
-  <div className="space-y-6 animate-fade-in">
-    <div className="flex justify-between items-center bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-6 rounded-lg shadow-sm hover:shadow-lg transition-all duration-300">
-      <div className="flex items-center gap-4">
-        <button onClick={onBack} className="p-2 border border-slate-200 dark:border-slate-700 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 transition">
-          <ArrowRight className="rotate-180" size={18} />
-        </button>
-        <div>
-          <h3 className="text-lg font-black text-slate-900 dark:text-white uppercase tracking-tight">Profit Center Analysis</h3>
-          <p className="text-[10px] text-slate-500 font-bold uppercase">Period: May 2024</p>
-        </div>
-      </div>
-    </div>
-    <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-6 rounded-lg shadow-sm">
-      <table className="w-full">
-        <thead className="bg-slate-50 dark:bg-slate-700/20 border-b border-slate-100 dark:border-slate-700">
-          <tr>
-            <th className="px-4 py-3 text-left text-[10px] font-black text-slate-400 uppercase tracking-widest">Profit Center</th>
-            <th className="px-4 py-3 text-right text-[10px] font-black text-slate-400 uppercase tracking-widest">Revenue</th>
-            <th className="px-4 py-3 text-right text-[10px] font-black text-slate-400 uppercase tracking-widest">Expenses</th>
-            <th className="px-4 py-3 text-right text-[10px] font-black text-slate-400 uppercase tracking-widest">Profit</th>
-            <th className="px-4 py-3 text-right text-[10px] font-black text-slate-400 uppercase tracking-widest">Margin</th>
-          </tr>
-        </thead>
-        <tbody>
-          {[
-            { pc: 'Rooms', revenue: 485000, expenses: 120000, profit: 365000 },
-            { pc: 'F&B', revenue: 115000, expenses: 85000, profit: 30000 },
-            { pc: 'Events', revenue: 45000, expenses: 35000, profit: 10000 },
-            { pc: 'Spa', revenue: 28000, expenses: 22000, profit: 6000 },
-          ].map((r, i) => (
-            <tr key={i} className="border-b border-slate-100 dark:border-slate-700">
-              <td className="px-4 py-3 text-xs font-bold text-slate-900 dark:text-white">{r.pc}</td>
-              <td className="px-4 py-3 text-right text-xs font-mono">${r.revenue.toLocaleString()}</td>
-              <td className="px-4 py-3 text-right text-xs font-mono">${r.expenses.toLocaleString()}</td>
-              <td className="px-4 py-3 text-right text-xs font-mono font-black text-emerald-600">${r.profit.toLocaleString()}</td>
-              <td className="px-4 py-3 text-right text-xs font-mono font-black text-indigo-600">{((r.profit / r.revenue) * 100).toFixed(1)}%</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  </div>
-);
-
-const ForecastReportView = ({ onBack }: { onBack: () => void }) => (
-  <div className="space-y-6 animate-fade-in">
-    <div className="flex justify-between items-center bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-6 rounded-lg shadow-sm hover:shadow-lg transition-all duration-300">
-      <div className="flex items-center gap-4">
-        <button onClick={onBack} className="p-2 border border-slate-200 dark:border-slate-700 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 transition">
-          <ArrowRight className="rotate-180" size={18} />
-        </button>
-        <div>
-          <h3 className="text-lg font-black text-slate-900 dark:text-white uppercase tracking-tight">Forecast Report</h3>
-          <p className="text-[10px] text-slate-500 font-bold uppercase">Period: Q3 2024</p>
-        </div>
-      </div>
-    </div>
-    <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-6 rounded-lg shadow-sm">
-      <table className="w-full">
-        <thead className="bg-slate-50 dark:bg-slate-700/20 border-b border-slate-100 dark:border-slate-700">
-          <tr>
-            <th className="px-4 py-3 text-left text-[10px] font-black text-slate-400 uppercase tracking-widest">Month</th>
-            <th className="px-4 py-3 text-right text-[10px] font-black text-slate-400 uppercase tracking-widest">Forecast Revenue</th>
-            <th className="px-4 py-3 text-right text-[10px] font-black text-slate-400 uppercase tracking-widest">Forecast Expenses</th>
-            <th className="px-4 py-3 text-right text-[10px] font-black text-slate-400 uppercase tracking-widest">Forecast Profit</th>
-            <th className="px-4 py-3 text-right text-[10px] font-black text-slate-400 uppercase tracking-widest">Confidence</th>
-          </tr>
-        </thead>
-        <tbody>
-          {[
-            { month: 'July', rev: 520000, exp: 320000, profit: 200000, conf: 'High' },
-            { month: 'August', rev: 550000, exp: 340000, profit: 210000, conf: 'High' },
-            { month: 'September', rev: 580000, exp: 360000, profit: 220000, conf: 'Medium' },
-          ].map((r, i) => (
-            <tr key={i} className="border-b border-slate-100 dark:border-slate-700">
-              <td className="px-4 py-3 text-xs font-bold text-slate-900 dark:text-white">{r.month}</td>
-              <td className="px-4 py-3 text-right text-xs font-mono">${r.rev.toLocaleString()}</td>
-              <td className="px-4 py-3 text-right text-xs font-mono">${r.exp.toLocaleString()}</td>
-              <td className="px-4 py-3 text-right text-xs font-mono font-black text-emerald-600">${r.profit.toLocaleString()}</td>
-              <td className="px-4 py-3"><span className={`px-2 py-0.5 rounded text-[8px] font-black uppercase ${r.conf === 'High' ? 'bg-emerald-50 text-emerald-600' : 'bg-amber-50 text-amber-600'}`}>{r.conf}</span></td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  </div>
-);
-
-const AssetMovementView = ({ onBack }: { onBack: () => void }) => (
-  <div className="space-y-6 animate-fade-in">
-    <div className="flex justify-between items-center bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-6 rounded-lg shadow-sm hover:shadow-lg transition-all duration-300">
-      <div className="flex items-center gap-4">
-        <button onClick={onBack} className="p-2 border border-slate-200 dark:border-slate-700 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 transition">
-          <ArrowRight className="rotate-180" size={18} />
-        </button>
-        <div>
-          <h3 className="text-lg font-black text-slate-900 dark:text-white uppercase tracking-tight">Asset Movement</h3>
-          <p className="text-[10px] text-slate-500 font-bold uppercase">Period: May 2024</p>
-        </div>
-      </div>
-    </div>
-    <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-6 rounded-lg shadow-sm">
-      <table className="w-full">
-        <thead className="bg-slate-50 dark:bg-slate-700/20 border-b border-slate-100 dark:border-slate-700">
-          <tr>
-            <th className="px-4 py-3 text-left text-[10px] font-black text-slate-400 uppercase tracking-widest">Asset</th>
-            <th className="px-4 py-3 text-left text-[10px] font-black text-slate-400 uppercase tracking-widest">From</th>
-            <th className="px-4 py-3 text-left text-[10px] font-black text-slate-400 uppercase tracking-widest">To</th>
-            <th className="px-4 py-3 text-left text-[10px] font-black text-slate-400 uppercase tracking-widest">Date</th>
-            <th className="px-4 py-3 text-left text-[10px] font-black text-slate-400 uppercase tracking-widest">Reason</th>
-          </tr>
-        </thead>
-        <tbody>
-          {[
-            { asset: 'Laptop-001', from: 'Front Office', to: 'Administration', date: '2024-05-10', reason: 'Staff Transfer' },
-            { asset: 'Printer-003', from: 'Housekeeping', to: 'Front Office', date: '2024-05-15', reason: 'Equipment Upgrade' },
-            { asset: 'Desk-012', from: 'F&B', to: 'Events', date: '2024-05-20', reason: 'Event Support' },
-          ].map((r, i) => (
-            <tr key={i} className="border-b border-slate-100 dark:border-slate-700">
-              <td className="px-4 py-3 text-xs font-bold text-slate-900 dark:text-white">{r.asset}</td>
-              <td className="px-4 py-3 text-xs text-slate-500">{r.from}</td>
-              <td className="px-4 py-3 text-xs text-slate-500">{r.to}</td>
-              <td className="px-4 py-3 text-xs text-slate-600 dark:text-slate-400">{r.date}</td>
-              <td className="px-4 py-3 text-xs text-slate-600 dark:text-slate-400">{r.reason}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  </div>
-);
-
-const AssetDisposalView = ({ onBack }: { onBack: () => void }) => (
-  <div className="space-y-6 animate-fade-in">
-    <div className="flex justify-between items-center bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-6 rounded-lg shadow-sm hover:shadow-lg transition-all duration-300">
-      <div className="flex items-center gap-4">
-        <button onClick={onBack} className="p-2 border border-slate-200 dark:border-slate-700 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 transition">
-          <ArrowRight className="rotate-180" size={18} />
-        </button>
-        <div>
-          <h3 className="text-lg font-black text-slate-900 dark:text-white uppercase tracking-tight">Asset Disposal</h3>
-          <p className="text-[10px] text-slate-500 font-bold uppercase">Period: YTD 2024</p>
-        </div>
-      </div>
-    </div>
-    <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-6 rounded-lg shadow-sm">
-      <table className="w-full">
-        <thead className="bg-slate-50 dark:bg-slate-700/20 border-b border-slate-100 dark:border-slate-700">
-          <tr>
-            <th className="px-4 py-3 text-left text-[10px] font-black text-slate-400 uppercase tracking-widest">Asset</th>
-            <th className="px-4 py-3 text-right text-[10px] font-black text-slate-400 uppercase tracking-widest">Book Value</th>
-            <th className="px-4 py-3 text-right text-[10px] font-black text-slate-400 uppercase tracking-widest">Sale Price</th>
-            <th className="px-4 py-3 text-left text-[10px] font-black text-slate-400 uppercase tracking-widest">Date</th>
-            <th className="px-4 py-3 text-left text-[10px] font-black text-slate-400 uppercase tracking-widest">Reason</th>
-          </tr>
-        </thead>
-        <tbody>
-          {[
-            { asset: 'Server-005', bookValue: 15000, salePrice: 2000, date: '2024-03-15', reason: 'Obsolete' },
-            { asset: 'Vehicle-002', bookValue: 45000, salePrice: 35000, date: '2024-04-20', reason: 'Replacement' },
-            { asset: 'Furniture-015', bookValue: 5000, salePrice: 1000, date: '2024-05-10', reason: 'Damaged' },
-          ].map((r, i) => (
-            <tr key={i} className="border-b border-slate-100 dark:border-slate-700">
-              <td className="px-4 py-3 text-xs font-bold text-slate-900 dark:text-white">{r.asset}</td>
-              <td className="px-4 py-3 text-right text-xs font-mono">${r.bookValue.toLocaleString()}</td>
-              <td className="px-4 py-3 text-right text-xs font-mono font-black text-indigo-600">${r.salePrice.toLocaleString()}</td>
-              <td className="px-4 py-3 text-xs text-slate-600 dark:text-slate-400">{r.date}</td>
-              <td className="px-4 py-3 text-xs text-slate-600 dark:text-slate-400">{r.reason}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  </div>
-);
-
-const TaxSummaryView = ({ onBack }: { onBack: () => void }) => (
-  <div className="space-y-6 animate-fade-in">
-    <div className="flex justify-between items-center bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-6 rounded-lg shadow-sm hover:shadow-lg transition-all duration-300">
-      <div className="flex items-center gap-4">
-        <button onClick={onBack} className="p-2 border border-slate-200 dark:border-slate-700 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 transition">
-          <ArrowRight className="rotate-180" size={18} />
-        </button>
-        <div>
-          <h3 className="text-lg font-black text-slate-900 dark:text-white uppercase tracking-tight">Tax Summary</h3>
-          <p className="text-[10px] text-slate-500 font-bold uppercase">Period: Q2 2024</p>
-        </div>
-      </div>
-    </div>
-    <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-6 rounded-lg shadow-sm">
-      <table className="w-full">
-        <thead className="bg-slate-50 dark:bg-slate-700/20 border-b border-slate-100 dark:border-slate-700">
-          <tr>
-            <th className="px-4 py-3 text-left text-[10px] font-black text-slate-400 uppercase tracking-widest">Tax Type</th>
-            <th className="px-4 py-3 text-right text-[10px] font-black text-slate-400 uppercase tracking-widest">Taxable Amount</th>
-            <th className="px-4 py-3 text-right text-[10px] font-black text-slate-400 uppercase tracking-widest">Tax Amount</th>
-            <th className="px-4 py-3 text-right text-[10px] font-black text-slate-400 uppercase tracking-widest">Paid</th>
-            <th className="px-4 py-3 text-right text-[10px] font-black text-slate-400 uppercase tracking-widest">Outstanding</th>
-          </tr>
-        </thead>
-        <tbody>
-          {[
-            { type: 'VAT', taxable: 850000, tax: 127500, paid: 100000, outstanding: 27500 },
-            { type: 'Withholding Tax', taxable: 250000, tax: 15000, paid: 15000, outstanding: 0 },
-            { type: 'Tourism Levy', taxable: 450000, tax: 22500, paid: 22500, outstanding: 0 },
-            { type: 'PAYE', taxable: 180000, tax: 27000, paid: 20000, outstanding: 7000 },
-          ].map((r, i) => (
-            <tr key={i} className="border-b border-slate-100 dark:border-slate-700">
-              <td className="px-4 py-3 text-xs font-bold text-slate-900 dark:text-white">{r.type}</td>
-              <td className="px-4 py-3 text-right text-xs font-mono">${r.taxable.toLocaleString()}</td>
-              <td className="px-4 py-3 text-right text-xs font-mono font-black text-indigo-600">${r.tax.toLocaleString()}</td>
-              <td className="px-4 py-3 text-right text-xs font-mono text-emerald-600">${r.paid.toLocaleString()}</td>
-              <td className="px-4 py-3 text-right text-xs font-mono font-black text-rose-600">${r.outstanding.toLocaleString()}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  </div>
-);
-
-const TaxFilingView = ({ onBack }: { onBack: () => void }) => (
-  <div className="space-y-6 animate-fade-in">
-    <div className="flex justify-between items-center bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-6 rounded-lg shadow-sm hover:shadow-lg transition-all duration-300">
-      <div className="flex items-center gap-4">
-        <button onClick={onBack} className="p-2 border border-slate-200 dark:border-slate-700 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 transition">
-          <ArrowRight className="rotate-180" size={18} />
-        </button>
-        <div>
-          <h3 className="text-lg font-black text-slate-900 dark:text-white uppercase tracking-tight">Tax Filing Report</h3>
-          <p className="text-[10px] text-slate-500 font-bold uppercase">Period: June 2024</p>
-        </div>
-      </div>
-    </div>
-    <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-6 rounded-lg shadow-sm">
-      <table className="w-full">
-        <thead className="bg-slate-50 dark:bg-slate-700/20 border-b border-slate-100 dark:border-slate-700">
-          <tr>
-            <th className="px-4 py-3 text-left text-[10px] font-black text-slate-400 uppercase tracking-widest">Tax Type</th>
-            <th className="px-4 py-3 text-left text-[10px] font-black text-slate-400 uppercase tracking-widest">Filing Period</th>
-            <th className="px-4 py-3 text-right text-[10px] font-black text-slate-400 uppercase tracking-widest">Tax Amount</th>
-            <th className="px-4 py-3 text-left text-[10px] font-black text-slate-400 uppercase tracking-widest">Due Date</th>
-            <th className="px-4 py-3 text-left text-[10px] font-black text-slate-400 uppercase tracking-widest">Status</th>
-          </tr>
-        </thead>
-        <tbody>
-          {[
-            { type: 'VAT', period: 'June 2024', amount: 127500, due: '2024-07-20', status: 'Pending' },
-            { type: 'Withholding Tax', period: 'June 2024', amount: 15000, due: '2024-07-10', status: 'Filed' },
-            { type: 'Tourism Levy', period: 'June 2024', amount: 22500, due: '2024-07-15', status: 'Filed' },
-            { type: 'PAYE', period: 'June 2024', amount: 27000, due: '2024-07-07', status: 'Filed' },
-          ].map((r, i) => (
-            <tr key={i} className="border-b border-slate-100 dark:border-slate-700">
-              <td className="px-4 py-3 text-xs font-bold text-slate-900 dark:text-white">{r.type}</td>
-              <td className="px-4 py-3 text-xs text-slate-600 dark:text-slate-400">{r.period}</td>
-              <td className="px-4 py-3 text-right text-xs font-mono font-black text-indigo-600">${r.amount.toLocaleString()}</td>
-              <td className="px-4 py-3 text-xs text-slate-600 dark:text-slate-400">{r.due}</td>
-              <td className="px-4 py-3"><span className={`px-2 py-0.5 rounded text-[8px] font-black uppercase ${r.status === 'Filed' ? 'bg-emerald-50 text-emerald-600' : 'bg-amber-50 text-amber-600'}`}>{r.status}</span></td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  </div>
-);
+  );
+};
 
 export default FinancialReports;

@@ -1,10 +1,13 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import {
-  RefreshCw, Shield, Download, Trash2, FileText, CheckCircle2,
-  AlertTriangle, Clock, Lock,
+  RefreshCw, Shield, Download, Trash2, CheckCircle2,
+  AlertTriangle, Clock, FileCheck2, UserX, Loader2,
 } from 'lucide-react';
-import { DataTable, Column } from '../Shared/DataTable';
+import StatCard from '../FrontOffice/StatCard';
+import { PageHeader, SectionCard, Badge } from '../FrontOffice/ui';
+import { button } from '../FrontOffice/brandTheme';
 import { ModalSystem } from '../Shared/ModalSystem';
+import { adminAuthHeaders } from './shared/ResourceManager';
 
 interface ConsentLog {
   id: string;
@@ -21,6 +24,7 @@ interface RetentionPolicy {
   retention_days: number;
   action: string;
   enabled: boolean;
+  property_id?: string | null;
 }
 
 interface PiiRequest {
@@ -33,10 +37,27 @@ interface PiiRequest {
   created_at: string;
 }
 
+const TABS = [
+  { id: 'overview', label: 'Overview' },
+  { id: 'consent', label: 'Consent Logs' },
+  { id: 'retention', label: 'Retention Policies' },
+  { id: 'requests', label: 'PII Requests' },
+] as const;
+
+type TabId = typeof TABS[number]['id'];
+
+const actionTone = (a?: string) =>
+  a === 'delete' ? 'danger' as const : a === 'anonymize' ? 'warning' as const : 'info' as const;
+
+const reqTone = (s?: string) =>
+  s === 'completed' || s === 'exported' || s === 'erased' ? 'success' as const
+  : s === 'failed' || s === 'error' ? 'danger' as const
+  : 'warning' as const;
+
 const ComplianceCenter: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [tab, setTab] = useState<'overview' | 'consent' | 'retention' | 'requests'>('overview');
+  const [tab, setTab] = useState<TabId>('overview');
   const [consentLogs, setConsentLogs] = useState<ConsentLog[]>([]);
   const [policies, setPolicies] = useState<RetentionPolicy[]>([]);
   const [exports, setExports] = useState<PiiRequest[]>([]);
@@ -47,17 +68,28 @@ const ComplianceCenter: React.FC = () => {
   const [exportResult, setExportResult] = useState<any>(null);
   const [editPolicy, setEditPolicy] = useState<RetentionPolicy | null>(null);
   const [policyForm, setPolicyForm] = useState({ retentionDays: 365, action: 'archive', enabled: true });
+  const [busy, setBusy] = useState<string | null>(null);
+  const [toast, setToast] = useState<{ msg: string; type: 'success' | 'error' } | null>(null);
 
-  const token = localStorage.getItem('erp_token');
-  const headers = { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) };
+  const notify = (msg: string, type: 'success' | 'error' = 'success') => {
+    setToast({ msg, type });
+    setTimeout(() => setToast(null), 4000);
+  };
+
+  const api = async (path: string, opts: RequestInit = {}) => {
+    const res = await fetch(`/api/admin${path}`, { headers: adminAuthHeaders(), ...opts });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data?.error || `Request failed (${res.status})`);
+    return data;
+  };
 
   const loadData = useCallback(async () => {
     setLoading(true); setError(null);
     try {
       const [consentRes, retentionRes, reqRes] = await Promise.all([
-        fetch('/api/admin/compliance/consent-logs', { headers }).then(r => r.json()),
-        fetch('/api/admin/compliance/retention-policies', { headers }).then(r => r.json()),
-        fetch('/api/admin/compliance/requests', { headers }).then(r => r.json()),
+        api('/compliance/consent-logs').catch(() => ({ logs: [] })),
+        api('/compliance/retention-policies').catch(() => ({ policies: [] })),
+        api('/compliance/requests').catch(() => ({ exports: [], erasures: [] })),
       ]);
       setConsentLogs(consentRes.logs || []);
       setPolicies(retentionRes.policies || []);
@@ -70,89 +102,92 @@ const ComplianceCenter: React.FC = () => {
   useEffect(() => { loadData(); }, [loadData]);
 
   const handleExport = async () => {
+    setBusy('export');
     try {
-      const res = await fetch('/api/admin/compliance/pii-export', {
-        method: 'POST', headers, body: JSON.stringify({ targetEntity }),
-      });
-      const data = await res.json();
+      const data = await api('/compliance/pii-export', { method: 'POST', body: JSON.stringify({ targetEntity }) });
       if (data.success) {
         setExportResult(data.data);
+        notify('PII export completed');
         loadData();
       } else { setError(data.error || 'Export failed'); }
     } catch (err: any) { setError(err.message); }
+    finally { setBusy(null); }
   };
 
   const handleErase = async () => {
+    setBusy('erase');
     try {
-      const res = await fetch('/api/admin/compliance/pii-erasure', {
-        method: 'POST', headers, body: JSON.stringify({ targetEntity }),
-      });
-      const data = await res.json();
-      if (data.success) { setShowEraseModal(false); setTargetEntity(''); loadData(); }
+      const data = await api('/compliance/pii-erasure', { method: 'POST', body: JSON.stringify({ targetEntity }) });
+      if (data.success) { setShowEraseModal(false); setTargetEntity(''); notify('PII erasure completed'); loadData(); }
       else { setError(data.error || 'Erasure failed'); }
     } catch (err: any) { setError(err.message); }
+    finally { setBusy(null); }
   };
 
   const handleSavePolicy = async () => {
     if (!editPolicy) return;
+    setBusy('policy');
     try {
-      await fetch(`/api/admin/compliance/retention-policies/${editPolicy.id}`, {
-        method: 'PATCH', headers, body: JSON.stringify(policyForm),
+      await api(`/compliance/retention-policies/${editPolicy.id}`, {
+        method: 'PATCH', body: JSON.stringify(policyForm),
       });
-      setEditPolicy(null); loadData();
+      setEditPolicy(null); notify('Retention policy updated'); loadData();
     } catch (err: any) { setError(err.message); }
+    finally { setBusy(null); }
   };
 
-  const consentColumns: Column<ConsentLog>[] = [
-    { key: 'guest_id', label: 'Guest ID', render: (l) => <span className="text-[10px] font-mono font-black text-slate-400">{l.guest_id?.slice(0, 12) || '—'}</span> },
-    { key: 'consent_type', label: 'Type', render: (l) => <span className="text-xs font-bold text-slate-700 dark:text-slate-300">{l.consent_type}</span> },
-    { key: 'granted', label: 'Granted', align: 'center', render: (l) => l.granted ? <CheckCircle2 size={14} className="text-emerald-600 inline" /> : <AlertTriangle size={14} className="text-rose-600 inline" /> },
-    { key: 'policy_version', label: 'Policy', align: 'center', render: (l) => <span className="text-[10px] font-bold text-slate-400">{l.policy_version || '—'}</span> },
-    { key: 'timestamp', label: 'Timestamp', align: 'center', render: (l) => <span className="text-[10px] font-bold text-slate-500">{new Date(l.timestamp).toLocaleString()}</span> },
-  ];
-
-  const retentionColumns: Column<RetentionPolicy>[] = [
-    { key: 'table_name', label: 'Table', render: (p) => <span className="text-xs font-mono font-black text-slate-700 dark:text-slate-300">{p.table_name}</span> },
-    { key: 'retention_days', label: 'Retention', align: 'right', render: (p) => <span className="text-xs font-black text-indigo-600">{p.retention_days} days</span> },
-    { key: 'action', label: 'Action', align: 'center', render: (p) => <span className={`px-2 py-0.5 rounded text-[8px] font-black uppercase tracking-widest ${p.action === 'delete' ? 'bg-rose-50 text-rose-600' : 'bg-amber-50 text-amber-600'}`}>{p.action}</span> },
-    { key: 'enabled', label: 'Status', align: 'center', render: (p) => (
-      <button onClick={() => { setEditPolicy(p); setPolicyForm({ retentionDays: p.retention_days, action: p.action, enabled: p.enabled }); }} className="px-2 py-0.5 rounded text-[8px] font-black uppercase tracking-widest bg-slate-100 text-slate-600 hover:bg-slate-200 transition">
-        {p.enabled ? 'Active' : 'Disabled'}
-      </button>
-    ) },
+  const cards = [
+    { title: 'Consent Records', value: consentLogs.length, icon: FileCheck2, tone: 'success' as const },
+    { title: 'Active Policies', value: policies.filter(p => p.enabled).length, icon: Shield, tone: 'warning' as const },
+    { title: 'PII Exports', value: exports.length, icon: Download, tone: 'info' as const },
+    { title: 'PII Erasures', value: erasures.length, icon: UserX, tone: 'danger' as const },
   ];
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-xl font-black text-slate-900 dark:text-white leading-tight">Compliance Center</h2>
-          <p className="text-xs text-slate-400 font-medium">GDPR/PCI tooling, PII export/erasure, consent management, data retention</p>
-        </div>
-        <div className="flex items-center gap-2">
-          <button onClick={loadData} className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white font-bold py-2.5 px-4 rounded-2xl flex items-center gap-2 text-xs hover:bg-slate-50 transition shadow-sm">
-            <RefreshCw size={16} className={loading ? 'animate-spin' : ''} /> Refresh
-          </button>
-          <button onClick={() => { setTargetEntity(''); setExportResult(null); setShowExportModal(true); }} className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2.5 px-4 rounded-2xl flex items-center gap-2 text-xs transition shadow-md shadow-indigo-200">
-            <Download size={16} /> PII Export
-          </button>
-          <button onClick={() => { setTargetEntity(''); setShowEraseModal(true); }} className="bg-rose-600 hover:bg-rose-700 text-white font-bold py-2.5 px-4 rounded-2xl flex items-center gap-2 text-xs transition shadow-md shadow-rose-200">
-            <Trash2 size={16} /> PII Erasure
-          </button>
-        </div>
-      </div>
+    <div className="space-y-6 animate-fade-in pt-4">
+      <PageHeader
+        title="Compliance Center"
+        subtitle="GDPR tooling — consent management, PII export/erasure, and data retention"
+        icon={Shield}
+        actions={
+          <>
+            <button onClick={loadData} disabled={loading} className={button.secondary}>
+              <RefreshCw size={16} className={loading ? 'animate-spin' : ''} /> Refresh
+            </button>
+            <button onClick={() => { setTargetEntity(''); setExportResult(null); setShowExportModal(true); }} className={button.primary}>
+              <Download size={16} /> PII Export
+            </button>
+            <button onClick={() => { setTargetEntity(''); setShowEraseModal(true); }} className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-medium text-sm transition disabled:opacity-50">
+              <Trash2 size={16} /> PII Erasure
+            </button>
+          </>
+        }
+      />
 
-      {error && <div className="p-4 bg-rose-50 dark:bg-rose-500/10 border border-rose-100 dark:border-rose-500/20 rounded-2xl"><p className="text-xs font-bold text-rose-600 dark:text-rose-400">{error}</p></div>}
+      {error && (
+        <div className="p-4 rounded-xl text-sm font-bold flex items-center gap-2 bg-rose-50 dark:bg-rose-500/10 text-rose-700 dark:text-rose-400 border border-rose-100 dark:border-rose-500/20">
+          <AlertTriangle size={16} /> {error}
+        </div>
+      )}
+      {toast && (
+        <div className={`p-4 rounded-xl text-sm font-bold flex items-center gap-2 border ${
+          toast.type === 'success'
+            ? 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border-emerald-100 dark:border-emerald-500/20'
+            : 'bg-rose-50 dark:bg-rose-500/10 text-rose-700 dark:text-rose-400 border-rose-100 dark:border-rose-500/20'
+        }`}>
+          {toast.type === 'success' ? <CheckCircle2 size={16} /> : <AlertTriangle size={16} />} {toast.msg}
+        </div>
+      )}
 
       {/* Tabs */}
-      <div className="flex gap-1 border-b border-slate-100 dark:border-slate-800">
-        {[
-          { id: 'overview', label: 'Overview' },
-          { id: 'consent', label: 'Consent Logs' },
-          { id: 'retention', label: 'Retention Policies' },
-          { id: 'requests', label: 'PII Requests' },
-        ].map(t => (
-          <button key={t.id} onClick={() => setTab(t.id as any)} className={`py-2.5 px-4 text-xs font-black uppercase tracking-widest border-b-2 transition ${tab === t.id ? 'border-indigo-600 text-indigo-600' : 'border-transparent text-slate-400'}`}>
+      <div className="flex gap-1 border-b border-gray-200 dark:border-slate-700">
+        {TABS.map(t => (
+          <button key={t.id} onClick={() => setTab(t.id)}
+            className={`py-2.5 px-4 text-xs font-bold transition border-b-2 ${
+              tab === t.id
+                ? 'border-indigo-600 text-indigo-600 dark:text-indigo-400'
+                : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
+            }`}>
             {t.label}
           </button>
         ))}
@@ -160,61 +195,34 @@ const ComplianceCenter: React.FC = () => {
 
       {/* Overview */}
       {tab === 'overview' && (
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 p-6 rounded-[32px] shadow-sm">
-            <div className="p-2 w-fit rounded-xl bg-emerald-50 text-emerald-600 mb-3"><Shield size={18} /></div>
-            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Consent Records</p>
-            <h3 className="text-xl font-black text-slate-900 dark:text-white">{consentLogs.length}</h3>
-          </div>
-          <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 p-6 rounded-[32px] shadow-sm">
-            <div className="p-2 w-fit rounded-xl bg-amber-50 text-amber-600 mb-3"><Clock size={18} /></div>
-            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Retention Policies</p>
-            <h3 className="text-xl font-black text-slate-900 dark:text-white">{policies.filter(p => p.enabled).length}</h3>
-          </div>
-          <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 p-6 rounded-[32px] shadow-sm">
-            <div className="p-2 w-fit rounded-xl bg-indigo-50 text-indigo-600 mb-3"><Download size={18} /></div>
-            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">PII Exports</p>
-            <h3 className="text-xl font-black text-slate-900 dark:text-white">{exports.length}</h3>
-          </div>
-          <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 p-6 rounded-[32px] shadow-sm">
-            <div className="p-2 w-fit rounded-xl bg-rose-50 text-rose-600 mb-3"><Trash2 size={18} /></div>
-            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">PII Erasures</p>
-            <h3 className="text-xl font-black text-slate-900 dark:text-white">{erasures.length}</h3>
-          </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          {cards.map(c => <StatCard key={c.title} title={c.title} value={c.value} icon={c.icon} tone={c.tone} />)}
         </div>
       )}
 
       {/* Consent Logs */}
-      {tab === 'consent' && <DataTable columns={consentColumns} data={consentLogs} rowKey={(r) => r.id} sortable filterable filterPlaceholder="Search consent logs..." filterKeys={['consent_type', 'guest_id']} emptyMessage="No consent logs recorded." />}
+      {tab === 'consent' && (
+        <SectionCard title="Consent Logs" subtitle={`${consentLogs.length} records`} icon={FileCheck2} tone="success" pad="none">
+          <ConsentTable logs={consentLogs} loading={loading} />
+        </SectionCard>
+      )}
 
       {/* Retention Policies */}
-      {tab === 'retention' && <DataTable columns={retentionColumns} data={policies} rowKey={(r) => r.id} sortable filterable filterPlaceholder="Search policies..." filterKeys={['table_name', 'action']} emptyMessage="No retention policies configured." />}
+      {tab === 'retention' && (
+        <SectionCard title="Retention Policies" subtitle={`${policies.filter(p => p.enabled).length} of ${policies.length} enabled`} icon={Clock} tone="warning" pad="none">
+          <RetentionTable policies={policies} loading={loading} onEdit={(p) => { setEditPolicy(p); setPolicyForm({ retentionDays: p.retention_days, action: p.action, enabled: p.enabled }); }} />
+        </SectionCard>
+      )}
 
       {/* PII Requests */}
       {tab === 'requests' && (
-        <div className="space-y-6">
-          <div>
-            <h3 className="text-sm font-black text-slate-900 dark:text-white uppercase tracking-tight mb-3 flex items-center gap-2"><Download size={16} className="text-indigo-500" /> Export Requests ({exports.length})</h3>
-            <DataTable
-              columns={[
-                { key: 'target_entity', label: 'Target', render: (r: PiiRequest) => <span className="text-[10px] font-mono font-bold text-slate-500">{r.target_entity.slice(0, 12)}</span> },
-                { key: 'status', label: 'Status', align: 'center', render: (r: PiiRequest) => <span className="px-2 py-0.5 rounded text-[8px] font-black uppercase tracking-widest bg-emerald-50 text-emerald-600">{r.status}</span> },
-                { key: 'exported_at', label: 'Exported At', align: 'center', render: (r: PiiRequest) => <span className="text-[10px] font-bold text-slate-500">{r.exported_at ? new Date(r.exported_at).toLocaleString() : '—'}</span> },
-              ] as Column<PiiRequest>[]}
-              data={exports} rowKey={(r) => r.id} emptyMessage="No export requests."
-            />
-          </div>
-          <div>
-            <h3 className="text-sm font-black text-slate-900 dark:text-white uppercase tracking-tight mb-3 flex items-center gap-2"><Trash2 size={16} className="text-rose-500" /> Erasure Requests ({erasures.length})</h3>
-            <DataTable
-              columns={[
-                { key: 'target_entity', label: 'Target', render: (r: PiiRequest) => <span className="text-[10px] font-mono font-bold text-slate-500">{r.target_entity.slice(0, 12)}</span> },
-                { key: 'status', label: 'Status', align: 'center', render: (r: PiiRequest) => <span className="px-2 py-0.5 rounded text-[8px] font-black uppercase tracking-widest bg-emerald-50 text-emerald-600">{r.status}</span> },
-                { key: 'erased_at', label: 'Erased At', align: 'center', render: (r: PiiRequest) => <span className="text-[10px] font-bold text-slate-500">{r.erased_at ? new Date(r.erased_at).toLocaleString() : '—'}</span> },
-              ] as Column<PiiRequest>[]}
-              data={erasures} rowKey={(r) => r.id} emptyMessage="No erasure requests."
-            />
-          </div>
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <SectionCard title="Export Requests" subtitle={`${exports.length} records`} icon={Download} tone="info" pad="none">
+            <RequestTable rows={exports} loading={loading} kind="export" />
+          </SectionCard>
+          <SectionCard title="Erasure Requests" subtitle={`${erasures.length} records`} icon={UserX} tone="danger" pad="none">
+            <RequestTable rows={erasures} loading={loading} kind="erasure" />
+          </SectionCard>
         </div>
       )}
 
@@ -233,8 +241,10 @@ const ComplianceCenter: React.FC = () => {
           )}
         </div>
         <div className="p-6 border-t border-slate-100 dark:border-slate-800 flex justify-end gap-3 bg-slate-50 dark:bg-slate-950">
-          <button onClick={() => setShowExportModal(false)} className="px-6 py-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-slate-50 transition">Close</button>
-          <button onClick={handleExport} disabled={!targetEntity.trim()} className="px-6 py-2.5 bg-indigo-600 text-white rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-indigo-700 disabled:opacity-50 transition">Export Data</button>
+          <button onClick={() => setShowExportModal(false)} className={button.secondary}>Close</button>
+          <button onClick={handleExport} disabled={!targetEntity.trim() || busy === 'export'} className={button.primary}>
+            {busy === 'export' ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />} Export Data
+          </button>
         </div>
       </ModalSystem>
 
@@ -254,8 +264,11 @@ const ComplianceCenter: React.FC = () => {
           </div>
         </div>
         <div className="p-6 border-t border-slate-100 dark:border-slate-800 flex justify-end gap-3 bg-slate-50 dark:bg-slate-950">
-          <button onClick={() => setShowEraseModal(false)} className="px-6 py-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-slate-50 transition">Cancel</button>
-          <button onClick={handleErase} disabled={!targetEntity.trim()} className="px-6 py-2.5 bg-rose-600 text-white rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-rose-700 disabled:opacity-50 transition">Erase PII</button>
+          <button onClick={() => setShowEraseModal(false)} className={button.secondary}>Cancel</button>
+          <button onClick={handleErase} disabled={!targetEntity.trim() || busy === 'erase'}
+            className="inline-flex items-center justify-center gap-2 px-6 py-2.5 rounded-2xl bg-rose-600 text-white text-[10px] font-black uppercase tracking-widest hover:bg-rose-700 transition disabled:opacity-50">
+            {busy === 'erase' ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />} Erase PII
+          </button>
         </div>
       </ModalSystem>
 
@@ -269,7 +282,7 @@ const ComplianceCenter: React.FC = () => {
           <div>
             <label className="text-[10px] uppercase font-black tracking-widest text-slate-400 block mb-2">Action</label>
             <select value={policyForm.action} onChange={e => setPolicyForm({ ...policyForm, action: e.target.value })} className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2 text-xs font-bold outline-none focus:ring-2 focus:ring-indigo-500">
-              <option value="archive">Archive</option><option value="delete">Delete</option>
+              <option value="archive">Archive</option><option value="delete">Delete</option><option value="anonymize">Anonymize</option>
             </select>
           </div>
           <div>
@@ -280,12 +293,95 @@ const ComplianceCenter: React.FC = () => {
           </div>
         </div>
         <div className="p-6 border-t border-slate-100 dark:border-slate-800 flex justify-end gap-3 bg-slate-50 dark:bg-slate-950">
-          <button onClick={() => setEditPolicy(null)} className="px-6 py-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-slate-50 transition">Cancel</button>
-          <button onClick={handleSavePolicy} className="px-6 py-2.5 bg-indigo-600 text-white rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-indigo-700 transition">Save</button>
+          <button onClick={() => setEditPolicy(null)} className={button.secondary}>Cancel</button>
+          <button onClick={handleSavePolicy} disabled={busy === 'policy'} className={button.primary}>
+            {busy === 'policy' ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle2 size={14} />} Save
+          </button>
         </div>
       </ModalSystem>
     </div>
   );
 };
+
+// ── Table components ──────────────────────────────────────────────
+
+const th = 'px-5 py-3 text-left text-xs font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400';
+const td = 'px-5 py-3 text-sm';
+
+function ConsentTable({ logs, loading }: { logs: ConsentLog[]; loading: boolean }) {
+  if (logs.length === 0) return <div className="p-8 text-center text-sm text-gray-400">{loading ? 'Loading…' : 'No consent logs recorded.'}</div>;
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full">
+        <thead className="border-b border-gray-200 dark:border-slate-700">
+          <tr>
+            <th className={th}>Guest</th><th className={th}>Type</th><th className={th}>Granted</th>
+            <th className={th}>Policy</th><th className={th}>Timestamp</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-gray-100 dark:divide-slate-700">
+          {logs.map(l => (
+            <tr key={l.id} className="hover:bg-slate-50 dark:hover:bg-slate-700/30">
+              <td className={`${td} font-mono text-xs text-gray-500 dark:text-gray-400`}>{l.guest_id?.slice(0, 12) || '—'}</td>
+              <td className={td}><span className="text-sm font-bold text-gray-800 dark:text-gray-200">{l.consent_type}</span></td>
+              <td className={td}>{l.granted ? <Badge tone="success"><CheckCircle2 size={11} /> Granted</Badge> : <Badge tone="danger"><AlertTriangle size={11} /> Denied</Badge>}</td>
+              <td className={td}><span className="text-xs font-bold text-gray-500">{l.policy_version || '—'}</span></td>
+              <td className={td}><span className="text-xs text-gray-500 dark:text-gray-400">{new Date(l.timestamp).toLocaleString()}</span></td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function RetentionTable({ policies, loading, onEdit }: { policies: RetentionPolicy[]; loading: boolean; onEdit: (p: RetentionPolicy) => void }) {
+  if (policies.length === 0) return <div className="p-8 text-center text-sm text-gray-400">{loading ? 'Loading…' : 'No retention policies configured.'}</div>;
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full">
+        <thead className="border-b border-gray-200 dark:border-slate-700">
+          <tr>
+            <th className={th}>Table</th><th className={th}>Retention</th><th className={th}>Action</th><th className={th}>Status</th><th className={th}></th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-gray-100 dark:divide-slate-700">
+          {policies.map(p => (
+            <tr key={p.id} className="hover:bg-slate-50 dark:hover:bg-slate-700/30">
+              <td className={td}><span className="font-mono text-xs font-bold text-gray-800 dark:text-gray-200">{p.table_name}</span></td>
+              <td className={td}><span className="text-sm font-bold text-indigo-600 dark:text-indigo-400">{p.retention_days} days</span></td>
+              <td className={td}><Badge tone={actionTone(p.action)}>{p.action}</Badge></td>
+              <td className={td}><Badge tone={p.enabled ? 'success' : 'neutral'}>{p.enabled ? 'Active' : 'Disabled'}</Badge></td>
+              <td className={`${td} text-right`}>
+                <button onClick={() => onEdit(p)} className={button.ghost}>Edit</button>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function RequestTable({ rows, loading, kind }: { rows: PiiRequest[]; loading: boolean; kind: 'export' | 'erasure' }) {
+  if (rows.length === 0) return <div className="p-8 text-center text-sm text-gray-400">{loading ? 'Loading…' : `No ${kind} requests.`}</div>;
+  const ts = kind === 'export' ? 'exported_at' : 'erased_at';
+  return (
+    <div className="divide-y divide-gray-100 dark:divide-slate-700 max-h-96 overflow-y-auto">
+      {rows.map(r => (
+        <div key={r.id} className="flex items-center justify-between gap-3 px-5 py-3">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-bold text-gray-900 dark:text-white font-mono">{r.target_entity?.slice(0, 12)}</span>
+              <Badge tone={reqTone(r.status)}>{r.status}</Badge>
+            </div>
+            <div className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">requested {new Date(r.created_at).toLocaleString()}</div>
+          </div>
+          <span className="text-xs text-gray-500 dark:text-gray-400 shrink-0">{r[ts] ? new Date(r[ts]!).toLocaleString() : '—'}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
 
 export default ComplianceCenter;

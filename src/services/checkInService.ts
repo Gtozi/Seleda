@@ -8,6 +8,7 @@ import { supabase } from '../lib/supabase';
 export interface CheckInRequest {
   id: string;
   guestName: string;
+  guestId?: string | null;
   reservationId: string;
   roomNumber: string;
   roomType: string;
@@ -54,6 +55,7 @@ export async function getPendingCheckIns(): Promise<CheckInRequest[]> {
       .from('reservations')
       .select(`
         id,
+        guest_id,
         guest_name,
         guest_email,
         guest_phone,
@@ -98,6 +100,7 @@ export async function getPendingCheckIns(): Promise<CheckInRequest[]> {
       return {
         id: `CI-${reservation.id}`,
         guestName: reservation.guest_name,
+        guestId: reservation.guest_id || null,
         reservationId: reservation.id,
         roomNumber: reservation.room_number || 'Unassigned',
         roomType: reservation.room_type,
@@ -132,6 +135,7 @@ export async function searchCheckIns(searchTerm: string): Promise<CheckInRequest
       .from('reservations')
       .select(`
         id,
+        guest_id,
         guest_name,
         guest_email,
         guest_phone,
@@ -173,6 +177,7 @@ export async function searchCheckIns(searchTerm: string): Promise<CheckInRequest
       return {
         id: `CI-${reservation.id}`,
         guestName: reservation.guest_name,
+        guestId: reservation.guest_id || null,
         reservationId: reservation.id,
         roomNumber: reservation.room_number || 'Unassigned',
         roomType: reservation.room_type,
@@ -241,7 +246,11 @@ export async function updateCheckInStep(
 /**
  * Complete check-in process
  */
-export async function completeCheckIn(reservationId: string, roomNumber: string): Promise<{ success: boolean; folioId?: string }> {
+export async function completeCheckIn(
+  reservationId: string,
+  roomNumber: string,
+  routingPolicy?: { entries: { category: string; target: string }[]; billingMode?: string; reason?: string }
+): Promise<{ success: boolean; folioId?: string }> {
   try {
     // Get authentication token - most of the app uses auth_token
     const token = localStorage.getItem('auth_token') || 
@@ -258,10 +267,13 @@ export async function completeCheckIn(reservationId: string, roomNumber: string)
       console.warn('No authentication token found - proceeding without auth (development mode)');
     }
 
+    const body: Record<string, any> = { roomNumber };
+    if (routingPolicy) body.routingPolicy = routingPolicy;
+
     const response = await fetch(`/api/${reservationId}/check-in`, {
       method: 'POST',
       headers,
-      body: JSON.stringify({ roomNumber })
+      body: JSON.stringify(body)
     });
 
     if (!response.ok) {
@@ -282,7 +294,12 @@ export async function completeCheckIn(reservationId: string, roomNumber: string)
 }
 
 /**
- * Process deposit collection
+ * Process deposit collection.
+ * Calls the backend /api/reservations/:id/deposit endpoint which:
+ *  1. Inserts a folio_payment so the folio balance reflects the deposit
+ *  2. Updates the reservation's deposit_amount / is_deposit_paid fields
+ *  3. Settles the accounting (Debit Cash/Bank, Credit Guest Deposits)
+ *  4. Recomputes folio totals
  */
 export async function processDeposit(
   reservationId: string,
@@ -290,18 +307,26 @@ export async function processDeposit(
   paymentMethod: string
 ): Promise<boolean> {
   try {
-    // Update reservation deposit status
-    const { error } = await supabase
-      .from('reservations')
-      .update({
-        deposit_amount: amount,
-        is_deposit_paid: true,
-        payment_status: 'Partial',
-        updated_at: new Date().toISOString()
-      })
-      .eq('id', reservationId);
+    const token = localStorage.getItem('auth_token') ||
+                  localStorage.getItem('hotel_erp_session');
 
-    if (error) throw error;
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json'
+    };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+
+    const response = await fetch(`/api/${encodeURIComponent(reservationId)}/deposit`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ amount, paymentMethod }),
+    });
+
+    if (!response.ok) {
+      const errData = await response.json().catch(() => ({ error: response.statusText }));
+      console.error('Deposit API error:', errData);
+      return false;
+    }
+
     return true;
   } catch (error) {
     console.error('Error processing deposit:', error);

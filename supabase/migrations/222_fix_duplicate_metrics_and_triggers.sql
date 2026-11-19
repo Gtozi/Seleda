@@ -179,7 +179,8 @@ begin
   select type into v_relationship_type from group_profiles where id = v_group_id limit 1;
   
   -- Check if guest profile exists and get the guest_id
-  select id into v_guest_id from guests where email = new.guest_email 
+  -- Use AND condition to ensure both email AND name match before reusing guest profile
+  select id into v_guest_id from guests where email = new.guest_email and name = new.guest_name
   order by created_at asc  -- Consistent ordering if duplicates exist
   limit 1;
   

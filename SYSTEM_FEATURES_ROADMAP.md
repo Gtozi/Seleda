@@ -437,63 +437,68 @@ The SELEDA ERP system is a feature-rich hospitality management platform with 14 
 **Timeline:** 6-10 months
 
 #### Phase 1: Mobile & Real-Time Operations (Weeks 1-16)
-- ✅ Mobile Operations Manager App (React Native) (COMPLETE - API endpoints for mobile app)
-- ✅ Offline-first architecture with sync capabilities (COMPLETE - /api/ops/portal/mobile/sync)
-- ✅ Real-time task management (COMPLETE - /api/ops/portal/tasks)
-- ✅ Mobile incident reporting (COMPLETE - /api/ops/portal/incidents)
-- ✅ Work order management (COMPLETE - /api/ops/portal/work-orders)
-- ✅ Mobile asset tracking (COMPLETE - /api/ops/portal/assets)
-- ✅ Location-based services (COMPLETE - /api/ops/portal/tasks/near)
-- ✅ Push notifications for mobile (COMPLETE - /api/ops/portal/notifications)
+> ⚠️ **Not implemented.** The `/api/ops/portal/*` mobile-API router referenced tables (`operations_tasks`, `incidents`, `push_notification_devices`, `assets`) that have no migrations, and no client consumed it. The router was removed (see AGENTS.md — Operations Portal). Items below remain roadmap goals.
+- Mobile Operations Manager App (React Native)
+- Offline-first architecture with sync capabilities
+- Real-time task management
+- Mobile incident reporting
+- Work order management
+- Mobile asset tracking
+- Location-based services
+- Push notifications for mobile
 - Push notifications for urgent escalations
 - GPS-based location tracking for field staff
 - Photo capture for maintenance and inspections
 - Core operations functions (briefing, action items, escalations)
 
 #### Phase 2: AI-Powered Operations Intelligence (Weeks 17-24)
-- ✅ AI-driven daily briefing prioritization (COMPLETE - /api/ops/ai/briefing)
-- ✅ Predictive staffing recommendations (COMPLETE - /api/ops/ai/staffing-recommendations)
-- ✅ Escalation severity prediction (COMPLETE - /api/ops/ai/predict-severity)
-- ✅ Smart action item assignment (COMPLETE - /api/ops/ai/assign-task)
-- ✅ Predictive maintenance scheduling (COMPLETE - /api/ops/ai/predictive-maintenance)
-- ✅ Anomaly detection for operations metrics (COMPLETE - /api/ops/ai/detect-anomalies)
-- ✅ Resource optimization recommendations (COMPLETE - /api/ops/ai/optimize-resources)
-- ✅ Anomaly detection in operations metrics (COMPLETE - statistical z-score analysis)
-- ✅ Natural language processing for notes and summaries (COMPLETE - /api/ops/ai/summarize-notes)
-- ✅ Pattern recognition for recurring issues (COMPLETE - /api/ops/ai/detect-patterns)
+> ⚠️ **Not implemented.** `/api/ops/ai/*` depended on tables (`daily_briefings`, `staffing_recommendations`, `maintenance_predictions`, `pattern_analyses`, `resource_optimizations`) that were never migrated; router removed.
+- AI-driven daily briefing prioritization
+- Predictive staffing recommendations
+- Escalation severity prediction
+- Smart action item assignment
+- Predictive maintenance scheduling
+- Anomaly detection for operations metrics
+- Resource optimization recommendations
+- Natural language processing for notes and summaries
+- Pattern recognition for recurring issues
 
 #### Phase 3: Real-Time IoT Integration (Weeks 25-32)
-- ✅ IoT sensor integration platform (COMPLETE - /api/ops/iot/sensors)
-- ✅ Smart lock integration for room status (COMPLETE - /api/ops/iot/smart-locks)
-- ✅ Environmental monitoring system (COMPLETE - /api/ops/iot/environmental)
-- ✅ Energy management integration (COMPLETE - /api/ops/iot/energy)
-- ✅ Real-time asset tracking via RFID/Bluetooth (COMPLETE - /api/ops/iot/asset-trackers)
-- ✅ Automated maintenance alerts from equipment sensors (COMPLETE - /api/ops/iot/maintenance-alerts)
+> ⚠️ **Not implemented.** `/api/ops/iot/*` depended on tables (`iot_sensors`, `sensor_readings`, `smart_locks`, `asset_trackers`, `iot_alerts`) that were never migrated; router removed.
+- IoT sensor integration platform
+- Smart lock integration for room status
+- Environmental monitoring system
+- Energy management integration
+- Real-time asset tracking via RFID/Bluetooth
+- Automated maintenance alerts from equipment sensors
 
 #### Phase 4: Staff & Maintenance Optimization (Weeks 33-40)
-- ✅ Advanced staff scheduling optimization (COMPLETE - /api/ops/optimization/scheduling/optimize)
-- ✅ Skill-based assignment algorithms (COMPLETE - /api/ops/optimization/assignment/skill-based)
-- ✅ Labor cost forecasting (COMPLETE - /api/ops/optimization/labor-cost-forecast)
-- ✅ Overtime prediction and prevention (COMPLETE - /api/ops/optimization/overtime/predict)
-- ✅ Predictive maintenance integration (COMPLETE - /api/ops/optimization/predictive-maintenance)
-- ✅ Equipment health monitoring (COMPLETE - /api/ops/optimization/equipment-health)
-- ✅ Automated work order generation (COMPLETE - /api/ops/optimization/auto-work-orders)
-- ✅ Maintenance vendor performance tracking (COMPLETE - /api/ops/optimization/vendor-performance)
+> ⚠️ **Not implemented.** `/api/ops/optimization/*` depended on tables (`staff_schedules`, `labor_costs`, `maintenance_predictions`, `operations_tasks`) that were never migrated; router removed.
+- Advanced staff scheduling optimization
+- Skill-based assignment algorithms
+- Labor cost forecasting
+- Overtime prediction and prevention
+- Predictive maintenance integration
+- Equipment health monitoring
+- Automated work order generation
+- Maintenance vendor performance tracking
 
 #### Phase 5: Advanced Housekeeping Optimization (Weeks 41-44)
-- ✅ AI-powered room assignment optimization (COMPLETE - /api/ops/housekeeping/room-assignments)
-- ✅ Mobile housekeeping app (COMPLETE - /api/ops/housekeeping/assignments)
-- ✅ Linen inventory management with automated reordering (COMPLETE - /api/ops/housekeeping/linen)
-- ✅ Quality assurance with photo documentation (COMPLETE - /api/ops/housekeeping/qa)
-- ✅ Performance analytics and productivity tracking (COMPLETE - /api/ops/housekeeping/performance)
+> ⚠️ **Not implemented.** `/api/ops/housekeeping/*` depended on tables (`housekeeping_assignments`, `housekeeping_qa`, `linen_inventory`, `linen_reorders`) that were never migrated; router removed. (Note: real housekeeping functionality lives in `/api/hk-portal/*`.)
+- AI-powered room assignment optimization
+- Mobile housekeeping app
+- Linen inventory management with automated reordering
+- Quality assurance with photo documentation
+- Performance analytics and productivity tracking
 
 #### Phase 6: Safety, Compliance & Guest Experience (Weeks 45-48)
-- ✅ Comprehensive incident management system (COMPLETE - /api/ops/safety/incidents)
-- ✅ Safety compliance tracking (COMPLETE - /api/ops/safety/compliance)
-- ✅ Emergency response automation (COMPLETE - /api/ops/safety/emergency)
-- ✅ Real-time guest request tracking (COMPLETE - /api/ops/safety/guest-requests)
-- ✅ Service recovery workflow automation (COMPLETE - /api/ops/safety/service-recovery)
-- ✅ Guest journey mapping (COMPLETE - /api/ops/safety/guest-journey)
+> ⚠️ **Not implemented.** `/api/ops/safety/*` depended on tables (`safety_incidents`, `compliance_checklists`, `emergency_responses`, `service_recovery`, `guest_journey`) that were never migrated; router removed. (Note: real safety/emergency functionality lives in `/api/security-portal` and `/api/ops-portal/emergency`.)
+- Comprehensive incident management system
+- Safety compliance tracking
+- Emergency response automation
+- Real-time guest request tracking
+- Service recovery workflow automation
+- Guest journey mapping
 
 **Success Metrics:**
 - Escalation response time: 40% improvement

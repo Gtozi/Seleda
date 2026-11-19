@@ -3,28 +3,27 @@
  * SPDX-License-Identifier: Apache-2.5
  */
 
-import React, { useState } from 'react';
+import React, { Suspense, lazy, useState } from 'react';
 import { Routes, Route, useLocation, Navigate, useNavigate } from 'react-router-dom';
 import { useERP } from './context/ERPContext';
 import { AppProviders } from './context/AppProviders';
-import BookingPage from './components/BookingPage';
 import LoginPage from './components/LoginPage';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import CheckInPrintModal from './components/FrontDesk/CheckInPrintModal';
 import GroupCheckInPrintModal from './components/FrontDesk/GroupCheckInPrintModal';
-import { CORE_ADMIN_MODULES } from './components/Admin/adminModules';
-import GuestMobilePortal from './components/GuestMobilePortal';
-import GuestPortal from './components/GuestPortal/GuestPortal';
-import PublicPortal from './components/PublicPortal/PublicPortal';
-import POSPortal from './components/POS/POSPortal';
-import POSLoginPage from './components/POS/POSLoginPage';
-import KitchenDisplayModule from './components/FoodBeverage/KitchenDisplayModule';
-import KDSInstanceManagement from './components/FoodBeverage/KDSInstanceManagement';
+import { getVisibleAdminModules } from './components/Admin/adminModules';
+const GuestPortal = lazy(() => import('./components/GuestPortal/GuestPortal'));
+const PublicPortal = lazy(() => import('./components/PublicPortal/PublicPortal'));
+const POSPortal = lazy(() => import('./components/POS/POSPortal'));
+import POSLoginPage, { fetchPOSOutlets, buildPOSUser } from './components/POS/POSLoginPage';
+const KitchenDisplayModule = lazy(() => import('./components/FoodBeverage/KitchenDisplayModule'));
+const KDSInstanceManagement = lazy(() => import('./components/FoodBeverage/KDSInstanceManagement'));
 import { SideNavigation } from './components/Shared/SideNavigation';
 import { ErpLayout, ErpIndexRedirect } from './components/Shared/ErpLayout';
 import { DepartmentRoute } from './components/Shared/DepartmentRoute';
 import { DepartmentSwitcher } from './components/Shared/DepartmentSwitcher';
-import { DEPARTMENT_BY_KEY, DEPARTMENT_BY_SEGMENT, getDefaultErpPath, type DepartmentKey } from './config/departments';
+import { DEPARTMENT_BY_KEY, DEPARTMENT_BY_SEGMENT, getDefaultErpPath, getDeptAccentClass, type DepartmentKey } from './config/departments';
+import { isTabEnabledByToggles } from './config/departmentTabs';
 import { User } from './types/erp';
 import { supabase } from './lib/supabase';
 import { logout, verifySession } from './lib/auth';
@@ -73,6 +72,7 @@ import {
   CheckSquare,
   BarChart3,
   PieChart,
+  ShieldAlert,
   BookOpen,
   Brain,
   Compass,
@@ -81,7 +81,6 @@ import {
   Leaf,
   Trophy,
   LineChart,
-  Database,
   SlidersHorizontal,
   Moon as MoonIcon,
   Bell as BellIcon,
@@ -96,7 +95,6 @@ import {
   PartyPopper,
   Mail,
   Tag,
-  Calculator,
   Layers,
   Network,
   Briefcase,
@@ -141,10 +139,11 @@ import {
   ListChecks,
   FileCheck,
   Sparkles,
-  Droplets,
-  Scissors,
   Dumbbell,
   ShoppingBag,
+  UserMinus,
+  CalendarPlus,
+  FileWarning,
   type LucideIcon
 } from 'lucide-react';
 
@@ -154,6 +153,14 @@ function POSLoginRoute({ onLoginSuccess }: { onLoginSuccess: (user: any) => void
 
 function LoginRoute({ onLoginSuccess }: { onLoginSuccess: (user: User, forcePasswordChange?: boolean) => void }) {
   return <LoginPage onLoginSuccess={onLoginSuccess} />;
+}
+
+/** The booking engine now lives inside the public portal; keep old /booking links working. */
+function BookingRedirect() {
+  const { search } = useLocation();
+  const params = new URLSearchParams(search);
+  params.set('section', 'booking');
+  return <Navigate to={`/public-portal?${params}`} replace />;
 }
 
 function MasterHotelERP() {
@@ -184,7 +191,7 @@ function MasterHotelERP() {
 
   // POS Authentication state
   const [posUser, setPosUser] = useState<any>(null);
-  const [, setPosSessionChecked] = useState(false);
+  const [posSessionChecked, setPosSessionChecked] = useState(false);
 
   // Active department + tab — derived from the URL (Phase 3 route-driven navigation)
   const erpPathMatch = React.useMemo(() => {
@@ -198,14 +205,23 @@ function MasterHotelERP() {
   const activeDept: DepartmentKey = erpPathMatch?.dept.key ?? 'frontoffice';
   const activeTab = erpPathMatch?.tabId ?? 'dashboard';
 
-  // Accent class for the active department — applied to the side nav so its
-  // active items / avatar adopt the same accent color as the portal content.
-  // Only departments whose portal wraps content in an `accent-*` class need an
-  // entry here; others fall back to the default indigo scheme.
-  const DEPT_ACCENT_CLASS: Partial<Record<DepartmentKey, string>> = {
-    frontoffice: 'accent-operations',
-  };
-  const activeAccentClass = DEPT_ACCENT_CLASS[activeDept] ?? '';
+  // Accent class for the active department — applied to the side nav AND the
+  // main content wrapper so buttons / active items adopt the department's
+  // signature color while staying within the earthy-luxury brand palette.
+  // The mapping lives in `departments.ts` (getDeptAccentClass) as the single
+  // source of truth, shared with the DepartmentSwitcher.
+  const activeAccentClass = getDeptAccentClass(activeDept);
+  // Only apply the accent class on ERP routes (avoid coloring login/booking/POS)
+  const isErpRoute = location.pathname.startsWith('/erp');
+
+  // Routes that render without the ERP chrome (side nav + hover header).
+  // Trailing-slash tolerant so `/login/` doesn't leak the nav.
+  const isChromelessRoute = ['/login', '/pos', '/booking', '/public-portal', '/guest', '/guest-portal', '/kds']
+    .some(p => location.pathname === p || location.pathname.startsWith(`${p}/`));
+  // Hide chrome until the session check resolves — otherwise an unauthenticated
+  // user landing on /erp sees the nav flash during "Verifying secure session..."
+  // before being redirected to /login. Also hidden during forced password change.
+  const showAppChrome = sessionChecked && !mustChangePassword && !isChromelessRoute;
 
   // Side navigation collapsed state
   const [navCollapsed, setNavCollapsed] = useState(false);
@@ -256,6 +272,32 @@ function MasterHotelERP() {
       active = false;
     };
   }, []);
+
+  // Restore POS session — any ERP session with outlet assignments grants POS
+  // access. Runs once per signed-in user id so a POS-only login (which leaves
+  // currentUser null) is not disturbed.
+  const currentUserId = currentUser?.id;
+  React.useEffect(() => {
+    if (!sessionChecked) return;
+    if (!currentUserId) {
+      setPosSessionChecked(true);
+      return;
+    }
+    let active = true;
+    fetchPOSOutlets()
+      .then(outlets => {
+        if (!active) return;
+        setPosUser(outlets.length > 0 ? buildPOSUser(currentUser, outlets) : null);
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (active) setPosSessionChecked(true);
+      });
+    return () => {
+      active = false;
+    };
+  }, [sessionChecked, currentUserId]);
+
   // Sync currentUser permissions and active state in real time
   React.useEffect(() => {
     if (currentUser) {
@@ -344,8 +386,13 @@ function MasterHotelERP() {
       return;
     }
 
-    // Phase 3: navigate to the user's default department (URL-driven)
-    navigate(getDefaultErpPath(user));
+    const redirect = new URLSearchParams(location.search).get('redirect');
+    if (redirect && redirect.startsWith('/') && !redirect.startsWith('//')) {
+      navigate(redirect);
+    } else {
+      // Phase 3: navigate to the user's default department (URL-driven)
+      navigate(getDefaultErpPath(user));
+    }
 
     // Re-fetch all ERP data now that the user is authenticated.
     // Sub-contexts fired their initial refreshData() on mount while
@@ -361,11 +408,32 @@ function MasterHotelERP() {
   const handlePOSLoginSuccess = (user: any) => {
     setPosUser(user);
     setPosSessionChecked(true);
+    // POS login mints a full ERP session — sync the shared user state so
+    // cashier identity, permissions and userProfile resolve consistently.
+    if (user?.erpUser) {
+      setCurrentUser(user.erpUser);
+      syncUserProfile({
+        id: user.erpUser.id,
+        name: user.erpUser.name,
+        email: user.erpUser.email,
+        role: user.erpUser.role,
+        roleDescription: user.erpUser.roleDescription,
+        avatar: user.erpUser.avatarInitials,
+        lastLogin: user.erpUser.lastLogin || new Date().toISOString(),
+        department: user.erpUser.department,
+        employeeId: user.erpUser.employeeId,
+        mobileNumber: user.erpUser.mobileNumber,
+        username: user.erpUser.username,
+        status: user.erpUser.status,
+      });
+    }
   };
 
   const handlePOSLogout = async () => {
+    await logout();
     await supabase.auth.signOut();
     setPosUser(null);
+    setCurrentUser(null);
     navigate('/pos/login');
   };
 
@@ -397,8 +465,8 @@ function MasterHotelERP() {
   const moduleToggles = globalHotelSettings.moduleToggles || {};
 
   // Compute sub-navigation items for the active department
-  const subNavItems: { id: string; label: string; modId: string }[] = React.useMemo(() => {
-    const subNavConfig: Record<string, { id: string; label: string; modId: string; icon?: LucideIcon }[]> = {
+  const subNavItems: { id: string; label: string; modId: string; icon?: LucideIcon; section?: string }[] = React.useMemo(() => {
+    const subNavConfig: Record<string, { id: string; label: string; modId: string; icon?: LucideIcon; section?: string }[]> = {
       frontoffice: [
         { id: 'dashboard', label: 'Dashboard', modId: 'fo_dashboard', icon: LayoutDashboard },
         { id: 'reservations', label: 'Reservations', modId: 'fo_reservations', icon: Calendar },
@@ -416,46 +484,50 @@ function MasterHotelERP() {
         { id: 'guest-requests', label: 'Guest Requests', modId: 'fo_guest_requests', icon: BellIcon },
         { id: 'lost-found', label: 'Lost & Found', modId: 'fo_lost_found', icon: Search },
         { id: 'communication-center', label: 'Comms', modId: 'fo_communication', icon: MessageSquare },
+        { id: 'requisitions', label: 'Requisitions', modId: 'fo_requisitions', icon: ClipboardList },
+        { id: 'inventory-consumption', label: 'Inventory Consumption', modId: 'fo_inventory_consumption', icon: Package },
         { id: 'reports', label: 'Reports', modId: 'fo_reports', icon: FileBarChart },
         { id: 'configuration', label: 'Config', modId: 'fo_configuration', icon: Settings },
+        { id: 'staff', label: 'Staff Management', modId: 'fo_staff', icon: Users },
       ],
       housekeeping: [
-        { id: 'dashboard', label: 'Command Center', modId: 'hk_dashboard', icon: LayoutDashboard },
-        { id: 'rooms', label: 'Room Board', modId: 'hk_rooms', icon: BedDouble },
+        // 19 modules — Room Cleaning (§7) + Public Area (§8) consolidated into Task Management (§6).
+        { id: 'dashboard', label: 'Dashboard', modId: 'hk_dashboard', icon: LayoutDashboard },
+        { id: 'rooms', label: 'Room Status', modId: 'hk_rooms', icon: BedDouble },
         { id: 'tasks', label: 'Task Management', modId: 'hk_tasks', icon: ClipboardList },
-        { id: 'public-area', label: 'Public Areas', modId: 'hk_public_area', icon: SprayCan },
-        { id: 'inspections', label: 'Inspections', modId: 'hk_inspections', icon: ClipboardCheck },
-        { id: 'supervisor', label: 'Supervisor', modId: 'hk_supervisor', icon: Eye },
-        { id: 'minibar', label: 'Minibar', modId: 'hk_minibar', icon: Wine },
-        { id: 'guest-requests', label: 'Guest Requests', modId: 'hk_guest_requests', icon: BellIcon },
-        { id: 'deep-cleaning', label: 'Deep Clean', modId: 'hk_deep_cleaning', icon: Brush },
-        { id: 'preventive-cleaning', label: 'Preventive', modId: 'hk_preventive', icon: SprayCan },
-        { id: 'maintenance', label: 'Maintenance', modId: 'hk_maintenance', icon: Wrench },
-        { id: 'communication', label: 'Communication', modId: 'hk_communication', icon: MessageSquare },
-        { id: 'configuration', label: 'Configuration', modId: 'hk_configuration', icon: Settings },
-        { id: 'laundry', label: 'Laundry & Valet', modId: 'hk_laundry', icon: HandPlatter },
-        { id: 'inventory', label: 'Supplies & Linen', modId: 'hk_inventory', icon: Package },
-        { id: 'amenities', label: 'Guest Amenities', modId: 'hk_amenities', icon: Gift },
+        { id: 'inspections', label: 'Room Inspections', modId: 'hk_inspections', icon: ClipboardCheck },
+        { id: 'staff', label: 'Staff Management', modId: 'hk_staff', icon: Users },
+        { id: 'supervisor', label: 'Supervisor Console', modId: 'hk_supervisor', icon: Eye },
+        { id: 'laundry', label: 'Laundry Interface', modId: 'hk_laundry', icon: HandPlatter },
+        { id: 'amenities', label: 'Amenities Management', modId: 'hk_amenities', icon: Gift },
+        { id: 'minibar', label: 'Minibar Operations', modId: 'hk_minibar', icon: Wine },
         { id: 'lostfound', label: 'Lost & Found', modId: 'hk_lostfound', icon: Search },
-        { id: 'staff', label: 'Team', modId: 'hk_staff', icon: Users },
-        { id: 'reports', label: 'Intelligence', modId: 'hk_reports', icon: BarChart3 },
-        { id: 'standard-reports', label: 'Standard Reports', modId: 'hk_standard_reports', icon: FileBarChart },
+        { id: 'guest-requests', label: 'Guest Requests', modId: 'hk_guest_requests', icon: BellIcon },
+        { id: 'deep-cleaning', label: 'Deep Cleaning', modId: 'hk_deep_cleaning', icon: Brush },
+        { id: 'preventive-cleaning', label: 'Preventive Cleaning', modId: 'hk_preventive', icon: SprayCan },
+        { id: 'maintenance', label: 'Maintenance Coordination', modId: 'hk_maintenance', icon: Wrench },
+        { id: 'inventory', label: 'Inventory', modId: 'hk_inventory', icon: Package },
+        { id: 'communication', label: 'Communication Center', modId: 'hk_communication', icon: MessageSquare },
+        { id: 'reports', label: 'Reports', modId: 'hk_reports', icon: BarChart3 },
+        { id: 'configuration', label: 'Configuration', modId: 'hk_configuration', icon: Settings },
       ],
       'f&b': [
         { id: 'executive-dashboard', label: 'Executive Dashboard', modId: 'fb_executive_dashboard', icon: LayoutDashboard },
-        { id: 'outlet-management', label: 'Outlets', modId: 'fb_outlet_management', icon: Store },
-        { id: 'menu-catalog', label: 'Menu & Catalog', modId: 'fb_menu_catalog', icon: BookOpen },
-        { id: 'recipe-production', label: 'Recipe & Production', modId: 'fb_recipe_production', icon: ChefHat },
-        { id: 'inventory-cost', label: 'Inventory & Cost', modId: 'fb_inventory_cost', icon: Package },
-        { id: 'beverage-management', label: 'Beverage', modId: 'fb_beverage_management', icon: Wine },
-        { id: 'purchasing-suppliers', label: 'Purchasing', modId: 'fb_purchasing_suppliers', icon: ShoppingCart },
-        { id: 'banquet-catering', label: 'Banquets', modId: 'fb_banquet_catering', icon: PartyPopper },
+        { id: 'outlet-management', label: 'Outlet Management', modId: 'fb_outlet_management', icon: Store },
+        { id: 'menu-management', label: 'Menu Management', modId: 'fb_menu_management', icon: BookOpen },
+        { id: 'recipe-management', label: 'Recipe Management', modId: 'fb_recipe_management', icon: ChefHat },
+        { id: 'pricing-packages', label: 'Pricing & Packages', modId: 'fb_pricing_packages', icon: DollarSign },
+        { id: 'service-operations', label: 'Service Operations', modId: 'fb_service_operations', icon: Utensils },
+        { id: 'production-coordination', label: 'Production Coordination', modId: 'fb_production_coordination', icon: Layers },
+        { id: 'banquet-fb', label: 'Banquet F&B', modId: 'fb_banquet_fb', icon: PartyPopper },
         { id: 'room-service', label: 'Room Service', modId: 'fb_room_service', icon: HandPlatter },
-        { id: 'guest-crm', label: 'Guest CRM', modId: 'fb_guest_crm', icon: Users },
-        { id: 'promotions-pricing', label: 'Promotions', modId: 'fb_promotions_pricing', icon: Tag },
-        { id: 'financial-control', label: 'Financial Control', modId: 'fb_financial_control', icon: Calculator },
-        { id: 'operations-compliance', label: 'Operations', modId: 'fb_operations_compliance', icon: ClipboardCheck },
-        { id: 'reporting-bi', label: 'Reporting & BI', modId: 'fb_reporting_bi', icon: BarChart3 },
+        { id: 'inventory-coordination', label: 'Inventory', modId: 'fb_inventory_coordination', icon: Package },
+        { id: 'guest-experience', label: 'Guest Experience', modId: 'fb_guest_experience', icon: Users },
+        { id: 'staff-operations', label: 'F&B Staff Operations', modId: 'fb_staff_operations', icon: IdCard },
+        { id: 'quality-compliance', label: 'Quality & Compliance', modId: 'fb_quality_compliance', icon: ClipboardCheck },
+        { id: 'financials', label: 'Financials & Analytics', modId: 'fb_financials', icon: BarChart3 },
+        { id: 'reports', label: 'Reports', modId: 'fb_reports', icon: FileText },
+        { id: 'configuration', label: 'Configuration', modId: 'fb_configuration', icon: Settings },
         { id: 'integrations', label: 'Integrations', modId: 'fb_integrations', icon: Network },
       ],
       maintenance: [
@@ -464,41 +536,42 @@ function MasterHotelERP() {
         { id: 'workorders', label: 'Work Orders', modId: 'eng_workorders', icon: Wrench },
         { id: 'corrective-maintenance', label: 'Corrective Maint.', modId: 'eng_corrective_maintenance', icon: Wrench },
         { id: 'pm', label: 'Preventive Maint.', modId: 'eng_pm', icon: Calendar },
-        { id: 'predictive-maintenance', label: 'Predictive Maint.', modId: 'eng_predictive_maintenance', icon: Activity },
         { id: 'equipment-registry', label: 'Equipment Registry', modId: 'eng_equipment_registry', icon: HardDrive },
         { id: 'building-maintenance', label: 'Building Maint.', modId: 'eng_building_maintenance', icon: Building },
         { id: 'energy-management', label: 'Energy Management', modId: 'eng_energy_management', icon: Gauge },
-        { id: 'spare-parts', label: 'Spare Parts', modId: 'eng_spare_parts', icon: Package },
-        { id: 'vendor-contractor', label: 'Vendors & Contractors', modId: 'eng_vendor_contractor', icon: Briefcase },
+        { id: 'spare-parts', label: 'Spare Parts & Tools', modId: 'eng_spare_parts', icon: Package },
         { id: 'inspections', label: 'Inspections', modId: 'eng_inspections', icon: ClipboardCheck },
         { id: 'calibration', label: 'Calibration', modId: 'eng_calibration', icon: SlidersHorizontal },
         { id: 'projects-renovations', label: 'Projects & Renovations', modId: 'eng_projects', icon: HardHat },
         { id: 'communication', label: 'Communication', modId: 'eng_communication', icon: MessageSquare },
         { id: 'configuration', label: 'Configuration', modId: 'eng_configuration', icon: Settings },
-        { id: 'assets', label: 'Asset Register', modId: 'eng_assets', icon: Boxes },
         { id: 'rooms', label: 'Guest Rooms', modId: 'eng_rooms', icon: BedDouble },
         { id: 'utilities', label: 'Utilities & Plant', modId: 'eng_utilities', icon: Activity },
-        { id: 'inventory', label: 'Spare Parts & Tools', modId: 'eng_inventory', icon: Package },
         { id: 'staff', label: 'Technicians', modId: 'eng_staff', icon: Users },
         { id: 'compliance', label: 'Safety & Compliance', modId: 'eng_compliance', icon: ShieldCheck },
         { id: 'reports', label: 'Reports', modId: 'eng_reports', icon: FileBarChart },
-        { id: 'standard-reports', label: 'Standard Reports', modId: 'eng_standard_reports', icon: FileBarChart },
       ],
       inventory: [
         { id: 'dashboard', label: 'Dashboard', modId: 'inv_dashboard', icon: LayoutDashboard },
-        { id: 'items', label: 'Item Master', modId: 'inv_items', icon: Package },
-        { id: 'stores', label: 'Stores & Transfers', modId: 'inv_stores', icon: Building },
-        { id: 'requisition', label: 'Requisitions', modId: 'inv_requisitions', icon: ClipboardList },
-        { id: 'receiving', label: 'Goods Receiving', modId: 'inv_receiving', icon: HardDriveDownload },
-        { id: 'count', label: 'Stock Counting', modId: 'inv_count', icon: ClipboardCheck },
-        { id: 'suppliers', label: 'Suppliers', modId: 'inv_suppliers', icon: Briefcase },
-        { id: 'standard-reports', label: 'Standard Reports', modId: 'inv_standard_reports', icon: FileBarChart },
-        { id: 'reports', label: 'Reports', modId: 'inv_reports', icon: BarChart3 },
+        { id: 'items', label: 'Item & Material Master', modId: 'inv_items', icon: Package },
+        { id: 'inventory', label: 'Inventory Control', modId: 'inv_inventory', icon: Boxes },
+        { id: 'stores', label: 'Stores & Warehouses', modId: 'inv_stores', icon: Building },
+        { id: 'stock-operations', label: 'Stock Operations', modId: 'inv_stock_operations', icon: ArrowRightLeft },
+        { id: 'storekeeping', label: 'Storekeeping', modId: 'inv_storekeeping', icon: Package },
+        { id: 'stock-control', label: 'Stock Control', modId: 'inv_stock_control', icon: SlidersHorizontal },
+        { id: 'reservations', label: 'Reservations & Allocations', modId: 'inv_reservations_allocations', icon: Calendar },
+        { id: 'replenishment-procurement', label: 'Replenishment & Procurement', modId: 'inv_replenishment', icon: TrendingUp },
+        { id: 'assets-resources', label: 'Assets & Resources', modId: 'inv_fixed_assets', icon: Boxes },
+        { id: 'reports', label: 'Valuation & Reports', modId: 'inv_reports', icon: BarChart3 },
+        { id: 'audit', label: 'Audit & Compliance', modId: 'inv_audit', icon: Gavel },
+        { id: 'advanced-operations', label: 'Advanced Operations', modId: 'inv_advanced_operations', icon: Wrench },
+        { id: 'configuration', label: 'Configuration', modId: 'inv_configuration', icon: Settings },
       ],
       finance: [
         { id: 'dashboard', label: 'Executive Dashboard', modId: 'fin_dashboard', icon: LayoutDashboard },
         { id: 'gl', label: 'General Ledger', modId: 'fin_gl', icon: BookOpen },
         { id: 'coa', label: 'Chart of Accounts', modId: 'fin_coa', icon: FolderOpen },
+        { id: 'folio-billing', label: 'Folio Management', modId: 'fin_folio', icon: FileText },
         { id: 'ar', label: 'Accounts Receivable', modId: 'fin_ar', icon: Receipt },
         { id: 'ap', label: 'Accounts Payable', modId: 'fin_ap', icon: Receipt },
         { id: 'cash_bank', label: 'Cash & Bank', modId: 'fin_cash_bank', icon: Wallet },
@@ -517,6 +590,7 @@ function MasterHotelERP() {
         { id: 'documents', label: 'Documents', modId: 'fin_documents', icon: FileText },
         { id: 'approval', label: 'Approvals', modId: 'fin_approval', icon: CheckSquare },
         { id: 'bi', label: 'Business Intel', modId: 'fin_bi', icon: BarChart3 },
+        { id: 'requisitions', label: 'Requisitions', modId: 'fin_requisitions', icon: ClipboardList },
         { id: 'reports', label: 'Reports', modId: 'fin_reports', icon: FileBarChart },
         { id: 'config', label: 'Configuration', modId: 'fin_config', icon: Settings },
       ],
@@ -543,8 +617,13 @@ function MasterHotelERP() {
         { id: 'relations', label: 'Employee Relations', modId: 'hr_relations', icon: Handshake },
         { id: 'documents', label: 'Document Management', modId: 'hr_documents', icon: FolderArchive },
         { id: 'workflow', label: 'Workflow & Approvals', modId: 'hr_workflow', icon: Workflow },
+        { id: 'requisitions', label: 'Requisitions', modId: 'hr_requisitions', icon: ClipboardList },
         { id: 'analytics', label: 'Reports & Analytics', modId: 'hr_analytics', icon: BarChart3 },
         { id: 'configuration', label: 'Configuration', modId: 'hr_configuration', icon: Settings },
+        { id: 'offboarding', label: 'Offboarding', modId: 'hr_offboarding', icon: UserMinus },
+        { id: 'accrual', label: 'Leave Accrual', modId: 'hr_accrual', icon: CalendarPlus },
+        { id: 'contract-expiry', label: 'Contract Expiry', modId: 'hr_contract_expiry', icon: FileWarning },
+        { id: 'loans', label: 'Loan Management', modId: 'hr_loans', icon: Banknote },
       ],
       security: [
         { id: 'dashboard', label: 'Executive Dashboard', modId: 'sec_dashboard', icon: LayoutDashboard },
@@ -568,11 +647,14 @@ function MasterHotelERP() {
         { id: 'fraud-prevention', label: 'Fraud Prevention', modId: 'sec_fraudprevention', icon: Fingerprint },
         { id: 'evidence', label: 'Evidence Management', modId: 'sec_evidence', icon: FolderArchive },
         { id: 'communication', label: 'Communication Center', modId: 'sec_communication', icon: MessageSquare },
+        { id: 'staff', label: 'Staff Management', modId: 'sec_staff', icon: Users },
+        { id: 'requisitions', label: 'Requisitions', modId: 'sec_requisitions', icon: ClipboardList },
         { id: 'reports', label: 'Reports', modId: 'sec_reports', icon: FileBarChart },
         { id: 'configuration', label: 'Configuration', modId: 'sec_configuration', icon: Settings },
       ],
       transportation: [
         { id: 'dashboard', label: 'Dashboard', modId: 'trans_dashboard', icon: LayoutDashboard },
+        { id: 'my-trips', label: 'My Trips', modId: 'trans_my_trips', icon: Car },
         { id: 'requests', label: 'Requests', modId: 'trans_requests', icon: ClipboardList },
         { id: 'dispatch', label: 'Dispatch Center', modId: 'trans_dispatch', icon: Truck },
         { id: 'trips', label: 'Trip Management', modId: 'trans_trips', icon: RouteIcon },
@@ -592,22 +674,33 @@ function MasterHotelERP() {
         { id: 'contractors', label: 'Contractors', modId: 'trans_contractors', icon: Briefcase },
         { id: 'billing', label: 'Billing & Charges', modId: 'trans_billing', icon: Receipt },
         { id: 'communication', label: 'Communication Center', modId: 'trans_communication', icon: MessageSquare },
+        { id: 'requisitions', label: 'Requisitions', modId: 'trans_requisitions', icon: ClipboardList },
         { id: 'reports', label: 'Reports', modId: 'trans_reports', icon: FileBarChart },
         { id: 'configuration', label: 'Configuration', modId: 'trans_configuration', icon: Settings },
       ],
       procurement: [
-        { id: 'dashboard', label: 'Procurement Dashboard', modId: 'proc_dashboard', icon: LayoutDashboard },
-        { id: 'requisitions', label: 'Requisitions', modId: 'proc_requisitions', icon: ClipboardList },
-        { id: 'orders', label: 'Purchase Orders', modId: 'proc_orders', icon: FileText },
-        { id: 'suppliers', label: 'Suppliers', modId: 'proc_suppliers', icon: Briefcase },
+        { id: 'dashboard', label: 'Executive Dashboard', modId: 'proc_dashboard', icon: LayoutDashboard },
+        { id: 'demand-planning', label: 'Demand Planning', modId: 'proc_demand_planning', icon: TrendingUp },
+        { id: 'procurement-planning', label: 'Procurement Planning', modId: 'proc_planning', icon: Calendar },
+        { id: 'requisitions', label: 'Purchase Requisitions', modId: 'proc_requisitions', icon: ClipboardList },
         { id: 'rfq', label: 'RFQ Management', modId: 'proc_rfq', icon: FileText },
-        { id: 'receiving', label: 'Goods Receiving', modId: 'proc_receiving', icon: HardDriveDownload },
-        { id: 'contracts', label: 'Contracts', modId: 'proc_contracts', icon: FileText },
-        { id: 'budget', label: 'Budget Control', modId: 'proc_budget', icon: PiggyBank },
-        { id: 'invoices', label: 'Supplier Invoices', modId: 'proc_invoices', icon: Receipt },
+        { id: 'tenders', label: 'Tender Management', modId: 'proc_tenders', icon: Gavel },
+        { id: 'negotiations', label: 'Negotiations', modId: 'proc_negotiations', icon: MessageSquare },
+        { id: 'orders', label: 'Purchase Orders', modId: 'proc_orders', icon: ShoppingCart },
+        { id: 'po-tracking', label: 'PO Tracking', modId: 'proc_po_tracking', icon: Truck },
         { id: 'approvals', label: 'Approval Center', modId: 'proc_approvals', icon: CheckSquare },
+        { id: 'suppliers', label: 'Supplier Directory', modId: 'proc_suppliers', icon: Briefcase },
+        { id: 'onboarding', label: 'Supplier Onboarding', modId: 'proc_onboarding', icon: UserPlus },
+        { id: 'qualification', label: 'Supplier Qualification', modId: 'proc_qualification', icon: Award },
+        { id: 'evaluation', label: 'Supplier Evaluation', modId: 'proc_evaluation', icon: Star },
+        { id: 'documents', label: 'Supplier Documents', modId: 'proc_documents', icon: FileText },
+        { id: 'contracts', label: 'Contract Management', modId: 'proc_contracts', icon: FileText },
+        { id: 'budget', label: 'Procurement Budget', modId: 'proc_budget', icon: PiggyBank },
+        { id: 'receiving', label: 'Receiving Coordination', modId: 'proc_receiving', icon: HardDriveDownload },
+        { id: 'risk', label: 'Risk Management', modId: 'proc_risk', icon: ShieldAlert },
+        { id: 'analytics', label: 'Procurement Analytics', modId: 'proc_analytics', icon: BarChart3 },
         { id: 'reports', label: 'Reports', modId: 'proc_reports', icon: FileBarChart },
-        { id: 'standard-reports', label: 'Standard Reports', modId: 'proc_standard_reports', icon: FileBarChart },
+        { id: 'config', label: 'Configuration', modId: 'proc_config', icon: Settings },
       ],
       sales: [
         { id: 'dashboard', label: 'Dashboard', modId: 'sales_dashboard', icon: LayoutDashboard },
@@ -621,6 +714,7 @@ function MasterHotelERP() {
         { id: 'contracts', label: 'Contracts', modId: 'sales_contracts', icon: FileText },
         { id: 'sales-activities', label: 'Activities', modId: 'sales_activities', icon: Calendar },
         { id: 'account-management', label: 'Account Mgmt', modId: 'sales_account_management', icon: Users },
+        { id: 'staff', label: 'Staff', modId: 'sales_staff', icon: Users },
         { id: 'campaigns', label: 'Campaigns', modId: 'sales_campaigns', icon: Tag },
         { id: 'email-marketing', label: 'Email', modId: 'sales_email_marketing', icon: Mail },
         { id: 'sms-messaging', label: 'SMS', modId: 'sales_sms_messaging', icon: MessageSquare },
@@ -630,8 +724,8 @@ function MasterHotelERP() {
         { id: 'reputation', label: 'Reputation', modId: 'sales_reputation', icon: Star },
         { id: 'guest-feedback', label: 'Feedback', modId: 'sales_guest_feedback', icon: MessageSquare },
         { id: 'segmentation', label: 'Segmentation', modId: 'sales_segmentation', icon: PieChart },
-        { id: 'business-intelligence', label: 'BI', modId: 'sales_business_intelligence', icon: BarChart3 },
         { id: 'communication', label: 'Communication', modId: 'sales_communication', icon: MessageSquare },
+        { id: 'requisitions', label: 'Requisitions', modId: 'sales_requisitions', icon: ClipboardList },
         { id: 'reports', label: 'Reports', modId: 'sales_reports', icon: FileBarChart },
         { id: 'configuration', label: 'Configuration', modId: 'sales_configuration', icon: Settings },
       ],
@@ -646,27 +740,6 @@ function MasterHotelERP() {
         { id: 'transportation', label: 'Transportation', modId: 'concierge_transportation', icon: Car },
         { id: 'tour-management', label: 'Tour Management', modId: 'concierge_tour_management', icon: MapPin },
         { id: 'ticketing', label: 'Ticketing Services', modId: 'concierge_ticketing', icon: Ticket },
-      ],
-      'spa-wellness': [
-        { id: 'dashboard', label: 'Executive Dashboard', modId: 'spa_dashboard', icon: LayoutDashboard },
-        { id: 'appointments', label: 'Appointment Management', modId: 'spa_appointments', icon: Calendar },
-        { id: 'treatment-catalog', label: 'Treatment Catalog', modId: 'spa_treatment_catalog', icon: Sparkles },
-        { id: 'therapists', label: 'Therapist Management', modId: 'spa_therapists', icon: Users },
-        { id: 'treatment-rooms', label: 'Treatment Rooms', modId: 'spa_treatment_rooms', icon: Home },
-        { id: 'guest-wellness-profiles', label: 'Guest Wellness Profiles', modId: 'spa_guest_wellness_profiles', icon: Heart },
-        { id: 'wellness-programs', label: 'Wellness Programs', modId: 'spa_wellness_programs', icon: Target },
-        { id: 'memberships', label: 'Membership Management', modId: 'spa_memberships', icon: Award },
-        { id: 'fitness-center', label: 'Fitness Center', modId: 'spa_fitness_center', icon: Dumbbell },
-        { id: 'beauty-salon', label: 'Beauty Salon', modId: 'spa_beauty_salon', icon: Scissors },
-        { id: 'thermal-hydro', label: 'Thermal & Hydro', modId: 'spa_thermal_hydro', icon: Droplets },
-        { id: 'wellness-packages', label: 'Wellness Packages', modId: 'spa_wellness_packages', icon: Gift },
-        { id: 'retail-shop', label: 'Retail Shop', modId: 'spa_retail_shop', icon: ShoppingBag },
-        { id: 'inventory-consumption', label: 'Inventory Consumption', modId: 'spa_inventory_consumption', icon: Package },
-        { id: 'gift-cards', label: 'Gift Cards & Vouchers', modId: 'spa_gift_cards', icon: CreditCard },
-        { id: 'billing-payments', label: 'Billing & Payments', modId: 'spa_billing_payments', icon: DollarSign },
-        { id: 'communication', label: 'Communication Center', modId: 'spa_communication', icon: MessageSquare },
-        { id: 'reports', label: 'Reports', modId: 'spa_reports', icon: BarChart3 },
-        { id: 'configuration', label: 'Configuration', modId: 'spa_configuration', icon: Settings },
         { id: 'luggage-services', label: 'Luggage Services', modId: 'concierge_luggage_services', icon: Package },
         { id: 'parcel-management', label: 'Parcel Management', modId: 'concierge_parcel_management', icon: Package },
         { id: 'vip-services', label: 'VIP & Butler Services', modId: 'concierge_vip_services', icon: Crown },
@@ -677,8 +750,76 @@ function MasterHotelERP() {
         { id: 'guest-communication', label: 'Guest Communication', modId: 'concierge_guest_communication', icon: MessageSquare },
         { id: 'vendor-management', label: 'Vendor Management', modId: 'concierge_vendor_management', icon: Building2 },
         { id: 'billing-charges', label: 'Billing & Charges', modId: 'concierge_billing_charges', icon: DollarSign },
+        { id: 'requisitions', label: 'Requisitions', modId: 'concierge_requisitions', icon: ClipboardList },
         { id: 'reports', label: 'Reports', modId: 'concierge_reports', icon: FileBarChart },
         { id: 'configuration', label: 'Configuration', modId: 'concierge_configuration', icon: Settings },
+      ],
+      'spa-wellness': [
+        { id: 'dashboard', label: 'Executive Dashboard', modId: 'spa_dashboard', icon: LayoutDashboard },
+        { id: 'appointments', label: 'Appointment Management', modId: 'spa_appointments', icon: Calendar },
+        { id: 'treatment-catalog', label: 'Treatment Catalog', modId: 'spa_treatment_catalog', icon: Sparkles },
+        { id: 'therapists', label: 'Therapist Management', modId: 'spa_therapists', icon: Users },
+        { id: 'treatment-rooms', label: 'Rooms & Facilities', modId: 'spa_treatment_rooms', icon: Home },
+        { id: 'guest-wellness-profiles', label: 'Guest Wellness Profiles', modId: 'spa_guest_wellness_profiles', icon: Heart },
+        { id: 'wellness-programs', label: 'Wellness Programs', modId: 'spa_wellness_programs', icon: Target },
+        { id: 'memberships', label: 'Membership Management', modId: 'spa_memberships', icon: Award },
+        { id: 'fitness-center', label: 'Fitness Center', modId: 'spa_fitness_center', icon: Dumbbell },
+
+        { id: 'wellness-packages', label: 'Wellness Packages', modId: 'spa_wellness_packages', icon: Gift },
+        { id: 'retail-shop', label: 'Retail Shop', modId: 'spa_retail_shop', icon: ShoppingBag },
+        { id: 'inventory', label: 'Inventory', modId: 'spa_inventory', icon: Package },
+        { id: 'gift-cards', label: 'Gift Cards & Vouchers', modId: 'spa_gift_cards', icon: CreditCard },
+        { id: 'billing-payments', label: 'Billing & Payments', modId: 'spa_billing_payments', icon: DollarSign },
+        { id: 'communication', label: 'Communication Center', modId: 'spa_communication', icon: MessageSquare },
+        { id: 'requisitions', label: 'Requisitions', modId: 'spa_requisitions', icon: ClipboardList },
+        { id: 'reports', label: 'Reports', modId: 'spa_reports', icon: BarChart3 },
+        { id: 'configuration', label: 'Configuration', modId: 'spa_configuration', icon: Settings },
+      ],
+      'banquet-events': [
+        { id: 'dashboard', label: 'Executive Dashboard', modId: 'be_dashboard', icon: LayoutDashboard },
+        { id: 'calendar', label: 'Event Calendar', modId: 'be_calendar', icon: Calendar },
+        { id: 'event-setup', label: 'Event Booking', modId: 'be_event_setup', icon: Building2, section: 'Pipeline' },
+        { id: 'room-blocks', label: 'Room Blocks', modId: 'be_room_blocks', icon: BedDouble, section: 'Pipeline' },
+        { id: 'planning', label: 'Event Planning', modId: 'be_planning', icon: ClipboardList, section: 'Planning' },
+        { id: 'catering', label: 'Catering Planning', modId: 'be_catering', icon: Utensils, section: 'Planning' },
+        { id: 'logistics', label: 'Event Logistics', modId: 'be_logistics', icon: Truck, section: 'Planning' },
+        { id: 'inventory-requisition', label: 'Inventory & Requisition', modId: 'be_inventory_requisition', icon: Package, section: 'Planning' },
+        { id: 'beo', label: 'BEO', modId: 'be_beo', icon: FileText, section: 'Planning' },
+        { id: 'execution', label: 'Event Execution', modId: 'be_execution', icon: CheckSquare, section: 'Operations' },
+        { id: 'coordination', label: 'Coordination & Comms', modId: 'be_coordination', icon: Network, section: 'Operations' },
+        { id: 'guest-experience', label: 'Guest Experience', modId: 'be_guest_experience', icon: Users, section: 'Operations' },
+        { id: 'staff', label: 'Staff Management', modId: 'be_staff', icon: Users, section: 'Operations' },
+        { id: 'billing', label: 'Billing & Deposits', modId: 'be_billing', icon: DollarSign, section: 'Billing' },
+        { id: 'reports', label: 'Reports', modId: 'be_reports', icon: BarChart3, section: 'Support' },
+        { id: 'configuration', label: 'Configuration', modId: 'be_configuration', icon: Settings, section: 'Support' },
+      ],
+      revenue: [
+        { id: 'dashboard', label: 'Dashboard', modId: 'rms_dashboard', icon: LayoutDashboard },
+        { id: 'recommendations', label: 'Recommendations', modId: 'rms_recommendations', icon: Target },
+        { id: 'competitors', label: 'Competitors', modId: 'rms_competitors', icon: Users },
+        { id: 'forecasts', label: 'Demand Forecasts', modId: 'rms_forecasts', icon: Activity },
+        { id: 'los', label: 'LOS Rules', modId: 'rms_los', icon: Calendar },
+        { id: 'corporate', label: 'Corporate Rates', modId: 'rms_corporate', icon: Briefcase },
+        { id: 'channels', label: 'Channel Manager', modId: 'rms_channels', icon: Network },
+        { id: 'dynamic_pricing', label: 'Dynamic Pricing', modId: 'rms_dynamic_pricing', icon: TrendingUp },
+        { id: 'rate_management', label: 'Rate Management', modId: 'rms_rate_management', icon: DollarSign },
+        { id: 'inventory_controls', label: 'Inventory Controls', modId: 'rms_inventory_controls', icon: BedDouble },
+        { id: 'yield_management', label: 'Yield Management', modId: 'rms_yield_management', icon: Target },
+        { id: 'market_segmentation', label: 'Segmentation', modId: 'rms_market_segmentation', icon: PieChart },
+        { id: 'channel_performance', label: 'Channel Performance', modId: 'rms_channel_performance', icon: LineChart },
+        { id: 'distribution_management', label: 'Distribution', modId: 'rms_distribution_management', icon: Layers },
+        { id: 'group_evaluation', label: 'Group Evaluation', modId: 'rms_group_evaluation', icon: Users },
+        { id: 'displacement_analysis', label: 'Displacement', modId: 'rms_displacement_analysis', icon: BarChart3 },
+        { id: 'overbooking_management', label: 'Overbooking', modId: 'rms_overbooking_management', icon: AlertTriangle },
+        { id: 'restrictions_management', label: 'Restrictions', modId: 'rms_restrictions_management', icon: Calendar },
+        { id: 'package_pricing', label: 'Packages', modId: 'rms_package_pricing', icon: Package },
+        { id: 'promotions_analysis', label: 'Promotions', modId: 'rms_promotions_analysis', icon: Tag },
+        { id: 'business_intelligence', label: 'Business Intel', modId: 'rms_business_intelligence', icon: BarChart3 },
+        { id: 'ai_recommendations', label: 'AI Recs', modId: 'rms_ai_recommendations', icon: Brain },
+        { id: 'scenario_planning', label: 'Scenarios', modId: 'rms_scenario_planning', icon: Compass },
+        { id: 'requisitions', label: 'Requisitions', modId: 'rms_requisitions', icon: ClipboardList },
+        { id: 'reports', label: 'Reports', modId: 'rms_reports', icon: FileBarChart },
+        { id: 'configuration', label: 'Configuration', modId: 'rms_configuration', icon: Settings },
       ],
     };
 
@@ -704,8 +845,8 @@ function MasterHotelERP() {
       { id: 'ai-decision-support', label: 'AI Decision Support', modId: activeDept === 'executive' ? 'exec_ai_decision_support' : 'ops_ai_decision_support', icon: Brain },
       { id: 'strategic-planning', label: 'Strategic Planning', modId: activeDept === 'executive' ? 'exec_strategic_planning' : 'ops_strategic_planning', icon: Compass },
       { id: 'alerts-exceptions', label: 'Alerts & Exceptions', modId: activeDept === 'executive' ? 'exec_alerts_exceptions' : 'ops_alerts_exceptions', icon: AlertCircle },
+      { id: 'approvals', label: 'Approvals', modId: activeDept === 'executive' ? 'exec_approvals' : 'ops_approvals', icon: CheckSquare },
       { id: 'reports-center', label: 'Reports Center', modId: activeDept === 'executive' ? 'exec_reports_center' : 'ops_reports_center', icon: FileBarChart },
-      { id: 'enterprise-data-explorer', label: 'Data Explorer', modId: activeDept === 'executive' ? 'exec_enterprise_data_explorer' : 'ops_enterprise_data_explorer', icon: Database },
       { id: 'configuration', label: 'Configuration', modId: activeDept === 'executive' ? 'exec_configuration' : 'ops_configuration', icon: Settings },
     ];
     subNavConfig.executive = execOpsSubNav;
@@ -732,18 +873,21 @@ function MasterHotelERP() {
       { id: 'sop-compliance', label: 'SOP & Compliance', modId: 'ops_sop_compliance', icon: ListChecks },
       { id: 'executive-checklists', label: 'Executive Checklists', modId: 'ops_executive_checklists', icon: CheckSquare },
       { id: 'flash-reports', label: 'Daily Flash Reports', modId: 'ops_flash_reports', icon: FileBarChart },
+      { id: 'requisitions', label: 'Requisitions', modId: 'ops_requisitions', icon: ClipboardList },
       { id: 'reports', label: 'Reports', modId: 'ops_reports', icon: FileCheck },
       { id: 'configuration', label: 'Configuration', modId: 'ops_configuration', icon: Settings },
     ];
     subNavConfig.operations = operationsSubNav;
 
-    // Admin sub-nav from CORE_ADMIN_MODULES
-    subNavConfig.admin = CORE_ADMIN_MODULES
-      .filter(m => moduleToggles[m.toggleKey] !== false)
+    // Admin sub-nav from the shared admin module registry
+    subNavConfig.admin = getVisibleAdminModules(moduleToggles)
       .map(m => ({ id: m.id, label: m.label, modId: m.id }));
 
     const items = subNavConfig[activeDept] || [];
-    return items.filter(item => !item.modId || hasModuleAccess(item.modId));
+    return items.filter(item =>
+      (!item.modId || hasModuleAccess(item.modId)) &&
+      isTabEnabledByToggles(activeDept, item.id, moduleToggles)
+    );
   }, [activeDept, currentUser, moduleToggles]);
 
   // Phase 3: activeSubItem is now derived directly from the URL
@@ -758,8 +902,10 @@ function MasterHotelERP() {
   return (
     <div data-route={location.pathname} className={`min-h-screen bg-slate-50 dark:bg-slate-950 font-sans transition-colors duration-300 selection:bg-amber-400 selection:text-slate-900 ${location.pathname === '/public-portal' ? '' : 'flex'}`} id="erp-master-view">
       
-      {/* SIDE NAVIGATION - Hidden for public booking, login, and guest pages */}
-      {location.pathname !== '/booking' && location.pathname !== '/public-portal' && location.pathname !== '/login' && location.pathname !== '/guest' && location.pathname !== '/guest-portal' && (
+      {/* SIDE NAVIGATION - Hidden for public booking, login, and guest pages,
+          and while the session is being verified (avoids a nav flash before the
+          /login redirect on protected routes) */}
+      {showAppChrome && (
         <SideNavigation
           activeDept={activeDept}
           activeDeptLabel={DEPARTMENT_BY_KEY[activeDept]?.label ?? activeDept}
@@ -780,7 +926,7 @@ function MasterHotelERP() {
       )}
 
       {/* GLOBAL HEADER - Full width, only visible on mouse hover. Hidden for public booking, login, and guest pages */}
-      {location.pathname !== '/booking' && location.pathname !== '/public-portal' && location.pathname !== '/login' && location.pathname !== '/guest' && location.pathname !== '/guest-portal' && (
+      {showAppChrome && (
         <>
           {/* Hover trigger zone at top of screen */}
           <div
@@ -849,6 +995,7 @@ function MasterHotelERP() {
                   onChange={(e) => setCurrentPropertyId(e.target.value || null)}
                   className="px-2.5 py-1.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-[11px] font-sans font-semibold text-slate-700 dark:text-slate-200 cursor-pointer hover:border-indigo-400 transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
                 >
+                  <option value="">All Properties</option>
                   {properties.map((p: any) => (
                     <option key={p.id} value={p.id}>{p.property_name}</option>
                   ))}
@@ -871,9 +1018,11 @@ function MasterHotelERP() {
         </>
       )}
 
-      {/* MAIN CONTENT AREA */}
-      <div className="flex-1 flex flex-col min-w-0">
+      {/* MAIN CONTENT AREA — wrapped in the active department's accent class
+          on ERP routes so portal buttons adopt the department's signature color */}
+      <div className={`flex-1 flex flex-col min-w-0 ${isErpRoute ? activeAccentClass : ''}`}>
         {/* RENDER CHOSEN COMPONENT PORTALS */}
+        <Suspense fallback={<div className="flex-1 flex items-center justify-center min-h-[40vh] text-sm text-stone-400">Loading…</div>}>
         <Routes>
           <Route 
             path="/login" 
@@ -885,10 +1034,11 @@ function MasterHotelERP() {
               )
             } 
           />
-          <Route path="/booking" element={<BookingPage />} />
+          <Route path="/booking" element={<BookingRedirect />} />
           <Route path="/public-portal" element={<PublicPortal />} />
-          <Route path="/guest-portal" element={<GuestMobilePortal />} />
+          <Route path="/guest-portal" element={<Navigate to="/guest" replace />} />
           <Route path="/guest" element={<GuestPortal />} />
+          <Route path="/guest/:tab" element={<GuestPortal />} />
           <Route 
             path="/pos/login" 
             element={<POSLoginRoute onLoginSuccess={handlePOSLoginSuccess} />}
@@ -896,7 +1046,11 @@ function MasterHotelERP() {
           <Route 
             path="/pos" 
             element={
-              !posUser ? (
+              !posSessionChecked ? (
+                <div className="min-h-screen flex items-center justify-center bg-slate-900">
+                  <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-500" />
+                </div>
+              ) : !posUser ? (
                 <Navigate to="/pos/login" replace />
               ) : (
                 <POSPortal user={posUser} onLogout={handlePOSLogout} />
@@ -940,7 +1094,7 @@ function MasterHotelERP() {
                 <Navigate to="/login?redirect=/kds" replace />
               ) : (
                 <div className="min-h-screen bg-slate-950">
-                  <KitchenDisplayModule />
+                  <KitchenDisplayModule standalone userName={currentUser.name} onExit={() => navigate(getDefaultErpPath(currentUser))} />
                 </div>
               )
             }
@@ -961,6 +1115,7 @@ function MasterHotelERP() {
             }
           />
         </Routes>
+        </Suspense>
 
         {printGuestForm && (
           <CheckInPrintModal data={printGuestForm} onClose={() => setPrintGuestForm(null)} />

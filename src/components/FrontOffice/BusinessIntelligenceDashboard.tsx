@@ -555,6 +555,7 @@ const BusinessIntelligenceDashboard = () => {
             </ul>
           </div>
         </div>
+      </div>
       </>
       )}
     </div>

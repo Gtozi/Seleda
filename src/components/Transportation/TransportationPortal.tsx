@@ -21,12 +21,15 @@ import BillingCharges from './BillingCharges';
 import CommunicationCenter from './CommunicationCenter';
 import TransportationReports from './TransportationReports';
 import TransportationConfiguration from './TransportationConfiguration';
+import MyTrips from './MyTrips';
+import DepartmentRequisitionForm from '../Inventory/DepartmentRequisitionForm';
 
 const TransportationPortal: React.FC<{ activeTab?: string }> = ({ activeTab = 'dashboard' }) => {
   return (
     <div className="flex flex-col h-full bg-slate-50 dark:bg-slate-950 animate-fade-in">
       <div className="flex-1 overflow-y-auto p-6">
         {activeTab === 'dashboard' && <TransportationDashboard />}
+        {activeTab === 'my-trips' && <MyTrips />}
         {activeTab === 'requests' && <TransportationRequests />}
         {activeTab === 'dispatch' && <DispatchCenter />}
         {activeTab === 'trips' && <TripManagement />}
@@ -46,6 +49,7 @@ const TransportationPortal: React.FC<{ activeTab?: string }> = ({ activeTab = 'd
         {activeTab === 'contractors' && <ContractorTaxiManagement />}
         {activeTab === 'billing' && <BillingCharges />}
         {activeTab === 'communication' && <CommunicationCenter />}
+        {activeTab === 'requisitions' && <DepartmentRequisitionForm department="Transportation" />}
         {activeTab === 'reports' && <TransportationReports />}
         {activeTab === 'configuration' && <TransportationConfiguration />}
       </div>

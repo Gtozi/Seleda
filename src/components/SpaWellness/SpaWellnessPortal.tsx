@@ -17,16 +17,17 @@ import GuestWellnessProfilesModule from './modules/GuestWellnessProfilesModule';
 import WellnessProgramsModule from './modules/WellnessProgramsModule';
 import MembershipManagementModule from './modules/MembershipManagementModule';
 import FitnessCenterModule from './modules/FitnessCenterModule';
-import BeautySalonModule from './modules/BeautySalonModule';
-import ThermalHydroFacilitiesModule from './modules/ThermalHydroFacilitiesModule';
+
 import WellnessPackagesModule from './modules/WellnessPackagesModule';
 import RetailShopModule from './modules/RetailShopModule';
-import InventoryConsumptionModule from './modules/InventoryConsumptionModule';
+
 import GiftCardsVouchersModule from './modules/GiftCardsVouchersModule';
 import BillingPaymentsModule from './modules/BillingPaymentsModule';
 import CommunicationCenterModule from './modules/CommunicationCenterModule';
 import SpaWellnessReportsModule from './modules/SpaWellnessReportsModule';
 import SpaWellnessConfigurationModule from './modules/SpaWellnessConfigurationModule';
+import DepartmentRequisitionForm from '../Inventory/DepartmentRequisitionForm';
+import SpaInventoryModule from './modules/SpaInventoryModule';
 
 type SpaWellnessTab = 
   | 'dashboard'
@@ -38,19 +39,18 @@ type SpaWellnessTab =
   | 'wellness-programs'
   | 'memberships'
   | 'fitness-center'
-  | 'beauty-salon'
-  | 'thermal-hydro'
   | 'wellness-packages'
   | 'retail-shop'
-  | 'inventory-consumption'
+  | 'inventory'
   | 'gift-cards'
   | 'billing-payments'
   | 'communication'
+  | 'requisitions'
   | 'reports'
   | 'configuration';
 
 export default function SpaWellnessPortal({
-  currentUser,
+  currentUser: _currentUser,
   activeTab: externalActiveTab,
   onTabChange
 }: {
@@ -69,6 +69,7 @@ export default function SpaWellnessPortal({
   const [selectedGuestId, setSelectedGuestId] = useState<string | undefined>(undefined);
   const [selectedAppointmentId, setSelectedAppointmentId] = useState<string | undefined>(undefined);
   const [selectedTherapistId, setSelectedTherapistId] = useState<string | undefined>(undefined);
+  const [bookingSeed, setBookingSeed] = useState<{ treatmentId?: string; therapistName?: string } | undefined>(undefined);
   const { push } = useModalReturn();
 
   const handleViewGuestProfile = (guestId: string, restore?: () => void) => {
@@ -99,6 +100,12 @@ export default function SpaWellnessPortal({
     setActiveTab('appointments');
   };
 
+  // Cross-module booking entry point (e.g. Fitness Center "Book Session").
+  const handleBookAppointment = (seed?: { treatmentId?: string; therapistName?: string }) => {
+    setBookingSeed(seed || {});
+    setActiveTab('appointments');
+  };
+
   const handleViewTherapist = (therapistId: string, restore?: () => void) => {
     const returnTab = activeTab;
     push({
@@ -122,6 +129,8 @@ export default function SpaWellnessPortal({
             onViewGuestProfile={handleViewGuestProfile}
             onViewAppointment={handleViewAppointment}
             onViewTherapist={handleViewTherapist}
+            onNavigate={(tab) => setActiveTab(tab as SpaWellnessTab)}
+            onNewAppointment={() => handleBookAppointment()}
           />
         )}
 
@@ -129,6 +138,8 @@ export default function SpaWellnessPortal({
           <AppointmentManagementModule
             selectedAppointmentId={selectedAppointmentId}
             onClearSelectedAppointmentId={() => setSelectedAppointmentId(undefined)}
+            bookingSeed={bookingSeed}
+            onClearBookingSeed={() => setBookingSeed(undefined)}
             onViewGuestProfile={handleViewGuestProfile}
             onViewTherapist={handleViewTherapist}
           />
@@ -171,18 +182,8 @@ export default function SpaWellnessPortal({
         {activeTab === 'fitness-center' && (
           <FitnessCenterModule
             onViewGuestProfile={handleViewGuestProfile}
+            onBookAppointment={() => handleBookAppointment()}
           />
-        )}
-
-        {activeTab === 'beauty-salon' && (
-          <BeautySalonModule
-            onViewGuestProfile={handleViewGuestProfile}
-            onViewAppointment={handleViewAppointment}
-          />
-        )}
-
-        {activeTab === 'thermal-hydro' && (
-          <ThermalHydroFacilitiesModule />
         )}
 
         {activeTab === 'wellness-packages' && (
@@ -195,8 +196,8 @@ export default function SpaWellnessPortal({
           <RetailShopModule />
         )}
 
-        {activeTab === 'inventory-consumption' && (
-          <InventoryConsumptionModule />
+        {activeTab === 'inventory' && (
+          <SpaInventoryModule />
         )}
 
         {activeTab === 'gift-cards' && (
@@ -216,6 +217,10 @@ export default function SpaWellnessPortal({
           <CommunicationCenterModule
             onViewGuestProfile={handleViewGuestProfile}
           />
+        )}
+
+        {activeTab === 'requisitions' && (
+          <DepartmentRequisitionForm department="Spa & Wellness" />
         )}
 
         {activeTab === 'reports' && (

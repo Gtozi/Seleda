@@ -48,7 +48,7 @@ export default function POSPortal({ user, onLogout }: POSPortalProps) {
 
   // Initialize user outlets from props
   useEffect(() => {
-    if (user && user.outlets) {
+    if (user && Array.isArray(user.outlets)) {
       const formattedOutlets: POSOutlet[] = user.outlets.map((o: any) => ({
         id: o.outlet_id,
         name: o.outlet_name,
@@ -63,8 +63,8 @@ export default function POSPortal({ user, onLogout }: POSPortalProps) {
       // Select primary outlet or first available
       const primary = formattedOutlets.find(o => o.is_primary);
       setSelectedOutlet(primary || formattedOutlets[0]);
-      setLoading(false);
     }
+    setLoading(false);
   }, [user]);
 
   const getOutletIcon = (type: string) => {
@@ -108,7 +108,7 @@ export default function POSPortal({ user, onLogout }: POSPortalProps) {
       );
     }
 
-    return <ModernPOSTerminal outlet={selectedOutlet} />;
+    return <ModernPOSTerminal outlet={selectedOutlet} user={user} onOpenSettings={() => setActiveTab('settings')} />;
   };
 
   if (loading) {

@@ -16,27 +16,28 @@
  *     resolves to the same screen users see today.
  */
 
-import type { ComponentType } from 'react';
+import { lazy, type ComponentType } from 'react';
 import type { User } from '../types/erp';
 
-import FrontOfficePortal from '../components/FrontOffice/FrontOfficePortal';
-import HousekeepingPortal from '../components/Housekeeping/HousekeepingPortal';
-import FoodBeveragePortal from '../components/FoodBeverage/FoodBeveragePortal';
-import EngineeringPortal from '../components/Engineering/EngineeringPortal';
-import InventoryPortal from '../components/Inventory/InventoryPortal';
-import FinancePortal from '../components/Finance/FinancePortal';
-import HumanResourcesPortal from '../components/HumanResources/HumanResourcesPortal';
-import SecurityPortal from '../components/Security/SecurityPortal';
-import TransportationPortal from '../components/Transportation/TransportationPortal';
-import AdminPortal from '../components/Admin/AdminPortal';
-import ProcurementPortal from '../components/Procurement/ProcurementPortal';
-import SalesPortal from '../components/Sales/SalesPortal';
-import HotelOperationsPortal from '../components/Operations/HotelOperationsPortal';
-import ConciergePortal from '../components/Concierge/ConciergePortal';
-import SpaWellnessPortal from '../components/SpaWellness/SpaWellnessPortal';
-import BanquetEventsPortal from '../components/BanquetEvents/BanquetEventsPortal';
-import ExecutiveBusinessIntelligencePortal from '../components/Admin/ExecutiveBusinessIntelligencePortal';
-import AccountSettingsModule from '../components/Settings/AccountSettingsModule';
+const FrontOfficePortal = lazy(() => import('../components/FrontOffice/FrontOfficePortal'));
+const HousekeepingPortal = lazy(() => import('../components/Housekeeping/HousekeepingPortal'));
+const FoodBeveragePortal = lazy(() => import('../components/FoodBeverage/FoodBeveragePortal'));
+const EngineeringPortal = lazy(() => import('../components/Engineering/EngineeringPortal'));
+const InventoryPortal = lazy(() => import('../components/Inventory/InventoryPortal'));
+const FinancePortal = lazy(() => import('../components/Finance/FinancePortal'));
+const HumanResourcesPortal = lazy(() => import('../components/HumanResources/HumanResourcesPortal'));
+const SecurityPortal = lazy(() => import('../components/Security/SecurityPortal'));
+const TransportationPortal = lazy(() => import('../components/Transportation/TransportationPortal'));
+const AdminPortal = lazy(() => import('../components/Admin/AdminPortal'));
+const ProcurementPortal = lazy(() => import('../components/Procurement/ProcurementPortal'));
+const SalesPortal = lazy(() => import('../components/Sales/SalesPortal'));
+const HotelOperationsPortal = lazy(() => import('../components/Operations/HotelOperationsPortal'));
+const ConciergePortal = lazy(() => import('../components/Concierge/ConciergePortal'));
+const SpaWellnessPortal = lazy(() => import('../components/SpaWellness/SpaWellnessPortal'));
+const BanquetEventsPortal = lazy(() => import('../components/BanquetEvents/BanquetEventsPortal'));
+const RevenueManagementPortal = lazy(() => import('../components/RevenueManagement/RevenueManagementPortal'));
+const ExecutiveBusinessIntelligencePortal = lazy(() => import('../components/Admin/ExecutiveBusinessIntelligencePortal'));
+const AccountSettingsModule = lazy(() => import('../components/Settings/AccountSettingsModule'));
 
 /** The union of department keys — mirrors the `activeDept` state type in App.tsx. */
 export type DepartmentKey =
@@ -57,6 +58,7 @@ export type DepartmentKey =
   | 'concierge'
   | 'spa-wellness'
   | 'banquet-events'
+  | 'revenue'
   | 'settings';
 
 /**
@@ -101,6 +103,12 @@ export interface DepartmentConfig {
    * modIds depend on the active department.
    */
   dynamicTabs?: boolean;
+  /**
+   * The CSS accent class (e.g. `accent-operations`) applied to the side nav
+   * and main content wrapper so each portal has its own signature color
+   * within the earthy-luxury brand palette.
+   */
+  accentClass: string;
 }
 
 /**
@@ -108,24 +116,25 @@ export interface DepartmentConfig {
  * union. Order is not semantically significant but is preserved for stability.
  */
 export const DEPARTMENTS: readonly DepartmentConfig[] = [
-  { key: 'frontoffice', label: 'Front Office', urlSegment: 'frontoffice', defaultTab: 'dashboard', Portal: FrontOfficePortal },
-  { key: 'housekeeping', label: 'Housekeeping', urlSegment: 'housekeeping', defaultTab: 'dashboard', Portal: HousekeepingPortal },
-  { key: 'f&b', label: 'Food & Beverage', urlSegment: 'fb', defaultTab: 'executive-dashboard', Portal: FoodBeveragePortal },
-  { key: 'maintenance', label: 'Engineering', urlSegment: 'maintenance', defaultTab: 'dashboard', Portal: EngineeringPortal },
-  { key: 'inventory', label: 'Inventory', urlSegment: 'inventory', defaultTab: 'dashboard', Portal: InventoryPortal },
-  { key: 'finance', label: 'Finance', urlSegment: 'finance', defaultTab: 'dashboard', Portal: FinancePortal },
-  { key: 'hr', label: 'Human Resources', urlSegment: 'hr', defaultTab: 'dashboard', Portal: HumanResourcesPortal },
-  { key: 'security', label: 'Security', urlSegment: 'security', defaultTab: 'dashboard', Portal: SecurityPortal },
-  { key: 'executive', label: 'Executive', urlSegment: 'executive', defaultTab: 'executive-dashboard', Portal: ExecutiveBusinessIntelligencePortal },
-  { key: 'admin', label: 'Admin', urlSegment: 'admin', defaultTab: 'user_security', Portal: AdminPortal, dynamicTabs: true },
-  { key: 'procurement', label: 'Procurement', urlSegment: 'procurement', defaultTab: 'dashboard', Portal: ProcurementPortal },
-  { key: 'operations', label: 'Operations', urlSegment: 'operations', defaultTab: 'executive-dashboard', Portal: HotelOperationsPortal, dynamicTabs: true },
-  { key: 'sales', label: 'Sales', urlSegment: 'sales', defaultTab: 'dashboard', Portal: SalesPortal },
-  { key: 'transportation', label: 'Transportation', urlSegment: 'transportation', defaultTab: 'dashboard', Portal: TransportationPortal },
-  { key: 'concierge', label: 'Concierge', urlSegment: 'concierge', defaultTab: 'dashboard', Portal: ConciergePortal },
-  { key: 'spa-wellness', label: 'Spa & Wellness', urlSegment: 'spa-wellness', defaultTab: 'dashboard', Portal: SpaWellnessPortal },
-  { key: 'banquet-events', label: 'Banquet & Events', urlSegment: 'banquet-events', defaultTab: 'dashboard', Portal: BanquetEventsPortal },
-  { key: 'settings', label: 'Settings', urlSegment: 'settings', defaultTab: 'account', Portal: AccountSettingsModule },
+  { key: 'frontoffice', label: 'Front Office', urlSegment: 'frontoffice', defaultTab: 'dashboard', Portal: FrontOfficePortal, accentClass: 'accent-operations' },
+  { key: 'housekeeping', label: 'Housekeeping', urlSegment: 'housekeeping', defaultTab: 'dashboard', Portal: HousekeepingPortal, accentClass: 'accent-hk' },
+  { key: 'f&b', label: 'Food & Beverage', urlSegment: 'fb', defaultTab: 'executive-dashboard', Portal: FoodBeveragePortal, accentClass: 'accent-fb' },
+  { key: 'maintenance', label: 'Engineering', urlSegment: 'maintenance', defaultTab: 'dashboard', Portal: EngineeringPortal, accentClass: 'accent-eng' },
+  { key: 'inventory', label: 'Inventory', urlSegment: 'inventory', defaultTab: 'dashboard', Portal: InventoryPortal, accentClass: 'accent-inventory' },
+  { key: 'finance', label: 'Finance', urlSegment: 'finance', defaultTab: 'dashboard', Portal: FinancePortal, accentClass: 'accent-finance' },
+  { key: 'hr', label: 'Human Resources', urlSegment: 'hr', defaultTab: 'dashboard', Portal: HumanResourcesPortal, accentClass: 'accent-hr' },
+  { key: 'security', label: 'Security', urlSegment: 'security', defaultTab: 'dashboard', Portal: SecurityPortal, accentClass: 'accent-security' },
+  { key: 'executive', label: 'Executive', urlSegment: 'executive', defaultTab: 'executive-dashboard', Portal: ExecutiveBusinessIntelligencePortal, accentClass: 'accent-executive' },
+  { key: 'admin', label: 'Admin', urlSegment: 'admin', defaultTab: 'executive_dashboard', Portal: AdminPortal, dynamicTabs: true, accentClass: 'accent-admin' },
+  { key: 'procurement', label: 'Procurement', urlSegment: 'procurement', defaultTab: 'dashboard', Portal: ProcurementPortal, accentClass: 'accent-procurement' },
+  { key: 'operations', label: 'Operations', urlSegment: 'operations', defaultTab: 'executive-dashboard', Portal: HotelOperationsPortal, dynamicTabs: true, accentClass: 'accent-ops' },
+  { key: 'sales', label: 'Sales', urlSegment: 'sales', defaultTab: 'dashboard', Portal: SalesPortal, accentClass: 'accent-sales' },
+  { key: 'transportation', label: 'Transportation', urlSegment: 'transportation', defaultTab: 'dashboard', Portal: TransportationPortal, accentClass: 'accent-transport' },
+  { key: 'concierge', label: 'Concierge', urlSegment: 'concierge', defaultTab: 'dashboard', Portal: ConciergePortal, accentClass: 'accent-guest' },
+  { key: 'spa-wellness', label: 'Spa & Wellness', urlSegment: 'spa-wellness', defaultTab: 'dashboard', Portal: SpaWellnessPortal, accentClass: 'accent-spa' },
+  { key: 'banquet-events', label: 'Banquet & Events', urlSegment: 'banquet-events', defaultTab: 'dashboard', Portal: BanquetEventsPortal, accentClass: 'accent-banquet' },
+  { key: 'revenue', label: 'Revenue Management', urlSegment: 'revenue', defaultTab: 'dashboard', Portal: RevenueManagementPortal, accentClass: 'accent-revenue' },
+  { key: 'settings', label: 'Settings', urlSegment: 'settings', defaultTab: 'account', Portal: AccountSettingsModule, accentClass: 'accent-admin' },
 ] as const;
 
 /** Lookup by internal key (the value used by `activeDept` today). */
@@ -154,6 +163,44 @@ export function resolveDepartmentByKey(key: string | undefined): DepartmentConfi
 export const DEPARTMENT_SEGMENTS: readonly string[] = DEPARTMENTS.map((d) => d.urlSegment);
 
 /**
+ * Map of department key → CSS custom-property name for that department's
+ * accent color. Used by the DepartmentSwitcher to render a colored dot per
+ * department. The variable is resolved at render time from the `:root` /
+ * `.dark` token definitions in `index.css`.
+ */
+const DEPT_ACCENT_CSS_VAR: Readonly<Record<DepartmentKey, string>> = {
+  frontoffice: '--color-accent-operations',
+  housekeeping: '--color-accent-hk',
+  'f&b': '--color-accent-fb',
+  maintenance: '--color-accent-eng',
+  inventory: '--color-accent-inventory',
+  finance: '--color-accent-finance',
+  hr: '--color-accent-hr',
+  security: '--color-accent-security',
+  executive: '--color-accent-executive',
+  admin: '--color-accent-admin',
+  procurement: '--color-accent-procurement',
+  operations: '--color-accent-ops',
+  sales: '--color-accent-sales',
+  transportation: '--color-accent-transport',
+  concierge: '--color-accent-guest',
+  'spa-wellness': '--color-accent-spa',
+  'banquet-events': '--color-accent-banquet',
+  revenue: '--color-accent-revenue',
+  settings: '--color-accent-admin',
+};
+
+/** Get the CSS `var(...)` expression for a department's accent color. */
+export function getDeptAccentColorVar(key: DepartmentKey): string {
+  return `var(${DEPT_ACCENT_CSS_VAR[key] ?? '--color-accent-operations'})`;
+}
+
+/** Get the accent class for a department key (single source of truth). */
+export function getDeptAccentClass(key: DepartmentKey): string {
+  return DEPARTMENT_BY_KEY[key]?.accentClass ?? 'accent-operations';
+}
+
+/**
  * Role-to-department mapping for roles that don't match department keys exactly.
  * Consolidates the duplicate maps that existed in App.tsx (handleLoginSuccess,
  * verifySession useEffect, ForcedPasswordChangeScreen onSuccess).
@@ -166,8 +213,8 @@ const ROLE_TO_DEPT: Readonly<Record<string, DepartmentKey>> = {
   cfo: 'finance',
   accountant: 'finance',
   auditor: 'finance',
-  revenue_manager: 'finance',
-  revenue: 'finance',
+  revenue_manager: 'revenue',
+  revenue: 'revenue',
   fo_manager: 'frontoffice',
   front_office_manager: 'frontoffice',
   'front office manager': 'frontoffice',
@@ -190,6 +237,12 @@ const ROLE_TO_DEPT: Readonly<Record<string, DepartmentKey>> = {
   sales_director: 'sales',
   ops_manager: 'operations',
   operations_manager: 'operations',
+  general_manager: 'executive',
+  gm: 'executive',
+  owner: 'executive',
+  managing_director: 'executive',
+  director: 'executive',
+  exec: 'executive',
   concierge_manager: 'concierge',
   concierge: 'concierge',
   guest_services_manager: 'concierge',
@@ -197,10 +250,12 @@ const ROLE_TO_DEPT: Readonly<Record<string, DepartmentKey>> = {
   spa_director: 'spa-wellness',
   wellness_manager: 'spa-wellness',
   spa: 'spa-wellness',
-  banquet: 'frontoffice',
+  spa_receptionist: 'spa-wellness',
+  spa_therapist: 'spa-wellness',
+  banquet: 'banquet-events',
   banquet_manager: 'banquet-events',
   banquet_events_manager: 'banquet-events',
-  transportation: 'operations',
+  transportation: 'transportation',
   fleet_manager: 'transportation',
   transportation_manager: 'transportation',
 };

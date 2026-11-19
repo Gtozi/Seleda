@@ -12,8 +12,11 @@ import {
   Save, CheckCircle2, AlertTriangle, Search,
   Globe, ChevronRight, Activity,
   ShieldAlert, Download, Plus, Edit2, Trash2, X,
-  UserCircle2, Clock, Mail, Building2, UserCheck, UserX
+  UserCircle2, Clock, Mail, Building2, UserCheck, UserX, RefreshCw,
 } from 'lucide-react';
+import StatCard from '../FrontOffice/StatCard';
+import { PageHeader, SectionCard, Badge } from '../FrontOffice/ui';
+import { button } from '../FrontOffice/brandTheme';
 import {
   GENERIC_MODULE_ACCESS,
   DEPARTMENTS,
@@ -44,8 +47,8 @@ function deriveSeverity(action: string): string {
   return 'Low';
 }
 
-export default function UserManagementSecurity() {
-  const [activeTab, setActiveTab] = useState<SecurityTab>('users');
+export default function UserManagementSecurity({ initialTab = 'users' }: { initialTab?: SecurityTab } = {}) {
+  const [activeTab, setActiveTab] = useState<SecurityTab>(initialTab);
 
   return (
     <div className="h-full flex flex-col bg-slate-50">
@@ -210,163 +213,151 @@ function UserProfilesModule() {
     <div className="space-y-6 animate-fade-in pt-4">
       {notification && (
         <div className={`p-4 rounded-xl text-xs font-bold flex items-center gap-2 ${
-          notification.type === 'success' ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'
+          notification.type === 'success' ? 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border border-emerald-100 dark:border-emerald-500/20' : 'bg-rose-50 dark:bg-rose-500/10 text-rose-700 dark:text-rose-400 border border-rose-100 dark:border-rose-500/20'
         }`}>
           {notification.type === 'success' ? <CheckCircle2 size={16} /> : <AlertTriangle size={16} />}
           {notification.message}
         </div>
       )}
 
-      {/* Stat cards */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        {[
-          { label: 'Total Users', value: systemUsers.length, icon: UserCircle2, color: 'indigo' },
-          { label: 'Active', value: activeCount, icon: UserCheck, color: 'emerald' },
-          { label: 'Pending', value: pendingCount, icon: Clock, color: 'amber' },
-          { label: 'Inactive / Locked', value: inactiveCount, icon: UserX, color: 'rose' },
-        ].map((s, i) => (
-          <div key={i} className="bg-white border border-slate-200 p-4 rounded-2xl shadow-sm flex items-center gap-3">
-            <div className={`p-2.5 rounded-xl bg-${s.color}-50 text-${s.color}-600`}><s.icon size={18} /></div>
-            <div>
-              <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest block">{s.label}</span>
-              <h4 className="text-lg font-black text-slate-900 leading-tight">{s.value}</h4>
-            </div>
+      <PageHeader
+        title="User Profiles"
+        subtitle="Manage system users across all departments"
+        icon={Users}
+        actions={
+          <button onClick={() => setShowAddUserModal(true)} className={button.primary}>
+            <Plus size={16} /> Add User
+          </button>
+        }
+      />
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <StatCard title="Total Users" value={systemUsers.length} icon={UserCircle2} tone="accent" />
+        <StatCard title="Active" value={activeCount} icon={UserCheck} tone="success" />
+        <StatCard title="Pending" value={pendingCount} icon={Clock} tone="warning" />
+        <StatCard title="Inactive / Locked" value={inactiveCount} icon={UserX} tone="danger" />
+      </div>
+
+      <SectionCard pad="md">
+        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+          <div className="relative w-full max-w-xs">
+            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+            <input
+              type="text"
+              placeholder="Search by name, email, or department..."
+              value={searchTerm}
+              onChange={e => setSearchTerm(e.target.value)}
+              className="w-full pl-9 pr-3 py-2 text-sm border border-gray-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-gray-900 dark:text-white outline-none focus:ring-1 focus:ring-[var(--color-accent-operations)]"
+            />
           </div>
-        ))}
-      </div>
-
-      {/* Search + Add */}
-      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
-        <div className="relative flex-1 sm:flex-none">
-          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-          <input
-            type="text"
-            placeholder="Search by name, email, or department..."
-            value={searchTerm}
-            onChange={e => setSearchTerm(e.target.value)}
-            className="pl-9 pr-4 py-2 bg-white border border-slate-200 rounded-xl text-xs outline-none w-full sm:w-80 focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-300 transition"
-          />
         </div>
-        <button
-          onClick={() => setShowAddUserModal(true)}
-          className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-xl text-xs font-bold hover:bg-indigo-700 transition shadow-sm"
-        >
-          <Plus size={14} /> Add User
-        </button>
-      </div>
+      </SectionCard>
 
-      {/* Department filter pills */}
-      <div className="flex gap-2 flex-wrap">
-        <button
-          onClick={() => setDeptFilter('all')}
-          className={`px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest transition ${
-            deptFilter === 'all' ? 'bg-slate-950 text-white' : 'text-slate-400 hover:bg-slate-50 bg-white border border-slate-200'
-          }`}
-        >
-          All Departments
-        </button>
-        {DEPARTMENTS.map((dept) => {
-          const count = systemUsers.filter(u => u.department === dept.id).length;
-          if (count === 0) return null;
-          return (
-            <button
-              key={dept.id}
-              onClick={() => setDeptFilter(dept.id)}
-              className={`px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest transition flex items-center gap-1.5 ${
-                deptFilter === dept.id ? 'bg-slate-950 text-white' : 'text-slate-400 hover:bg-slate-50 bg-white border border-slate-200'
-              }`}
-            >
-              <span>{dept.icon}</span> {dept.label}
-              <span className={`px-1.5 py-0.5 rounded-full text-[8px] ${deptFilter === dept.id ? 'bg-white/20' : 'bg-slate-100 text-slate-500'}`}>{count}</span>
-            </button>
-          );
-        })}
-      </div>
+      <SectionCard title="Filter by Department" pad="sm">
+        <div className="flex gap-2 flex-wrap">
+          <button
+            onClick={() => setDeptFilter('all')}
+            className={`px-3 py-1.5 rounded-lg text-xs font-medium transition ${
+              deptFilter === 'all' ? 'bg-slate-950 dark:bg-slate-700 text-white' : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
+            }`}
+          >
+            All Departments
+          </button>
+          {DEPARTMENTS.map((dept) => {
+            const count = systemUsers.filter(u => u.department === dept.id).length;
+            return (
+              <button
+                key={dept.id}
+                onClick={() => setDeptFilter(dept.id)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-medium transition flex items-center gap-1.5 ${
+                  deptFilter === dept.id ? 'bg-slate-950 dark:bg-slate-700 text-white' : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
+                }`}
+              >
+                <span>{dept.icon}</span> {dept.label}
+                <span className={`px-1.5 py-0.5 rounded-full text-[10px] ${deptFilter === dept.id ? 'bg-white/20' : 'bg-slate-100 dark:bg-slate-700 text-slate-500'}`}>{count}</span>
+              </button>
+            );
+          })}
+        </div>
+      </SectionCard>
 
-      {/* Users table */}
-      <div className="bg-white border border-slate-200 rounded-3xl shadow-sm overflow-hidden">
-        <table className="w-full text-left">
-          <thead>
-            <tr className="text-[10px] font-black text-slate-400 uppercase tracking-widest border-b border-slate-100 bg-slate-50/50">
-              <th className="px-5 py-3">User</th>
-              <th className="px-5 py-3">Contact</th>
-              <th className="px-5 py-3">Department</th>
-              <th className="px-5 py-3">Role</th>
-              <th className="px-5 py-3">Status</th>
-              <th className="px-5 py-3">Last Login</th>
-              <th className="px-5 py-3 text-right">Actions</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-slate-50">
-            {filteredUsers.map(user => {
+      <SectionCard title="Users" subtitle={`${filteredUsers.length} of ${systemUsers.length}`} icon={Users} tone="accent" pad="none">
+        <div className="bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-2xl card-shadow overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="bg-slate-50 dark:bg-slate-900/40 border-b border-gray-200 dark:border-slate-700 text-xs font-bold text-gray-500 uppercase tracking-wider">
+                  <th className="text-left px-4 py-3">User</th>
+                  <th className="text-left px-4 py-3 hidden md:table-cell">Contact</th>
+                  <th className="text-left px-4 py-3">Department</th>
+                  <th className="text-left px-4 py-3">Role</th>
+                  <th className="text-left px-4 py-3">Status</th>
+                  <th className="text-left px-4 py-3 hidden lg:table-cell">Last Login</th>
+                  <th className="text-left px-4 py-3 text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100 dark:divide-slate-700">
+                {filteredUsers.map(user => {
               const deptInfo = getDeptInfo(user.department || '');
               return (
-                <tr key={user.id} className="hover:bg-slate-50/50 transition group">
-                  <td className="px-5 py-3">
+                <tr key={user.id} className="hover:bg-slate-50 dark:hover:bg-slate-700/30 transition">
+                  <td className="px-4 py-3">
                     <div className="flex items-center gap-3">
                       <div className={`w-9 h-9 rounded-xl bg-gradient-to-br ${getAvatarGradient(user.name)} flex items-center justify-center text-xs font-black text-white shadow-sm`}>
                         {user.avatarInitials || user.name.charAt(0).toUpperCase()}
                       </div>
                       <div>
-                        <div className="text-xs font-bold text-slate-900">{user.name}</div>
-                        <div className="text-[10px] text-slate-400 font-mono">{user.roleDescription || user.role}</div>
+                        <div className="text-sm font-bold text-gray-900 dark:text-white">{user.name}</div>
+                        <div className="text-xs text-gray-500 font-mono">{user.roleDescription || user.role}</div>
                       </div>
                     </div>
                   </td>
-                  <td className="px-5 py-3">
-                    <div className="flex items-center gap-1.5 text-[11px] text-slate-600">
-                      <Mail size={11} className="text-slate-300" />
+                  <td className="px-4 py-3 hidden md:table-cell">
+                    <div className="flex items-center gap-1.5 text-xs text-gray-600 dark:text-gray-400">
+                      <Mail size={12} className="text-gray-400" />
                       {user.email}
                     </div>
                     {user.mobileNumber && (
-                      <div className="flex items-center gap-1.5 text-[10px] text-slate-400 mt-0.5">
-                        <Smartphone size={10} className="text-slate-300" />
+                      <div className="flex items-center gap-1.5 text-xs text-gray-500 mt-0.5">
+                        <Smartphone size={10} className="text-gray-400" />
                         {user.mobileNumber}
                       </div>
                     )}
                   </td>
-                  <td className="px-5 py-3">
+                  <td className="px-4 py-3">
                     {deptInfo ? (
-                      <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg bg-slate-50 border border-slate-100 text-[10px] font-bold text-slate-600">
+                      <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg bg-slate-50 dark:bg-slate-900/40 border border-slate-100 dark:border-slate-700 text-xs font-bold text-gray-600 dark:text-gray-300">
                         <span>{deptInfo.icon}</span> {deptInfo.label}
                       </span>
                     ) : (
-                      <span className="text-[10px] text-slate-400 italic">General</span>
+                      <span className="text-xs text-gray-400 italic">General</span>
                     )}
                   </td>
-                  <td className="px-5 py-3">
-                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-indigo-50 border border-indigo-100 text-[9px] font-bold text-indigo-600 capitalize">
-                      <Key size={9} /> {user.roleDescription || user.role || 'member'}
+                  <td className="px-4 py-3">
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-indigo-50 dark:bg-indigo-500/10 border border-indigo-100 dark:border-indigo-500/20 text-xs font-bold text-indigo-600 dark:text-indigo-400 capitalize">
+                      <Key size={10} /> {user.roleDescription || user.role || 'member'}
                     </span>
                   </td>
-                  <td className="px-5 py-3">
-                    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[8px] font-black uppercase ${
-                      user.status === 'Active' ? 'bg-emerald-50 text-emerald-600' :
-                      user.status === 'Pending' ? 'bg-amber-50 text-amber-600' :
-                      'bg-rose-50 text-rose-600'
-                    }`}>
-                      <span className={`w-1.5 h-1.5 rounded-full ${
-                        user.status === 'Active' ? 'bg-emerald-500' :
-                        user.status === 'Pending' ? 'bg-amber-500' : 'bg-rose-500'
-                      }`} />
-                      {user.status || 'Active'}
-                    </span>
+                  <td className="px-4 py-3">
+                    {user.status === 'Active' ? <Badge tone="success">Active</Badge> :
+                     user.status === 'Pending' ? <Badge tone="warning">Pending</Badge> :
+                     <Badge tone="danger">{user.status || 'Inactive'}</Badge>}
                   </td>
-                  <td className="px-5 py-3">
+                  <td className="px-4 py-3 hidden lg:table-cell">
                     {user.lastLogin ? (
-                      <span className="text-[10px] text-slate-500 font-mono">{user.lastLogin}</span>
+                      <span className="text-xs text-gray-500 dark:text-gray-400 font-mono">{user.lastLogin}</span>
                     ) : (
-                      <span className="text-[10px] text-slate-300 italic">Never</span>
+                      <span className="text-xs text-gray-400 italic">Never</span>
                     )}
                   </td>
-                  <td className="px-5 py-3">
+                  <td className="px-4 py-3 text-right">
                     <div className="flex gap-1.5 justify-end">
                       <button
                         onClick={() => handleEditUser(user)}
-                        className="p-1.5 hover:bg-indigo-50 rounded-lg transition"
+                        className="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700 text-gray-500 transition"
                         title="Edit user"
                       >
-                        <Edit2 size={12} className="text-indigo-600" />
+                        <Edit2 size={14} />
                       </button>
                       <button
                         onClick={() => {
@@ -374,10 +365,10 @@ function UserProfilesModule() {
                             deleteSystemUser(user.id);
                           }
                         }}
-                        className="p-1.5 hover:bg-rose-50 rounded-lg transition"
+                        className="p-1.5 rounded-lg hover:bg-rose-50 dark:hover:bg-rose-900/20 text-rose-500 transition"
                         title="Delete user"
                       >
-                        <Trash2 size={12} className="text-rose-600" />
+                        <Trash2 size={14} />
                       </button>
                     </div>
                   </td>
@@ -388,11 +379,11 @@ function UserProfilesModule() {
               <tr>
                 <td colSpan={7} className="text-center py-12">
                   <div className="flex flex-col items-center gap-2">
-                    <div className="w-12 h-12 rounded-2xl bg-slate-100 flex items-center justify-center">
-                      <Users size={20} className="text-slate-300" />
+                    <div className="w-12 h-12 rounded-2xl bg-slate-100 dark:bg-slate-800 flex items-center justify-center">
+                      <Users size={20} className="text-slate-300 dark:text-slate-600" />
                     </div>
-                    <p className="text-xs text-slate-400 font-bold">No users found</p>
-                    <p className="text-[10px] text-slate-300">Try adjusting your search or filters</p>
+                    <p className="text-sm text-gray-500 dark:text-gray-400 font-medium">No users found</p>
+                    <p className="text-xs text-gray-400">Try adjusting your search or filters</p>
                   </div>
                 </td>
               </tr>
@@ -400,6 +391,8 @@ function UserProfilesModule() {
           </tbody>
         </table>
       </div>
+      </div>
+      </SectionCard>
 
       {showAddUserModal && (
         <AddUserModal
@@ -580,89 +573,56 @@ function RBACModule() {
     <div className="space-y-6 animate-fade-in pt-4">
       {notification && (
         <div className={`p-4 rounded-xl text-xs font-bold flex items-center gap-2 ${
-          notification.type === 'success' ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'
+          notification.type === 'success' ? 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border border-emerald-100 dark:border-emerald-500/20' : 'bg-rose-50 dark:bg-rose-500/10 text-rose-700 dark:text-rose-400 border border-rose-100 dark:border-rose-500/20'
         }`}>
           {notification.type === 'success' ? <CheckCircle2 size={16} /> : <AlertTriangle size={16} />}
           {notification.message}
         </div>
       )}
 
-      {/* Stat cards */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        {[
-          { label: 'Total Roles', value: allRoles.length, icon: Key, color: 'indigo' },
-          { label: 'System Roles', value: systemRoleCount, icon: Shield, color: 'amber' },
-          { label: 'Custom Roles', value: customRoleCount, icon: Edit2, color: 'violet' },
-          { label: 'Permissions', value: allPermissions.length, icon: Lock, color: 'emerald' },
-        ].map((s, i) => (
-          <div key={i} className="bg-white border border-slate-200 p-4 rounded-2xl shadow-sm flex items-center gap-3">
-            <div className={`p-2.5 rounded-xl bg-${s.color}-50 text-${s.color}-600`}><s.icon size={18} /></div>
-            <div>
-              <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest block">{s.label}</span>
-              <h4 className="text-lg font-black text-slate-900 leading-tight">{s.value}</h4>
-            </div>
-          </div>
-        ))}
+      <PageHeader
+        title="Role & Permissions"
+        subtitle="Manage system roles and permissions across all departments"
+        icon={Key}
+        actions={
+          <button onClick={() => setShowAddRoleModal(true)} className={button.primary}>
+            <Plus size={16} /> Add Role
+          </button>
+        }
+      />
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <StatCard title="Total Roles" value={allRoles.length} icon={Key} tone="accent" />
+        <StatCard title="System Roles" value={systemRoleCount} icon={Shield} tone="warning" />
+        <StatCard title="Custom Roles" value={customRoleCount} icon={Edit2} tone="info" />
+        <StatCard title="Permissions" value={allPermissions.length} icon={Lock} tone="success" />
       </div>
 
-      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
-        <div>
-          <h3 className="text-sm font-black text-slate-900">Roles & Permissions</h3>
-          <p className="text-xs text-slate-500">Manage system and custom roles with granular permission control</p>
-        </div>
-        <div className="flex gap-2">
-          {/* Role type filter */}
-          <div className="flex gap-1 bg-slate-100 rounded-xl p-1">
+      <SectionCard title="Filter Roles" pad="sm">
+        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+          <div className="flex gap-2 flex-wrap">
             {(['all', 'system', 'custom'] as const).map(f => (
               <button
                 key={f}
                 onClick={() => setRoleFilter(f)}
-                className={`px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest transition ${
-                  roleFilter === f ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-400 hover:text-slate-600'
+                className={`px-3 py-1.5 rounded-lg text-xs font-medium transition ${
+                  roleFilter === f ? 'bg-slate-950 dark:bg-slate-700 text-white' : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
                 }`}
               >
                 {f}
               </button>
             ))}
           </div>
-          <button
-            onClick={() => setShowAddRoleModal(true)}
-            className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-xl text-xs font-bold hover:bg-indigo-700 transition shadow-sm"
+          <select
+            value={selectedDepartment}
+            onChange={e => setSelectedDepartment(e.target.value)}
+            className="px-3 py-2 text-sm border border-gray-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-gray-900 dark:text-white outline-none focus:ring-1 focus:ring-[var(--color-accent-operations)]"
           >
-            <Plus size={14} /> Create Role
-          </button>
+            <option value="all">All Departments</option>
+            {DEPARTMENTS.map(d => <option key={d.id} value={d.id}>{d.label}</option>)}
+          </select>
         </div>
-      </div>
-
-      {/* Department filter pills */}
-      <div className="flex gap-2 flex-wrap">
-        <button
-          onClick={() => setSelectedDepartment('all')}
-          className={`px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest transition ${
-            selectedDepartment === 'all' ? 'bg-slate-950 text-white' : 'text-slate-400 hover:bg-slate-50 bg-white border border-slate-200'
-          }`}
-        >
-          All Departments
-          <span className={`ml-1.5 px-1.5 py-0.5 rounded-full text-[8px] ${selectedDepartment === 'all' ? 'bg-white/20' : 'bg-slate-100 text-slate-500'}`}>{allRoles.length}</span>
-        </button>
-        {DEPARTMENTS.map((dept) => {
-          const count = (rolesByDepartment[dept.id] || []).length;
-          return (
-            <button
-              key={dept.id}
-              onClick={() => setSelectedDepartment(dept.id)}
-              className={`px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest transition flex items-center gap-1.5 ${
-                selectedDepartment === dept.id ? 'bg-slate-950 text-white' : 'text-slate-400 hover:bg-slate-50 bg-white border border-slate-200'
-              }`}
-            >
-              <span>{dept.icon}</span> {dept.label}
-              {count > 0 && (
-                <span className={`px-1.5 py-0.5 rounded-full text-[8px] ${selectedDepartment === dept.id ? 'bg-white/20' : 'bg-slate-100 text-slate-500'}`}>{count}</span>
-              )}
-            </button>
-          );
-        })}
-      </div>
+      </SectionCard>
 
       {/* Roles grouped by department */}
       {(() => {
@@ -670,50 +630,40 @@ function RBACModule() {
         const hasUngrouped = ungroupedRoles.length > 0 && (selectedDepartment === 'all' || roleFilter === 'system');
         return (
           <>
-          {hasUngrouped && (
-            <div className="space-y-3">
-              <div className="flex items-center gap-2 pb-2 border-b border-slate-200">
-                <span className="text-base">⚙️</span>
-                <h4 className="text-xs font-black text-slate-900 uppercase tracking-widest">System Roles</h4>
-                <span className="px-2 py-0.5 rounded-full bg-slate-100 text-slate-500 text-[9px] font-black">{ungroupedRoles.length} role{ungroupedRoles.length !== 1 ? 's' : ''}</span>
-              </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {ungroupedRoles.map((role) => (
-                  <RoleCard key={role.id} role={role} onDelete={handleDeleteRole} onEdit={(r: any) => setEditingRole(r)} registry={registry} />
-                ))}
-              </div>
-            </div>
-          )}
-          {filteredDepartments.map((dept) => {
-            const roles = rolesByDepartment[dept.id] || [];
-            if (roles.length === 0 && selectedDepartment !== 'all') return null;
-            return (
-              <div key={dept.id} className="space-y-3">
-                <div className="flex items-center gap-2 pb-2 border-b border-slate-200">
-                  <span className="text-base">{dept.icon}</span>
-                  <h4 className="text-xs font-black text-slate-900 uppercase tracking-widest">{dept.label}</h4>
-                  <span className="px-2 py-0.5 rounded-full bg-slate-100 text-slate-500 text-[9px] font-black">{roles.length} role{roles.length !== 1 ? 's' : ''}</span>
+            {hasUngrouped && (
+              <SectionCard title="System Roles" subtitle={`${ungroupedRoles.length} role${ungroupedRoles.length !== 1 ? 's' : ''}`} icon={Shield} tone="warning" pad="none">
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {ungroupedRoles.map((role) => (
+                    <RoleCard key={role.id} role={role} onDelete={handleDeleteRole} onEdit={(r: any) => setEditingRole(r)} registry={registry} />
+                  ))}
                 </div>
-                {roles.length === 0 ? (
-                  <div className="bg-slate-50 border border-dashed border-slate-200 rounded-2xl p-6 text-center">
-                    <p className="text-xs text-slate-400">No roles defined for {dept.label} yet.</p>
-                    <button
-                      onClick={() => setShowAddRoleModal(true)}
-                      className="mt-2 text-[10px] font-bold text-indigo-600 hover:underline"
-                    >
-                      + Create the first role
-                    </button>
-                  </div>
-                ) : (
-                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                    {roles.map((role) => (
-                      <RoleCard key={role.id} role={role} onDelete={handleDeleteRole} onEdit={(r: any) => setEditingRole(r)} registry={registry} />
-                    ))}
-                  </div>
-                )}
-              </div>
-            );
-          })}
+              </SectionCard>
+            )}
+            {filteredDepartments.map((dept) => {
+              const roles = rolesByDepartment[dept.id] || [];
+              if (roles.length === 0 && selectedDepartment !== 'all') return null;
+              return (
+                <SectionCard key={dept.id} title={dept.label} subtitle={`${roles.length} role${roles.length !== 1 ? 's' : ''}`} icon={Shield} tone="accent" pad="none">
+                  {roles.length === 0 ? (
+                    <div className="bg-slate-50 dark:bg-slate-900/40 border border-dashed border-gray-200 dark:border-slate-700 rounded-2xl p-6 text-center">
+                      <p className="text-sm text-gray-500 dark:text-gray-400">No roles defined for {dept.label} yet.</p>
+                      <button
+                        onClick={() => setShowAddRoleModal(true)}
+                        className="mt-2 text-xs font-bold text-[var(--color-accent-operations)] hover:underline"
+                      >
+                        + Create the first role
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                      {roles.map((role) => (
+                        <RoleCard key={role.id} role={role} onDelete={handleDeleteRole} onEdit={(r: any) => setEditingRole(r)} registry={registry} />
+                      ))}
+                    </div>
+                  )}
+                </SectionCard>
+              );
+            })}
           </>
         );
       })()}
@@ -753,6 +703,7 @@ const DEPT_ICON_COLORS: Record<string, string> = {
   procurement: 'bg-teal-100 text-teal-600',
   sales: 'bg-rose-100 text-rose-600',
   operations: 'bg-slate-100 text-slate-600',
+  security: 'bg-red-100 text-red-600',
 };
 
 function RoleCard({ role, onDelete, onEdit, registry }: { role: any; onDelete: (id: string) => void; onEdit?: (role: any) => void; registry?: any }) {
@@ -902,6 +853,7 @@ function AuditLogsModule() {
   const { structuredAuditLogs, systemUsers } = useERP();
   const [activeFilter, setActiveFilter] = useState<'All' | 'Critical' | 'High' | 'Medium' | 'Low'>('All');
   const [searchTerm, setSearchTerm] = useState('');
+  const [selectedEvent, setSelectedEvent] = useState<any | null>(null);
 
   const auditEvents = useMemo(() => {
     return structuredAuditLogs.map((log: SystemAuditLog) => ({
@@ -934,110 +886,157 @@ function AuditLogsModule() {
 
   return (
     <div className="space-y-6 animate-fade-in pt-4">
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        {[
-          { label: 'Total Events', value: auditEvents.length, icon: Activity, color: 'indigo' },
-          { label: 'Critical', value: criticalCount, icon: ShieldAlert, color: 'rose' },
-          { label: 'High Risk', value: highCount, icon: AlertTriangle, color: 'amber' },
-          { label: 'Active Users', value: systemUsers.filter((u: User) => u.status === 'Active').length, icon: Users, color: 'emerald' },
-        ].map((s, i) => (
-          <div key={i} className="bg-white border border-slate-200 p-4 rounded-2xl shadow-sm flex items-center gap-3">
-            <div className={`p-2.5 rounded-xl bg-${s.color}-50 text-${s.color}-600`}><s.icon size={18} /></div>
-            <div>
-              <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest block">{s.label}</span>
-              <h4 className="text-lg font-black text-slate-900 leading-tight">{s.value}</h4>
-            </div>
-          </div>
-        ))}
+      <PageHeader
+        title="Audit Logs"
+        subtitle="System security and activity monitoring"
+        icon={FileSearch}
+        actions={
+          <button className={button.secondary} onClick={() => window.location.reload()}>
+            <RefreshCw size={16} /> Refresh
+          </button>
+        }
+      />
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <StatCard title="Total Events" value={auditEvents.length} icon={Activity} tone="accent" />
+        <StatCard title="Critical" value={criticalCount} icon={ShieldAlert} tone="danger" />
+        <StatCard title="High Risk" value={highCount} icon={AlertTriangle} tone="warning" />
+        <StatCard title="Active Users" value={systemUsers.filter((u: User) => u.status === 'Active').length} icon={Users} tone="success" />
       </div>
 
-      <div className="bg-white border border-slate-200 rounded-3xl shadow-sm overflow-hidden">
-        <div className="p-4 border-b border-slate-100 flex flex-col md:flex-row md:items-center justify-between gap-3">
+      <SectionCard title="Filter Events" pad="sm">
+        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
           <div className="flex gap-2 flex-wrap">
             {(['All', 'Critical', 'High', 'Medium', 'Low'] as const).map(f => (
               <button key={f} onClick={() => setActiveFilter(f)}
-                className={`px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest transition flex items-center gap-1.5 ${
-                  activeFilter === f ? 'bg-slate-950 text-white' : 'text-slate-400 hover:bg-slate-50'
+                className={`px-3 py-1.5 rounded-lg text-xs font-medium transition flex items-center gap-1.5 ${
+                  activeFilter === f ? 'bg-slate-950 dark:bg-slate-700 text-white' : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
                 }`}>
                 {f}
-                <span className={`px-1.5 py-0.5 rounded-full text-[8px] ${activeFilter === f ? 'bg-white/20' : 'bg-slate-100 text-slate-500'}`}>{severityCounts[f]}</span>
+                <span className={`px-1.5 py-0.5 rounded-full text-[10px] ${activeFilter === f ? 'bg-white/20' : 'bg-slate-100 dark:bg-slate-700 text-slate-500'}`}>{severityCounts[f]}</span>
               </button>
             ))}
           </div>
-          <div className="flex gap-2 items-center">
-            <div className="relative">
-              <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-              <input type="text" placeholder="Search audit log..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)}
-                className="pl-9 pr-4 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-[11px] outline-none w-48 focus:w-64 transition-all focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-300" />
-            </div>
-            <button className="px-3 py-1.5 border border-slate-200 rounded-xl text-[10px] font-bold flex items-center gap-1.5 hover:bg-slate-50 transition">
-              <Download size={12} /> Export
-            </button>
+          <div className="relative">
+            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+            <input type="text" placeholder="Search audit log..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)}
+              className="pl-9 pr-4 py-2 text-sm border border-gray-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-gray-900 dark:text-white outline-none w-48 focus:w-64 transition-all focus:ring-1 focus:ring-[var(--color-accent-operations)]" />
+          </div>
+          <button className={button.secondary}>
+            <Download size={14} /> Export
+          </button>
+        </div>
+      </SectionCard>
+
+      <SectionCard title="Audit Events" subtitle={`${filtered.length} event${filtered.length !== 1 ? 's' : ''}`} icon={FileSearch} tone="accent" pad="none">
+        <div className="bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-2xl card-shadow overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="bg-slate-50 dark:bg-slate-900/40 border-b border-gray-200 dark:border-slate-700 text-xs font-bold text-gray-500 uppercase tracking-wider">
+                  <th className="text-left px-4 py-3">Timestamp</th>
+                  <th className="text-left px-4 py-3">User</th>
+                  <th className="text-left px-4 py-3">Action</th>
+                  <th className="text-left px-4 py-3 hidden md:table-cell">Details</th>
+                  <th className="text-left px-4 py-3 hidden lg:table-cell">Module</th>
+                  <th className="text-left px-4 py-3 hidden lg:table-cell">IP</th>
+                  <th className="text-left px-4 py-3 text-right">Severity</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100 dark:divide-slate-700">
+                {filtered.map(e => (
+                  <tr key={e.id} className="hover:bg-slate-50 dark:hover:bg-slate-700/30 transition cursor-pointer group" onClick={() => setSelectedEvent(e)}>
+                    <td className="px-4 py-3 font-mono text-gray-500 dark:text-gray-400 text-xs whitespace-nowrap">{e.time}</td>
+                    <td className="px-4 py-3 whitespace-nowrap">
+                      <div className="flex items-center gap-2">
+                        <div className={`w-6 h-6 rounded-lg bg-gradient-to-br ${getAvatarGradient(e.user)} flex items-center justify-center text-xs font-black text-white`}>{e.user.charAt(0)}</div>
+                        <span className="text-gray-900 dark:text-white">{e.user}</span>
+                      </div>
+                    </td>
+                    <td className="px-4 py-3">
+                      <span className="text-xs font-bold text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-500/10 px-1.5 py-0.5 rounded font-mono uppercase">{e.action}</span>
+                    </td>
+                    <td className="px-4 py-3 text-xs text-gray-500 dark:text-gray-400 max-w-xs truncate hidden md:table-cell">
+                      {typeof e.details === 'object' ? JSON.stringify(e.details).substring(0, 50) + '...' : String(e.details).substring(0, 50) + (String(e.details).length > 50 ? '...' : '')}
+                    </td>
+                    <td className="px-4 py-3 text-xs font-bold text-gray-400 dark:text-gray-500 uppercase hidden lg:table-cell">{e.module}</td>
+                    <td className="px-4 py-3 font-mono text-xs text-gray-400 dark:text-gray-500 hidden lg:table-cell">{e.ip}</td>
+                    <td className="px-4 py-3 text-right whitespace-nowrap">
+                      {e.severity === 'Critical' ? <Badge tone="danger">Critical</Badge> :
+                       e.severity === 'High' ? <Badge tone="danger">High</Badge> :
+                       e.severity === 'Medium' ? <Badge tone="warning">Medium</Badge> :
+                       <Badge tone="neutral">Low</Badge>}
+                    </td>
+                  </tr>
+                ))}
+                {filtered.length === 0 && (
+                  <tr>
+                    <td colSpan={7} className="text-center py-12">
+                      <div className="flex flex-col items-center gap-2">
+                        <div className="w-12 h-12 rounded-2xl bg-slate-100 dark:bg-slate-800 flex items-center justify-center">
+                          <FileSearch size={20} className="text-slate-300 dark:text-slate-600" />
+                        </div>
+                        <p className="text-sm text-gray-500 dark:text-gray-400 font-medium">No audit events match your filters</p>
+                        <p className="text-xs text-gray-400">Try adjusting severity or search terms</p>
+                      </div>
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
           </div>
         </div>
-        <div className="overflow-x-auto">
-          <table className="w-full text-left">
-            <thead>
-              <tr className="text-[10px] font-black text-slate-400 uppercase tracking-widest border-b border-slate-100 bg-slate-50/50">
-                <th className="px-5 py-3">Timestamp</th>
-                <th className="px-5 py-3">User</th>
-                <th className="px-5 py-3">Action</th>
-                <th className="px-5 py-3">Details</th>
-                <th className="px-5 py-3">Module</th>
-                <th className="px-5 py-3">IP</th>
-                <th className="px-5 py-3 text-right">Severity</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-50">
-              {filtered.map(e => (
-                <tr key={e.id} className="text-xs font-bold hover:bg-slate-50/50 transition cursor-pointer group">
-                  <td className="px-5 py-3 font-mono text-slate-400 text-[10px] whitespace-nowrap">{e.time}</td>
-                  <td className="px-5 py-3 whitespace-nowrap">
-                    <div className="flex items-center gap-2">
-                      <div className={`w-6 h-6 rounded-lg bg-gradient-to-br ${getAvatarGradient(e.user)} flex items-center justify-center text-[10px] font-black text-white`}>{e.user.charAt(0)}</div>
-                      <span className="text-slate-900">{e.user}</span>
-                    </div>
-                  </td>
-                  <td className="px-5 py-3">
-                    <span className="text-[10px] font-black text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded font-mono uppercase">{e.action}</span>
-                  </td>
-                  <td className="px-5 py-3 text-[10px] text-slate-500 max-w-xs truncate">{e.details}</td>
-                  <td className="px-5 py-3 text-[10px] font-black text-slate-400 uppercase">{e.module}</td>
-                  <td className="px-5 py-3 font-mono text-[10px] text-slate-400">{e.ip}</td>
-                  <td className="px-5 py-3 text-right whitespace-nowrap">
-                    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[8px] font-black tracking-widest ${
-                      e.severity === 'Critical' ? 'bg-rose-500 text-white' :
-                      e.severity === 'High' ? 'bg-rose-50 text-rose-700 border border-rose-100' :
-                      e.severity === 'Medium' ? 'bg-amber-50 text-amber-700 border border-amber-100' :
-                      'bg-slate-100 text-slate-600'
-                    }`}>
-                      <span className={`w-1.5 h-1.5 rounded-full ${
-                        e.severity === 'Critical' ? 'bg-white' :
-                        e.severity === 'High' ? 'bg-rose-500' :
-                        e.severity === 'Medium' ? 'bg-amber-500' : 'bg-slate-400'
-                      }`} />
-                      {e.severity.toUpperCase()}
-                    </span>
-                  </td>
-                </tr>
-              ))}
-              {filtered.length === 0 && (
-                <tr>
-                  <td colSpan={7} className="text-center py-12">
-                    <div className="flex flex-col items-center gap-2">
-                      <div className="w-12 h-12 rounded-2xl bg-slate-100 flex items-center justify-center">
-                        <FileSearch size={20} className="text-slate-300" />
-                      </div>
-                      <p className="text-xs text-slate-400 font-bold">No audit events match your filters</p>
-                      <p className="text-[10px] text-slate-300">Try adjusting severity or search terms</p>
-                    </div>
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
+      </SectionCard>
+
+      {selectedEvent && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => setSelectedEvent(null)}>
+          <div className="w-full max-w-2xl max-h-[90vh] overflow-y-auto bg-white dark:bg-slate-900 rounded-2xl p-6 shadow-xl" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-black text-gray-900 dark:text-white">Audit Event Details</h3>
+              <button onClick={() => setSelectedEvent(null)} className="text-gray-400 hover:text-gray-700 dark:hover:text-gray-300"><X size={18} /></button>
+            </div>
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="text-xs font-medium text-gray-500 dark:text-gray-400">Timestamp</label>
+                  <p className="text-sm font-mono text-gray-900 dark:text-white">{selectedEvent.time}</p>
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-gray-500 dark:text-gray-400">User</label>
+                  <p className="text-sm text-gray-900 dark:text-white">{selectedEvent.user}</p>
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-gray-500 dark:text-gray-400">Action</label>
+                  <p className="text-sm font-mono text-indigo-600 dark:text-indigo-400">{selectedEvent.action}</p>
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-gray-500 dark:text-gray-400">Module</label>
+                  <p className="text-sm text-gray-900 dark:text-white">{selectedEvent.module}</p>
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-gray-500 dark:text-gray-400">IP Address</label>
+                  <p className="text-sm font-mono text-gray-900 dark:text-white">{selectedEvent.ip}</p>
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-gray-500 dark:text-gray-400">Severity</label>
+                  <p className="text-sm">
+                    {selectedEvent.severity === 'Critical' ? <Badge tone="danger">Critical</Badge> :
+                     selectedEvent.severity === 'High' ? <Badge tone="danger">High</Badge> :
+                     selectedEvent.severity === 'Medium' ? <Badge tone="warning">Medium</Badge> :
+                     <Badge tone="neutral">Low</Badge>}
+                  </p>
+                </div>
+              </div>
+              <div>
+                <label className="text-xs font-medium text-gray-500 dark:text-gray-400">Details</label>
+                <pre className="mt-1 p-3 bg-slate-50 dark:bg-slate-800 rounded-xl text-xs font-mono text-gray-900 dark:text-white overflow-x-auto">
+                  {typeof selectedEvent.details === 'object' ? JSON.stringify(selectedEvent.details, null, 2) : selectedEvent.details}
+                </pre>
+              </div>
+            </div>
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }
@@ -1090,52 +1089,58 @@ function SecuritySettingsModule() {
 
   return (
     <div className="space-y-6 animate-fade-in pt-4 max-w-5xl mx-auto">
-      {/* Security Strength Summary */}
-      <div className="bg-white border border-slate-200 rounded-3xl p-6 shadow-sm">
+      <PageHeader
+        title="Security Settings"
+        subtitle="Configure authentication policies and security controls"
+        icon={Lock}
+        actions={
+          <button onClick={handleSave} disabled={saveStatus === 'saving'} className={button.primary}>
+            {saveStatus === 'saving' ? 'Saving...' : <><Save size={16} /> Save Changes</>}
+          </button>
+        }
+      />
+
+      {saveStatus === 'success' && (
+        <div className="p-4 rounded-xl text-sm font-bold flex items-center gap-2 bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border border-emerald-100 dark:border-emerald-500/20">
+          <CheckCircle2 size={16} /> Security settings saved successfully
+        </div>
+      )}
+
+      <SectionCard title="Security Posture" subtitle={`Current strength: ${strengthLabel}`} icon={Shield} tone={strengthPct >= 80 ? 'success' : strengthPct >= 50 ? 'warning' : 'danger'} pad="md">
         <div className="flex items-center justify-between mb-4">
-          <h2 className="text-base font-sans font-black text-slate-900 tracking-tight flex items-center gap-2">
-            <Shield size={18} className="text-indigo-500" /> Security Posture
-          </h2>
           <div className="flex items-center gap-2">
-            <span className={`text-xs font-black text-${strengthColor}-600`}>{strengthLabel}</span>
-            <span className={`text-2xl font-black text-${strengthColor}-600`}>{strengthPct}%</span>
+            <span className={`text-2xl font-black ${strengthPct >= 80 ? 'text-emerald-600 dark:text-emerald-400' : strengthPct >= 50 ? 'text-amber-600 dark:text-amber-400' : 'text-rose-600 dark:text-rose-400'}`}>{strengthPct}%</span>
+            <span className={`text-sm font-bold ${strengthPct >= 80 ? 'text-emerald-600 dark:text-emerald-400' : strengthPct >= 50 ? 'text-amber-600 dark:text-amber-400' : 'text-rose-600 dark:text-rose-400'}`}>{strengthLabel}</span>
           </div>
         </div>
-        <div className="w-full h-2.5 bg-slate-100 rounded-full overflow-hidden mb-4">
+        <div className="w-full h-2.5 bg-slate-100 dark:bg-slate-700 rounded-full overflow-hidden mb-4">
           <div
-            className={`h-full bg-${strengthColor}-500 rounded-full transition-all duration-500`}
+            className={`h-full rounded-full transition-all duration-500 ${strengthPct >= 80 ? 'bg-emerald-500' : strengthPct >= 50 ? 'bg-amber-500' : 'bg-rose-500'}`}
             style={{ width: `${strengthPct}%` }}
           />
         </div>
         <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
           {securityChecks.map((check, i) => (
-            <div key={i} className={`flex items-center gap-2 px-3 py-2 rounded-xl border text-[10px] font-bold ${
+            <div key={i} className={`flex items-center gap-2 px-3 py-2 rounded-xl border text-xs font-medium ${
               check.passed
-                ? 'bg-emerald-50 border-emerald-100 text-emerald-700'
-                : 'bg-slate-50 border-slate-100 text-slate-400'
+                ? 'bg-emerald-50 dark:bg-emerald-500/10 border-emerald-100 dark:border-emerald-500/20 text-emerald-700 dark:text-emerald-400'
+                : 'bg-slate-50 dark:bg-slate-900/40 border-slate-100 dark:border-slate-700 text-slate-400 dark:text-slate-500'
             }`}>
               {check.passed
-                ? <CheckCircle2 size={12} className="text-emerald-500 shrink-0" />
-                : <AlertTriangle size={12} className="text-slate-300 shrink-0" />}
+                ? <CheckCircle2 size={14} className="text-emerald-500 shrink-0" />
+                : <AlertTriangle size={14} className="text-slate-300 dark:text-slate-600 shrink-0" />}
               {check.label}
             </div>
           ))}
         </div>
-      </div>
+      </SectionCard>
 
-      {/* Authentication & Password Policies */}
-      <div className="bg-white border border-slate-200 rounded-3xl p-6 shadow-sm">
-        <div className="flex items-center gap-2 mb-4">
-          <div className="w-9 h-9 rounded-xl bg-indigo-50 flex items-center justify-center">
-            <Lock size={16} className="text-indigo-500" />
-          </div>
-          <h2 className="text-base font-sans font-black text-slate-900 tracking-tight">Authentication & Password Policies</h2>
-        </div>
+      <SectionCard title="Authentication & Password Policies" icon={Lock} tone="accent" pad="md">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           <div className="space-y-2">
-            <label className="text-[10px] font-mono uppercase text-slate-400 font-black tracking-widest">Password Complexity</label>
+            <label className="text-xs font-medium text-gray-700 dark:text-gray-300">Password Complexity</label>
             <select value={form.passwordComplexity} onChange={e => setForm(f => ({ ...f, passwordComplexity: e.target.value as 'low' | 'medium' | 'high' }))}
-              className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-300 outline-none transition">
+              className="w-full px-3 py-2 text-sm border border-gray-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-gray-900 dark:text-white outline-none focus:ring-1 focus:ring-[var(--color-accent-operations)]">
               <option value="low">Low — Minimum 6 characters</option>
               <option value="medium">Medium — 8 chars, mixed case & number</option>
               <option value="high">High — 12 chars, symbols, no dictionary words</option>
@@ -1151,23 +1156,16 @@ function SecuritySettingsModule() {
             </div>
           </div>
           <div className="space-y-2">
-            <label className="text-[10px] font-mono uppercase text-slate-400 font-black tracking-widest">Session Timeout (minutes)</label>
+            <label className="text-xs font-medium text-gray-700 dark:text-gray-300">Session Timeout (minutes)</label>
             <input type="number" min={5} max={480} value={form.sessionTimeout}
               onChange={e => setForm(f => ({ ...f, sessionTimeout: Number(e.target.value) }))}
-              className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-300 outline-none transition" />
-            <p className="text-[10px] text-slate-400">Recommended: 30-60 minutes for sensitive systems</p>
+              className="w-full px-3 py-2 text-sm border border-gray-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-gray-900 dark:text-white outline-none focus:ring-1 focus:ring-[var(--color-accent-operations)]" />
+            <p className="text-xs text-gray-500 dark:text-gray-400">Recommended: 30-60 minutes for sensitive systems</p>
           </div>
         </div>
-      </div>
+      </SectionCard>
 
-      {/* MFA */}
-      <div className="bg-white border border-slate-200 rounded-3xl p-6 shadow-sm">
-        <div className="flex items-center gap-2 mb-4">
-          <div className="w-9 h-9 rounded-xl bg-emerald-50 flex items-center justify-center">
-            <Smartphone size={16} className="text-emerald-500" />
-          </div>
-          <h2 className="text-base font-sans font-black text-slate-900 tracking-tight">Multi-Factor Authentication (MFA)</h2>
-        </div>
+      <SectionCard title="Multi-Factor Authentication (MFA)" icon={Smartphone} tone="success" pad="md">
         <div className="space-y-1">
           <ToggleRow label="Enforce MFA for all users" description="Require authenticator app or SMS OTP at every login."
             enabled={form.forceMfa} onChange={v => setForm(f => ({ ...f, forceMfa: v }))} />
@@ -1176,54 +1174,37 @@ function SecuritySettingsModule() {
           <ToggleRow label="Mandatory Password Rotation" description="Force password change every 90 days."
             enabled={form.strictPasswordRotation} onChange={v => setForm(f => ({ ...f, strictPasswordRotation: v }))} />
         </div>
-      </div>
+      </SectionCard>
 
-      {/* IP Access Control */}
-      <div className="bg-white border border-slate-200 rounded-3xl p-6 shadow-sm">
-        <div className="flex items-center gap-2 mb-4">
-          <div className="w-9 h-9 rounded-xl bg-amber-50 flex items-center justify-center">
-            <Globe size={16} className="text-amber-500" />
-          </div>
-          <h2 className="text-base font-sans font-black text-slate-900 tracking-tight">IP Access Control</h2>
-        </div>
-        <label className="text-[10px] font-mono uppercase text-slate-400 font-black tracking-widest block mb-2">Allowed IP Addresses (one per line)</label>
+      <SectionCard title="IP Access Control" icon={Globe} tone="warning" pad="md">
+        <label className="text-xs font-medium text-gray-700 dark:text-gray-300 block mb-2">Allowed IP Addresses (one per line)</label>
         <textarea rows={4} value={form.allowedIps}
           onChange={e => setForm(f => ({ ...f, allowedIps: e.target.value }))}
           placeholder="192.168.1.0/24&#10;10.0.0.5"
-          className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-300 outline-none resize-none font-mono transition" />
+          className="w-full px-3 py-2 text-sm border border-gray-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-gray-900 dark:text-white outline-none focus:ring-1 focus:ring-[var(--color-accent-operations)] resize-none font-mono" />
         <div className="flex items-center gap-2 mt-2">
           <div className={`w-1.5 h-1.5 rounded-full ${form.allowedIps.trim() ? 'bg-emerald-500' : 'bg-amber-500'}`} />
-          <p className="text-[10px] text-slate-400">
+          <p className="text-xs text-gray-500 dark:text-gray-400">
             {form.allowedIps.trim() ? `${form.allowedIps.split('\n').filter(Boolean).length} IP range(s) whitelisted` : 'No restrictions — all IPs allowed'}
           </p>
         </div>
-      </div>
-
-      {/* Save button */}
-      <div className="flex justify-end sticky bottom-0 bg-slate-50/80 backdrop-blur-sm py-3 -mx-6 px-6 border-t border-slate-200">
-        <button onClick={handleSave} disabled={saveStatus === 'saving'}
-          className="flex items-center gap-2 px-6 py-3 rounded-xl text-xs font-sans font-bold text-white bg-indigo-600 hover:bg-indigo-700 transition disabled:opacity-50 shadow-sm">
-          {saveStatus === 'saving' ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-            : saveStatus === 'success' ? <CheckCircle2 size={16} /> : <Save size={16} />}
-          {saveStatus === 'success' ? 'Saved Successfully' : 'Save Security Policies'}
-        </button>
-      </div>
+      </SectionCard>
     </div>
   );
 }
 
 function ToggleRow({ label, description, enabled, onChange }: { label: string; description?: string; enabled: boolean; onChange: (v: boolean) => void }) {
   return (
-    <div className="flex items-center justify-between gap-4 py-3.5 border-b border-slate-50 last:border-0">
+    <div className="flex items-center justify-between gap-4 py-3.5 border-b border-gray-100 dark:border-slate-700 last:border-0">
       <div className="flex items-center gap-3 min-w-0">
-        <div className={`w-2 h-2 rounded-full shrink-0 ${enabled ? 'bg-emerald-500' : 'bg-slate-300'}`} />
+        <div className={`w-2 h-2 rounded-full shrink-0 ${enabled ? 'bg-emerald-500' : 'bg-slate-300 dark:bg-slate-600'}`} />
         <div className="min-w-0">
-          <p className="text-sm font-bold text-slate-800">{label}</p>
-          {description && <p className="text-xs text-slate-500 mt-0.5">{description}</p>}
+          <p className="text-sm font-bold text-gray-900 dark:text-white">{label}</p>
+          {description && <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">{description}</p>}
         </div>
       </div>
       <button type="button" role="switch" aria-checked={enabled} onClick={() => onChange(!enabled)}
-        className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${enabled ? 'bg-emerald-500' : 'bg-slate-300'}`}>
+        className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${enabled ? 'bg-emerald-500' : 'bg-slate-300 dark:bg-slate-600'}`}>
         <span className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ${enabled ? 'translate-x-5' : 'translate-x-0.5'}`} />
       </button>
     </div>

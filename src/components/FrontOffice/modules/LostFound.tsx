@@ -40,6 +40,7 @@ interface LostFoundItem {
   found_date: string;
   found_time: string;
   found_by?: string;
+  found_by_name?: string;
   guest_name: string;
   room_number: string;
   status: string;
@@ -315,7 +316,7 @@ const LostFound = () => {
                       </div>
                     </td>
                     <td className="py-4 px-6 text-gray-600 dark:text-gray-400">
-                      {item.found_by || '-'}
+                      {item.found_by_name || item.found_by || '-'}
                     </td>
                     <td className="py-4 px-6">
                       <div className="text-sm">
@@ -420,12 +421,12 @@ const LostFound = () => {
                   </div>
                 </div>
 
-                {selectedItem.found_by && (
+                {selectedItem.found_by_name && (
                   <div>
                     <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Found By</label>
                     <div className="flex items-center gap-1 text-gray-900 dark:text-white">
                       <User className="w-4 h-4" />
-                      {selectedItem.found_by}
+                      {selectedItem.found_by_name}
                     </div>
                   </div>
                 )}
@@ -521,7 +522,7 @@ const LostFound = () => {
                 item_color: formData.get('item_color'),
                 item_brand: formData.get('item_brand'),
                 found_location: formData.get('found_location'),
-                found_by: formData.get('found_by'),
+                found_by_name: formData.get('found_by_name'),
                 guest_name: formData.get('guest_name'),
                 room_number: formData.get('room_number'),
                 estimated_value: parseFloat(formData.get('estimated_value') as string) || 0,
@@ -566,7 +567,7 @@ const LostFound = () => {
                   <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Found By</label>
                   <input
                     type="text"
-                    name="found_by"
+                    name="found_by_name"
                     placeholder="Staff name who found the item"
                     className="w-full px-3 py-2 border border-gray-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-gray-900 dark:text-white"
                   />

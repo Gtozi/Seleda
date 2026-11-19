@@ -1,14 +1,28 @@
 /**
- * Morning Meeting Dashboard
- * Agenda items for daily morning meetings
+ * Morning Meeting Dashboard — Operations Portal
+ * (/erp/operations/morning-meeting).
+ *
+ * Daily morning meeting agenda + performance snapshot, DB-integrated via
+ * /api/ops-portal/morning-meeting (migration 629):
+ *  - Header KPIs are computed live from the other portals' real tables —
+ *    yesterday's occupancy / revenue / ADR / guest satisfaction and
+ *    today's expected occupancy / arrivals / departures / VIP arrivals.
+ *  - Agenda items persist in ops_meeting_agenda_items. First view of a
+ *    date auto-seeds the standard 10-item agenda (source='template')
+ *    with descriptions filled from live counts (open complaints, work
+ *    orders, staffing gaps, event names, revenue). Add / status-toggle /
+ *    notes / delete all write back to the DB.
+ *
+ * UI follows the shared portal design language (PageHeader, SectionCard,
+ * StatCard, Badge, brandTheme tokens) — same as the HK / Engineering /
+ * F&B modules and the other Operations tabs.
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Users,
   Calendar,
   Star,
-  AlertTriangle,
   Wrench,
   Bed,
   Utensils,
@@ -20,557 +34,476 @@ import {
   Edit,
   Trash2,
   Save,
-  X,
-  ChevronRight,
   ChevronDown,
   ChevronUp,
   TrendingUp,
-  TrendingDown
+  TrendingDown,
+  Sun,
+  Loader2,
+  RefreshCw,
+  AlertTriangle,
+  BedDouble,
 } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
+import StatCard from '../../FrontOffice/StatCard';
+import { PageHeader, SectionCard, Badge } from '../../FrontOffice/ui';
+import { button, layout, statusTone, type StatusTone } from '../../FrontOffice/brandTheme';
+import { useERP } from '../../../context/ERPContext';
+import {
+  fetchMorningMeeting,
+  createAgendaItem,
+  updateAgendaItem,
+  deleteAgendaItem,
+  type MorningMeeting,
+  type MorningMeetingAgendaItem,
+  type AgendaItemStatus,
+  type AgendaItemPriority,
+} from '../../../services/operationsService';
 
-interface AgendaItem {
-  id: string;
-  category: string;
-  title: string;
-  description: string;
-  status: 'pending' | 'in-progress' | 'completed';
-  priority: 'low' | 'medium' | 'high';
-  assignedTo?: string;
-  estimatedTime?: number;
-  notes?: string;
+// ── Static maps ──────────────────────────────────────────────────────────
+
+const CATEGORY_ICON: Record<string, LucideIcon> = {
+  Performance: TrendingUp,
+  Operations: Briefcase,
+  VIP: Star,
+  'Guest Experience': Users,
+  Maintenance: Wrench,
+  Housekeeping: Bed,
+  Events: Calendar,
+  Staffing: Users,
+  Revenue: DollarSign,
+  'Action Items': CheckSquare,
+  'Food & Beverage': Utensils,
+  Rooms: BedDouble,
+};
+
+const PRIORITY_TONE: Record<AgendaItemPriority, StatusTone> = {
+  high: 'danger',
+  medium: 'warning',
+  low: 'neutral',
+};
+
+const STATUS_TONE: Record<AgendaItemStatus, StatusTone> = {
+  completed: 'success',
+  'in-progress': 'info',
+  pending: 'neutral',
+};
+
+const CATEGORIES = [
+  'General', 'Performance', 'Operations', 'VIP', 'Guest Experience',
+  'Maintenance', 'Housekeeping', 'Events', 'Staffing', 'Revenue', 'Action Items',
+];
+
+// ── Helpers ──────────────────────────────────────────────────────────────
+
+function fmtDate(dateStr: string): string {
+  const d = new Date(`${dateStr}T12:00:00`);
+  return isNaN(d.getTime())
+    ? dateStr
+    : d.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
 }
 
-interface MeetingData {
-  date: string;
-  previousDayPerformance: {
-    occupancy: number;
-    revenue: number;
-    adr: number;
-    satisfaction: number;
-  };
-  todaysOccupancy: {
-    expected: number;
-    arrivals: number;
-    departures: number;
-    vipArrivals: number;
-  };
-  agendaItems: AgendaItem[];
+function todayStr(): string {
+  return new Date().toISOString().slice(0, 10);
 }
+
+// ── Component ────────────────────────────────────────────────────────────
 
 const MorningMeetingDashboard: React.FC = () => {
-  const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
-  const [meetingData, setMeetingData] = useState<MeetingData | null>(null);
+  const { currentPropertyId, addNotification, formatAmount } = useERP();
+
+  const [meeting, setMeeting] = useState<MorningMeeting | null>(null);
+  const [selectedDate, setSelectedDate] = useState(todayStr());
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [isEditing, setIsEditing] = useState(false);
   const [expandedItems, setExpandedItems] = useState<Set<string>>(new Set());
-  const [newItem, setNewItem] = useState<Partial<AgendaItem>>({
+  const [newItem, setNewItem] = useState({
     category: 'General',
     title: '',
     description: '',
-    priority: 'medium',
-    status: 'pending'
+    priority: 'medium' as AgendaItemPriority,
+    estimatedTime: '' as number | '',
   });
 
-  const mockMeetingData: MeetingData = {
-    date: selectedDate,
-    previousDayPerformance: {
-      occupancy: 78,
-      revenue: 45230,
-      adr: 285,
-      satisfaction: 4.6
-    },
-    todaysOccupancy: {
-      expected: 82,
-      arrivals: 124,
-      departures: 98,
-      vipArrivals: 8
-    },
-    agendaItems: [
-      {
-        id: '1',
-        category: 'Performance',
-        title: 'Previous Day Performance Review',
-        description: 'Review yesterday\'s occupancy, revenue, and guest satisfaction metrics',
-        status: 'pending',
-        priority: 'high',
-        estimatedTime: 10
-      },
-      {
-        id: '2',
-        category: 'Operations',
-        title: 'Today\'s Occupancy',
-        description: 'Review expected occupancy, arrivals, and departures for today',
-        status: 'pending',
-        priority: 'high',
-        estimatedTime: 5
-      },
-      {
-        id: '3',
-        category: 'VIP',
-        title: 'VIP Guests',
-        description: 'Review VIP arrivals and special requirements',
-        status: 'pending',
-        priority: 'high',
-        estimatedTime: 5
-      },
-      {
-        id: '4',
-        category: 'Guest Experience',
-        title: 'Guest Complaints',
-        description: 'Review open complaints and resolution status',
-        status: 'pending',
-        priority: 'high',
-        estimatedTime: 10
-      },
-      {
-        id: '5',
-        category: 'Maintenance',
-        title: 'Maintenance Updates',
-        description: 'Review ongoing maintenance issues and planned work',
-        status: 'pending',
-        priority: 'medium',
-        estimatedTime: 5
-      },
-      {
-        id: '6',
-        category: 'Housekeeping',
-        title: 'Housekeeping Status',
-        description: 'Review cleaning progress and room readiness',
-        status: 'pending',
-        priority: 'medium',
-        estimatedTime: 5
-      },
-      {
-        id: '7',
-        category: 'Events',
-        title: 'Event Schedule',
-        description: 'Review today\'s events and departmental responsibilities',
-        status: 'pending',
-        priority: 'medium',
-        estimatedTime: 5
-      },
-      {
-        id: '8',
-        category: 'Staffing',
-        title: 'Staffing Issues',
-        description: 'Discuss any staffing gaps or coverage issues',
-        status: 'pending',
-        priority: 'medium',
-        estimatedTime: 5
-      },
-      {
-        id: '9',
-        category: 'Revenue',
-        title: 'Revenue Update',
-        description: 'Review revenue performance against forecast',
-        status: 'pending',
-        priority: 'high',
-        estimatedTime: 5
-      },
-      {
-        id: '10',
-        category: 'Action Items',
-        title: 'Action Items',
-        description: 'Review and assign action items from previous meeting',
-        status: 'pending',
-        priority: 'high',
-        estimatedTime: 10
-      }
-    ]
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const data = await fetchMorningMeeting(currentPropertyId || undefined, selectedDate);
+      setMeeting(data);
+      setError(null);
+    } catch (e: any) {
+      setError(e?.message || 'Failed to load morning meeting');
+    } finally {
+      setLoading(false);
+    }
+  }, [currentPropertyId, selectedDate]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const items = useMemo(() => meeting?.agendaItems || [], [meeting]);
+  const completedCount = useMemo(() => items.filter(i => i.status === 'completed').length, [items]);
+  const totalMinutes = useMemo(
+    () => items.reduce((s, i) => s + (i.status === 'completed' ? 0 : (i.estimatedTime || 0)), 0),
+    [items],
+  );
+
+  // ── Agenda item actions — optimistic update + server persist ─────────
+
+  const patchItem = async (itemId: string, patch: Parameters<typeof updateAgendaItem>[1]) => {
+    const previous = items;
+    setMeeting(prev => prev
+      ? { ...prev, agendaItems: prev.agendaItems.map(i => (i.id === itemId ? { ...i, ...patch } : i)) }
+      : prev);
+    try {
+      await updateAgendaItem(itemId, patch);
+    } catch (e: any) {
+      setMeeting(prev => (prev ? { ...prev, agendaItems: previous } : prev));
+      addNotification(e?.message || 'Failed to update item', 'warning', 'Executive');
+    }
   };
 
-  useEffect(() => {
-    loadMeetingData();
-  }, [selectedDate]);
+  const toggleComplete = (item: MorningMeetingAgendaItem) =>
+    patchItem(item.id, { status: item.status === 'completed' ? 'pending' : 'completed' });
 
-  const loadMeetingData = async () => {
-    // Simulate API call
-    await new Promise(resolve => setTimeout(resolve, 500));
-    setMeetingData(mockMeetingData);
+  const removeItem = async (itemId: string) => {
+    const previous = items;
+    setMeeting(prev => prev
+      ? { ...prev, agendaItems: prev.agendaItems.filter(i => i.id !== itemId) }
+      : prev);
+    try {
+      await deleteAgendaItem(itemId);
+    } catch (e: any) {
+      setMeeting(prev => (prev ? { ...prev, agendaItems: previous } : prev));
+      addNotification(e?.message || 'Failed to delete item', 'warning', 'Executive');
+    }
+  };
+
+  const addItem = async () => {
+    if (!newItem.title.trim()) return;
+    try {
+      const { id } = await createAgendaItem({
+        propertyId: currentPropertyId || undefined,
+        meetingDate: selectedDate,
+        category: newItem.category,
+        title: newItem.title.trim(),
+        description: newItem.description.trim() || undefined,
+        priority: newItem.priority,
+        estimatedTime: newItem.estimatedTime === '' ? undefined : Number(newItem.estimatedTime),
+      });
+      setMeeting(prev => prev
+        ? {
+            ...prev,
+            agendaItems: [
+              ...prev.agendaItems,
+              {
+                id,
+                category: newItem.category,
+                title: newItem.title.trim(),
+                description: newItem.description.trim(),
+                status: 'pending',
+                priority: newItem.priority,
+                assignedTo: null,
+                estimatedTime: newItem.estimatedTime === '' ? null : Number(newItem.estimatedTime),
+                notes: null,
+                sortOrder: 100,
+                source: 'manual',
+              },
+            ],
+          }
+        : prev);
+      setNewItem({ category: 'General', title: '', description: '', priority: 'medium', estimatedTime: '' });
+    } catch (e: any) {
+      addNotification(e?.message || 'Failed to add item', 'warning', 'Executive');
+    }
   };
 
   const toggleExpand = (itemId: string) => {
     setExpandedItems(prev => {
-      const newSet = new Set(prev);
-      if (newSet.has(itemId)) {
-        newSet.delete(itemId);
-      } else {
-        newSet.add(itemId);
-      }
-      return newSet;
+      const next = new Set(prev);
+      if (next.has(itemId)) next.delete(itemId);
+      else next.add(itemId);
+      return next;
     });
   };
 
-  const updateItemStatus = (itemId: string, status: AgendaItem['status']) => {
-    if (!meetingData) return;
-    setMeetingData({
-      ...meetingData,
-      agendaItems: meetingData.agendaItems.map(item =>
-        item.id === itemId ? { ...item, status } : item
-      )
-    });
-  };
+  // ── Render ────────────────────────────────────────────────────────────
 
-  const deleteItem = (itemId: string) => {
-    if (!meetingData) return;
-    setMeetingData({
-      ...meetingData,
-      agendaItems: meetingData.agendaItems.filter(item => item.id !== itemId)
-    });
-  };
-
-  const addNewItem = () => {
-    if (!newItem.title || !meetingData) return;
-    
-    const item: AgendaItem = {
-      id: Date.now().toString(),
-      category: newItem.category || 'General',
-      title: newItem.title,
-      description: newItem.description || '',
-      status: 'pending',
-      priority: newItem.priority || 'medium',
-      estimatedTime: newItem.estimatedTime
-    };
-
-    setMeetingData({
-      ...meetingData,
-      agendaItems: [...meetingData.agendaItems, item]
-    });
-
-    setNewItem({
-      category: 'General',
-      title: '',
-      description: '',
-      priority: 'medium',
-      status: 'pending'
-    });
-  };
-
-  const getCategoryIcon = (category: string) => {
-    switch (category) {
-      case 'Performance':
-        return TrendingUp;
-      case 'Operations':
-        return Briefcase;
-      case 'VIP':
-        return Star;
-      case 'Guest Experience':
-        return Users;
-      case 'Maintenance':
-        return Wrench;
-      case 'Housekeeping':
-        return Bed;
-      case 'Events':
-        return Calendar;
-      case 'Staffing':
-        return Users;
-      case 'Revenue':
-        return DollarSign;
-      case 'Action Items':
-        return CheckSquare;
-      default:
-        return Briefcase;
-    }
-  };
-
-  const getPriorityColor = (priority: string) => {
-    switch (priority) {
-      case 'high':
-        return 'bg-rose-100 dark:bg-rose-900/30 text-rose-700 dark:text-rose-400 border-rose-200 dark:border-rose-800';
-      case 'medium':
-        return 'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400 border-amber-200 dark:border-amber-800';
-      case 'low':
-        return 'bg-slate-100 dark:bg-slate-900/30 text-slate-700 dark:text-slate-400 border-slate-200 dark:border-slate-800';
-    }
-  };
-
-  const getStatusColor = (status: string) => {
-    switch (status) {
-      case 'completed':
-        return 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400';
-      case 'in-progress':
-        return 'bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400';
-      case 'pending':
-        return 'bg-slate-100 dark:bg-slate-900/30 text-slate-700 dark:text-slate-400';
-    }
-  };
-
-  if (!meetingData) {
+  if (loading && !meeting) {
     return (
-      <div className="p-6 flex items-center justify-center">
-        <div className="text-center">
-          <Clock size={48} className="animate-spin text-indigo-600 mx-auto mb-4" />
-          <p className="text-slate-600 dark:text-slate-400">Loading meeting data...</p>
-        </div>
+      <div className="flex items-center justify-center py-24">
+        <Loader2 size={28} className="animate-spin text-[var(--color-accent-operations)]" />
       </div>
     );
   }
 
+  const perf = meeting?.previousDayPerformance;
+  const occ = meeting?.todaysOccupancy;
+
   return (
-    <div className="p-6 space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-slate-900 dark:text-white flex items-center gap-3">
-            <Users size={28} />
-            Morning Meeting Dashboard
-          </h1>
-          <p className="text-slate-600 dark:text-slate-400 mt-1">
-            Daily morning meeting agenda and notes
-          </p>
+    <div className={layout.sectionStack}>
+      <PageHeader
+        title="Morning Meeting"
+        subtitle={`Daily operations meeting agenda — ${fmtDate(selectedDate)}`}
+        icon={Sun}
+        actions={
+          <>
+            <input
+              type="date"
+              value={selectedDate}
+              onChange={e => setSelectedDate(e.target.value)}
+              className="px-3 py-2 bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-lg text-sm focus:ring-1 focus:ring-[var(--color-accent-operations)] outline-none"
+            />
+            <button onClick={load} disabled={loading} className={button.secondary} title="Reload">
+              <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
+            </button>
+            <button
+              onClick={() => setIsEditing(v => !v)}
+              className={isEditing ? button.primary : button.secondary}
+            >
+              {isEditing ? <Save size={16} /> : <Edit size={16} />}
+              {isEditing ? 'Done' : 'Edit Agenda'}
+            </button>
+          </>
+        }
+      />
+
+      {error && (
+        <div className="flex items-center gap-3 p-4 rounded-2xl border border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-800">
+          <AlertTriangle size={18} className="text-[var(--color-warning)] shrink-0" />
+          <p className="text-sm text-gray-700 dark:text-gray-300 flex-1">{error}</p>
+          <button onClick={load} className={button.secondary}>Retry</button>
         </div>
-        <div className="flex items-center gap-3">
-          <input
-            type="date"
-            value={selectedDate}
-            onChange={(e) => setSelectedDate(e.target.value)}
-            className="px-4 py-2 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg focus:ring-1 focus:ring-indigo-500 outline-none"
-          />
-          <button
-            onClick={() => setIsEditing(!isEditing)}
-            className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors flex items-center gap-2"
+      )}
+
+      {meeting && perf && occ && (
+        <>
+          {/* KPI row */}
+          <div className={layout.kpiGrid}>
+            <StatCard
+              title="Yesterday Occupancy"
+              value={`${perf.occupancy}%`}
+              icon={BedDouble}
+              tone="info"
+              caption={`ADR ${formatAmount(perf.adr)}`}
+            />
+            <StatCard
+              title="Yesterday Revenue"
+              value={formatAmount(perf.revenue)}
+              icon={DollarSign}
+              tone="success"
+              caption={perf.satisfaction !== null ? `${perf.satisfaction}/5 guest satisfaction (30d)` : 'no recent guest feedback'}
+            />
+            <StatCard
+              title="Today Expected"
+              value={`${occ.expected}%`}
+              icon={TrendingUp}
+              tone="accent"
+              caption={`${occ.arrivals} arrivals · ${occ.departures} departures`}
+            />
+            <StatCard
+              title="VIP Arrivals"
+              value={occ.vipArrivals}
+              icon={Star}
+              tone="warning"
+              caption="special attention required"
+            />
+          </div>
+
+          {/* Agenda */}
+          <SectionCard
+            title="Meeting Agenda"
+            subtitle={`${completedCount} of ${items.length} items completed${totalMinutes > 0 ? ` · ~${totalMinutes} min remaining` : ''}`}
+            icon={CheckSquare}
+            tone="accent"
+            pad="md"
+            actions={
+              <div className="w-28 h-2 rounded-full bg-gray-100 dark:bg-slate-700 overflow-hidden">
+                <div
+                  className="h-full rounded-full bg-[var(--color-success)] transition-all"
+                  style={{ width: `${items.length ? (completedCount / items.length) * 100 : 0}%` }}
+                />
+              </div>
+            }
           >
-            {isEditing ? <Save size={18} /> : <Edit size={18} />}
-            {isEditing ? 'Save Changes' : 'Edit Agenda'}
-          </button>
-        </div>
-      </div>
+            <div className="space-y-2">
+              {items.map(item => {
+                const Icon = CATEGORY_ICON[item.category] || Briefcase;
+                const isExpanded = expandedItems.has(item.id);
+                const done = item.status === 'completed';
 
-      {/* Performance Summary */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-        <div className="bg-white dark:bg-slate-800 rounded-xl p-4 border border-slate-200 dark:border-slate-700">
-          <div className="flex items-center gap-2 mb-2">
-            <TrendingUp size={18} className="text-emerald-600" />
-            <span className="text-xs font-mono uppercase text-slate-500 font-bold">Yesterday Occupancy</span>
-          </div>
-          <p className="text-2xl font-bold text-slate-900 dark:text-white">
-            {meetingData.previousDayPerformance.occupancy}%
-          </p>
-        </div>
+                return (
+                  <div
+                    key={item.id}
+                    className={`rounded-xl border transition-all ${
+                      done
+                        ? 'bg-gray-50 dark:bg-slate-900/50 border-gray-200 dark:border-slate-700 opacity-60'
+                        : 'bg-white dark:bg-slate-800 border-gray-200 dark:border-slate-700'
+                    }`}
+                  >
+                    <div className="p-4">
+                      <div className="flex items-start gap-3">
+                        <button
+                          onClick={() => toggleComplete(item)}
+                          className={`mt-0.5 w-5 h-5 rounded border-2 flex items-center justify-center shrink-0 transition-colors ${
+                            done
+                              ? 'bg-[var(--color-success)] border-[var(--color-success)] text-white'
+                              : 'border-gray-300 dark:border-slate-600 hover:border-[var(--color-success)]'
+                          }`}
+                          title={done ? 'Mark pending' : 'Mark completed'}
+                        >
+                          {done && <CheckSquare size={12} />}
+                        </button>
 
-        <div className="bg-white dark:bg-slate-800 rounded-xl p-4 border border-slate-200 dark:border-slate-700">
-          <div className="flex items-center gap-2 mb-2">
-            <DollarSign size={18} className="text-emerald-600" />
-            <span className="text-xs font-mono uppercase text-slate-500 font-bold">Yesterday Revenue</span>
-          </div>
-          <p className="text-2xl font-bold text-slate-900 dark:text-white">
-            ${meetingData.previousDayPerformance.revenue.toLocaleString()}
-          </p>
-        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-start justify-between gap-2 flex-wrap">
+                            <div className="flex items-center gap-2">
+                              <Icon size={15} className="text-gray-400" />
+                              <span className="text-xs font-mono uppercase text-gray-500 font-bold">
+                                {item.category}
+                              </span>
+                              {item.source === 'manual' && <Badge tone="info">custom</Badge>}
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <Badge tone={PRIORITY_TONE[item.priority]} className="capitalize">
+                                {item.priority}
+                              </Badge>
+                              {item.status === 'in-progress' && (
+                                <Badge tone="info">in progress</Badge>
+                              )}
+                              {item.estimatedTime != null && (
+                                <span className="text-xs text-gray-500 dark:text-gray-400 flex items-center gap-1">
+                                  <Clock size={12} />
+                                  {item.estimatedTime}m
+                                </span>
+                              )}
+                            </div>
+                          </div>
 
-        <div className="bg-white dark:bg-slate-800 rounded-xl p-4 border border-slate-200 dark:border-slate-700">
-          <div className="flex items-center gap-2 mb-2">
-            <Users size={18} className="text-blue-600" />
-            <span className="text-xs font-mono uppercase text-slate-500 font-bold">Today Expected</span>
-          </div>
-          <p className="text-2xl font-bold text-slate-900 dark:text-white">
-            {meetingData.todaysOccupancy.expected}%
-          </p>
-        </div>
+                          <h4 className={`font-semibold mt-1 ${done ? 'line-through text-gray-500 dark:text-gray-500' : 'text-gray-900 dark:text-white'}`}>
+                            {item.title}
+                          </h4>
 
-        <div className="bg-white dark:bg-slate-800 rounded-xl p-4 border border-slate-200 dark:border-slate-700">
-          <div className="flex items-center gap-2 mb-2">
-            <Star size={18} className="text-amber-500" />
-            <span className="text-xs font-mono uppercase text-slate-500 font-bold">VIP Arrivals</span>
-          </div>
-          <p className="text-2xl font-bold text-slate-900 dark:text-white">
-            {meetingData.todaysOccupancy.vipArrivals}
-          </p>
-        </div>
-      </div>
-
-      {/* Agenda Items */}
-      <div className="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700">
-        <div className="p-4 border-b border-slate-200 dark:border-slate-700 flex items-center justify-between">
-          <h3 className="font-bold text-slate-900 dark:text-white flex items-center gap-2">
-            <CheckSquare size={18} />
-            Meeting Agenda
-          </h3>
-          <div className="flex items-center gap-2">
-            <span className="text-sm text-slate-500 dark:text-slate-400">
-              {meetingData.agendaItems.filter(item => item.status === 'completed').length} / {meetingData.agendaItems.length} completed
-            </span>
-          </div>
-        </div>
-        
-        <div className="p-4 space-y-2">
-          {meetingData.agendaItems.map((item) => {
-            const Icon = getCategoryIcon(item.category);
-            const isExpanded = expandedItems.has(item.id);
-            
-            return (
-              <div
-                key={item.id}
-                className={`border rounded-lg transition-all ${
-                  item.status === 'completed' 
-                    ? 'bg-slate-50 dark:bg-slate-900/50 border-slate-200 dark:border-slate-700 opacity-60'
-                    : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700'
-                }`}
-              >
-                <div className="p-4">
-                  <div className="flex items-start gap-3">
-                    <button
-                      onClick={() => updateItemStatus(item.id, item.status === 'completed' ? 'pending' : 'completed')}
-                      className={`mt-1 w-5 h-5 rounded border-2 flex items-center justify-center transition-colors ${
-                        item.status === 'completed'
-                          ? 'bg-emerald-500 border-emerald-500 text-white'
-                          : 'border-slate-300 dark:border-slate-600 hover:border-emerald-500'
-                      }`}
-                    >
-                      {item.status === 'completed' && <CheckSquare size={12} />}
-                    </button>
-                    
-                    <div className="flex-1">
-                      <div className="flex items-start justify-between">
-                        <div className="flex items-center gap-2">
-                          <Icon size={16} className="text-slate-500" />
-                          <span className="text-xs font-mono uppercase text-slate-500 font-bold">
-                            {item.category}
-                          </span>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <span className={`text-xs px-2 py-0.5 rounded border ${getPriorityColor(item.priority)}`}>
-                            {item.priority}
-                          </span>
-                          {item.estimatedTime && (
-                            <span className="text-xs text-slate-500 dark:text-slate-400 flex items-center gap-1">
-                              <Clock size={12} />
-                              {item.estimatedTime}m
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                      
-                      <h4 className="font-semibold text-slate-900 dark:text-white mt-1">
-                        {item.title}
-                      </h4>
-                      
-                      {isExpanded && (
-                        <div className="mt-2 space-y-2">
-                          <p className="text-sm text-slate-600 dark:text-slate-400">
-                            {item.description}
-                          </p>
-                          {item.assignedTo && (
-                            <p className="text-xs text-slate-500 dark:text-slate-500">
-                              Assigned to: {item.assignedTo}
-                            </p>
-                          )}
-                          {item.notes && (
-                            <div className="p-2 bg-slate-50 dark:bg-slate-900/50 rounded text-xs text-slate-600 dark:text-slate-400">
-                              <strong>Notes:</strong> {item.notes}
+                          {isExpanded && (
+                            <div className="mt-2 space-y-2">
+                              {item.description && (
+                                <p className="text-sm text-gray-600 dark:text-gray-400">{item.description}</p>
+                              )}
+                              {item.assignedTo && (
+                                <p className="text-xs text-gray-500">Assigned to: {item.assignedTo}</p>
+                              )}
+                              {isEditing ? (
+                                <textarea
+                                  defaultValue={item.notes || ''}
+                                  placeholder="Add meeting notes…"
+                                  onBlur={e => {
+                                    if (e.target.value !== (item.notes || '')) {
+                                      patchItem(item.id, { notes: e.target.value });
+                                    }
+                                  }}
+                                  rows={2}
+                                  className="w-full px-3 py-2 bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-lg text-xs focus:ring-1 focus:ring-[var(--color-accent-operations)] outline-none"
+                                />
+                              ) : (
+                                item.notes && (
+                                  <div className="p-2 bg-gray-50 dark:bg-slate-900/50 rounded text-xs text-gray-600 dark:text-gray-400">
+                                    <strong>Notes:</strong> {item.notes}
+                                  </div>
+                                )
+                              )}
+                              {!done && item.status !== 'in-progress' && (
+                                <button
+                                  onClick={() => patchItem(item.id, { status: 'in-progress' })}
+                                  className="text-xs text-[var(--color-accent-operations)] hover:underline"
+                                >
+                                  Mark in progress
+                                </button>
+                              )}
                             </div>
                           )}
                         </div>
-                      )}
-                    </div>
-                    
-                    <div className="flex items-center gap-1">
-                      <button
-                        onClick={() => toggleExpand(item.id)}
-                        className="p-1 hover:bg-slate-100 dark:hover:bg-slate-700 rounded transition-colors"
-                      >
-                        {isExpanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
-                      </button>
-                      {isEditing && (
-                        <button
-                          onClick={() => deleteItem(item.id)}
-                          className="p-1 hover:bg-rose-100 dark:hover:bg-rose-900/30 rounded transition-colors text-rose-600"
-                        >
-                          <Trash2 size={16} />
-                        </button>
-                      )}
+
+                        <div className="flex items-center gap-1 shrink-0">
+                          <button
+                            onClick={() => toggleExpand(item.id)}
+                            className="p-1 hover:bg-gray-100 dark:hover:bg-slate-700 rounded transition-colors text-gray-500"
+                          >
+                            {isExpanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+                          </button>
+                          {isEditing && (
+                            <button
+                              onClick={() => removeItem(item.id)}
+                              className="p-1 hover:bg-[var(--color-danger)]/10 rounded transition-colors text-[var(--color-danger)]"
+                              title="Delete item"
+                            >
+                              <Trash2 size={16} />
+                            </button>
+                          )}
+                        </div>
+                      </div>
                     </div>
                   </div>
+                );
+              })}
+            </div>
+
+            {/* Add new item — edit mode only */}
+            {isEditing && (
+              <div className="mt-4 p-4 rounded-xl border border-dashed border-gray-300 dark:border-slate-600 bg-gray-50 dark:bg-slate-900/50">
+                <h4 className="font-semibold text-gray-900 dark:text-white mb-3 flex items-center gap-2 text-sm">
+                  <Plus size={15} />
+                  Add Agenda Item
+                </h4>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <select
+                    value={newItem.category}
+                    onChange={e => setNewItem({ ...newItem, category: e.target.value })}
+                    className="px-3 py-2 bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-lg text-sm outline-none"
+                  >
+                    {CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+                  </select>
+                  <select
+                    value={newItem.priority}
+                    onChange={e => setNewItem({ ...newItem, priority: e.target.value as AgendaItemPriority })}
+                    className="px-3 py-2 bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-lg text-sm outline-none"
+                  >
+                    <option value="low">Low Priority</option>
+                    <option value="medium">Medium Priority</option>
+                    <option value="high">High Priority</option>
+                  </select>
+                  <input
+                    type="text"
+                    placeholder="Item title"
+                    value={newItem.title}
+                    onChange={e => setNewItem({ ...newItem, title: e.target.value })}
+                    className="px-3 py-2 bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-lg text-sm outline-none"
+                  />
+                  <input
+                    type="number"
+                    placeholder="Estimated time (minutes)"
+                    value={newItem.estimatedTime}
+                    onChange={e => setNewItem({ ...newItem, estimatedTime: e.target.value === '' ? '' : parseInt(e.target.value) })}
+                    className="px-3 py-2 bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-lg text-sm outline-none"
+                  />
+                  <textarea
+                    placeholder="Description"
+                    value={newItem.description}
+                    onChange={e => setNewItem({ ...newItem, description: e.target.value })}
+                    rows={2}
+                    className="md:col-span-2 px-3 py-2 bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-lg text-sm outline-none"
+                  />
+                </div>
+                <div className="flex justify-end mt-3">
+                  <button onClick={addItem} disabled={!newItem.title.trim()} className={button.primary}>
+                    <Plus size={15} />
+                    Add Item
+                  </button>
                 </div>
               </div>
-            );
-          })}
-        </div>
-
-        {/* Add New Item */}
-        {isEditing && (
-          <div className="p-4 border-t border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/50">
-            <h4 className="font-semibold text-slate-900 dark:text-white mb-3 flex items-center gap-2">
-              <Plus size={16} />
-              Add Agenda Item
-            </h4>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              <select
-                value={newItem.category}
-                onChange={(e) => setNewItem({ ...newItem, category: e.target.value })}
-                className="px-3 py-2 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-sm focus:ring-1 focus:ring-indigo-500 outline-none"
-              >
-                <option value="General">General</option>
-                <option value="Performance">Performance</option>
-                <option value="Operations">Operations</option>
-                <option value="VIP">VIP</option>
-                <option value="Guest Experience">Guest Experience</option>
-                <option value="Maintenance">Maintenance</option>
-                <option value="Housekeeping">Housekeeping</option>
-                <option value="Events">Events</option>
-                <option value="Staffing">Staffing</option>
-                <option value="Revenue">Revenue</option>
-                <option value="Action Items">Action Items</option>
-              </select>
-              
-              <select
-                value={newItem.priority}
-                onChange={(e) => setNewItem({ ...newItem, priority: e.target.value as any })}
-                className="px-3 py-2 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-sm focus:ring-1 focus:ring-indigo-500 outline-none"
-              >
-                <option value="low">Low Priority</option>
-                <option value="medium">Medium Priority</option>
-                <option value="high">High Priority</option>
-              </select>
-              
-              <input
-                type="text"
-                placeholder="Item title"
-                value={newItem.title}
-                onChange={(e) => setNewItem({ ...newItem, title: e.target.value })}
-                className="px-3 py-2 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-sm focus:ring-1 focus:ring-indigo-500 outline-none"
-              />
-              
-              <input
-                type="number"
-                placeholder="Estimated time (minutes)"
-                value={newItem.estimatedTime || ''}
-                onChange={(e) => setNewItem({ ...newItem, estimatedTime: parseInt(e.target.value) || undefined })}
-                className="px-3 py-2 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-sm focus:ring-1 focus:ring-indigo-500 outline-none"
-              />
-              
-              <textarea
-                placeholder="Description"
-                value={newItem.description}
-                onChange={(e) => setNewItem({ ...newItem, description: e.target.value })}
-                className="px-3 py-2 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-sm focus:ring-1 focus:ring-indigo-500 outline-none md:col-span-2 resize-none"
-                rows={2}
-              />
-              
-              <div className="md:col-span-2 flex justify-end gap-2">
-                <button
-                  onClick={() => setNewItem({
-                    category: 'General',
-                    title: '',
-                    description: '',
-                    priority: 'medium',
-                    status: 'pending'
-                  })}
-                  className="px-4 py-2 bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 rounded-lg hover:bg-slate-300 dark:hover:bg-slate-600 transition-colors"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={addNewItem}
-                  disabled={!newItem.title}
-                  className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors disabled:opacity-50"
-                >
-                  Add Item
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-      </div>
+            )}
+          </SectionCard>
+        </>
+      )}
     </div>
   );
 };

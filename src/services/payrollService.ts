@@ -87,6 +87,17 @@ export interface Payslip {
   ytd_net: number;
   status: string;
   paid_at: string;
+  calc_details?: {
+    unpaidLeaveDays?: number;
+    absentDays?: number;
+    unpaidDays?: number;
+    overtimeHours?: number;
+    dailyRate?: number;
+    hourlyRate?: number;
+    absenceDeduction?: number;
+    overtimePay?: number;
+    loans?: Array<{ loanId: string; amount: number }>;
+  };
   employees?: { name: string; email: string; phone: string; department: string; position: string; bank_account: string; pension_number: string };
   payroll_runs?: { period: string; status: string };
 }

@@ -4,6 +4,7 @@
  */
 
 import { MapPin, UtensilsCrossed, ShoppingBag, Building, Plane, Hospital } from 'lucide-react';
+import { ModuleHeader } from '../shared';
 
 const DestinationGuideModule: React.FC = () => {
   const categories = [
@@ -17,21 +18,18 @@ const DestinationGuideModule: React.FC = () => {
 
   return (
     <div className="space-y-6">
-      <div className="bg-gradient-to-r from-green-600 to-emerald-600 rounded-xl p-8 text-white">
-        <h1 className="text-3xl font-bold mb-2">Destination Guide</h1>
-        <p className="text-lg opacity-90">Explore everything our destination has to offer</p>
-      </div>
+      <ModuleHeader title="Destination Guide" subtitle="Explore everything our destination has to offer" gradient="from-green-600 to-emerald-600" />
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
         {categories.map((category) => (
-          <div key={category.id} className="bg-white dark:bg-slate-800 rounded-xl p-6 shadow-lg">
+          <div key={category.id} className="bg-white dark:bg-stone-800 rounded-3xl p-6 shadow-sm border border-stone-200/70 hover:shadow-xl hover:-translate-y-1 transition-all duration-300">
             <div className="flex items-center gap-3 mb-4 text-green-600">
               {category.icon}
-              <h3 className="text-xl font-bold text-slate-900 dark:text-white">{category.name}</h3>
+              <h3 className="text-xl font-bold text-stone-900 dark:text-white">{category.name}</h3>
             </div>
             <ul className="space-y-2">
               {category.items.map((item, idx) => (
-                <li key={idx} className="text-sm text-slate-700 dark:text-slate-300">• {item}</li>
+                <li key={idx} className="text-sm text-stone-700 dark:text-stone-300">• {item}</li>
               ))}
             </ul>
           </div>

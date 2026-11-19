@@ -174,7 +174,7 @@ router.post('/flush', authenticate, requirePermission('pos:transaction'), async 
         // Get outlet config
         const { data: outlet } = await supabaseAdmin
           .from('pos_outlets')
-          .select('tax_profile_id, gl_mapping_id, inventory_mode')
+          .select('gl_mapping_id, inventory_mode')
           .eq('id', item.outlet_id)
           .single();
 
@@ -207,7 +207,6 @@ router.post('/flush', authenticate, requirePermission('pos:transaction'), async 
           payment_method: p.payment_method || 'cash',
           split_payments: p.split_payments,
           room_charge_details: p.room_charge_details,
-          tax_profile_id: outlet?.tax_profile_id,
           gl_mapping_id: outlet?.gl_mapping_id,
           inventory_mode: outlet?.inventory_mode || 'sku',
           inventory_deducted: false,

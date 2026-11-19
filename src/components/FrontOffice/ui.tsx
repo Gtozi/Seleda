@@ -87,6 +87,7 @@ export const Card = ({ children, interactive = false, pad = 'md', className = ''
 
 export interface SectionCardProps {
   title?: string;
+  subtitle?: string;
   icon?: LucideIcon;
   /** Right-aligned header actions (e.g. "View All", collapse toggle). */
   actions?: ReactNode;
@@ -102,6 +103,7 @@ export interface SectionCardProps {
 
 export const SectionCard = ({
   title,
+  subtitle,
   icon: Icon,
   actions,
   tone = 'neutral',
@@ -122,7 +124,10 @@ export const SectionCard = ({
                 <Icon className="w-5 h-5" />
               </div>
             )}
-            {title && <h2 className={sectionTitle}>{title}</h2>}
+            <div className="min-w-0">
+              {title && <h2 className={sectionTitle}>{title}</h2>}
+              {subtitle && <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">{subtitle}</p>}
+            </div>
           </div>
           {actions && <div className="flex items-center gap-2 shrink-0">{actions}</div>}
         </div>

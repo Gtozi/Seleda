@@ -46,7 +46,6 @@ interface POSOutlet {
   // Outlet Registry framework fields
   inventory_mode?: 'recipe' | 'sku';
   charge_modes?: string[];
-  tax_profile_id?: string;
   gl_mapping_id?: string;
   requires_guest_link?: boolean;
   shift_reconciliation_required?: boolean;
@@ -74,15 +73,11 @@ export default function POSOutletManagement() {
   const [selectedOutlet, setSelectedOutlet] = useState<POSOutlet | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [filterType, setFilterType] = useState<string>('all');
-  const [activeTab, setActiveTab] = useState<string>('outlets'); // outlets, tax-profiles, gl-mappings, terminals
+  const [activeTab, setActiveTab] = useState<string>('outlets'); // outlets, gl-mappings, shifts
 
   // Outlet Registry framework data
-  const [taxProfiles, setTaxProfiles] = useState<any[]>([]);
   const [glMappings, setGlMappings] = useState<any[]>([]);
-  const [terminals, setTerminals] = useState<any[]>([]);
-  const [showTaxProfileModal, setShowTaxProfileModal] = useState(false);
   const [showGLMappingModal, setShowGLMappingModal] = useState(false);
-  const [showTerminalModal, setShowTerminalModal] = useState(false);
   const [editingOutlet, setEditingOutlet] = useState<POSOutlet | null>(null);
 
   // Shift reconciliation state
@@ -91,17 +86,6 @@ export default function POSOutletManagement() {
   const [closingShift, setClosingShift] = useState<any | null>(null);
   const [closeShiftData, setCloseShiftData] = useState({ counted_cash: '', reconciliation_notes: '' });
   const [shiftSummary, setShiftSummary] = useState<any | null>(null);
-
-  // Tax profile form state
-  const [taxProfileForm, setTaxProfileForm] = useState({
-    name: '',
-    description: '',
-    vat_rate: 15,
-    service_charge_rate: 10,
-    is_vat_exempt: false,
-    is_service_charge_exempt: false,
-  });
-  const [editingTaxProfileId, setEditingTaxProfileId] = useState<string | null>(null);
 
   // Form state
   const [formData, setFormData] = useState({
@@ -116,7 +100,6 @@ export default function POSOutletManagement() {
     // Outlet Registry framework fields
     inventory_mode: 'sku' as 'recipe' | 'sku',
     charge_modes: ['cash', 'card', 'room_folio', 'mobile_money'],
-    tax_profile_id: '',
     gl_mapping_id: '',
     requires_guest_link: false,
     shift_reconciliation_required: true,
@@ -150,9 +133,7 @@ export default function POSOutletManagement() {
 
   useEffect(() => {
     fetchOutlets();
-    fetchTaxProfiles();
     fetchGLMappings();
-    fetchTerminals();
   }, []);
 
   const fetchShifts = async () => {
@@ -176,24 +157,6 @@ export default function POSOutletManagement() {
     if (activeTab === 'shifts') fetchShifts();
   }, [activeTab, shiftFilterOutlet]);
 
-  const fetchTaxProfiles = async () => {
-    try {
-      const token = localStorage.getItem('auth_token');
-      const response = await fetch('/api/pos/tax-profiles', {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        }
-      });
-      if (response.ok) {
-        const data = await response.json();
-        setTaxProfiles(data.profiles || []);
-      }
-    } catch (error) {
-      console.error('Failed to fetch tax profiles:', error);
-    }
-  };
-
   const fetchGLMappings = async () => {
     try {
       const token = localStorage.getItem('auth_token');
@@ -212,24 +175,6 @@ export default function POSOutletManagement() {
     }
   };
 
-  const fetchTerminals = async () => {
-    try {
-      const token = localStorage.getItem('auth_token');
-      const response = await fetch('/api/pos/terminals', {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        }
-      });
-      if (response.ok) {
-        const data = await response.json();
-        setTerminals(data.terminals || []);
-      }
-    } catch (error) {
-      console.error('Failed to fetch terminals:', error);
-    }
-  };
-
   const handleEditOutlet = (outlet: POSOutlet) => {
     setEditingOutlet(outlet);
     setFormData({
@@ -243,7 +188,6 @@ export default function POSOutletManagement() {
       default_service_charge: outlet.default_service_charge,
       inventory_mode: outlet.inventory_mode || 'sku',
       charge_modes: outlet.charge_modes || ['cash', 'card', 'room_folio', 'mobile_money'],
-      tax_profile_id: outlet.tax_profile_id || '',
       gl_mapping_id: outlet.gl_mapping_id || '',
       requires_guest_link: outlet.requires_guest_link || false,
       shift_reconciliation_required: outlet.shift_reconciliation_required !== undefined ? outlet.shift_reconciliation_required : true,
@@ -408,7 +352,6 @@ export default function POSOutletManagement() {
           default_service_charge: 10,
           inventory_mode: 'sku',
           charge_modes: ['cash', 'card', 'room_folio', 'mobile_money'],
-          tax_profile_id: '',
           gl_mapping_id: '',
           requires_guest_link: false,
           shift_reconciliation_required: true,
@@ -629,9 +572,7 @@ export default function POSOutletManagement() {
       <div className="flex gap-1 bg-slate-100 dark:bg-slate-800 rounded-xl p-1">
         {[
           { id: 'outlets', label: 'Outlets', icon: Store },
-          { id: 'tax-profiles', label: 'Tax Profiles', icon: Shield },
           { id: 'gl-mappings', label: 'GL Mappings', icon: Settings },
-          { id: 'terminals', label: 'Terminals', icon: Coffee },
           { id: 'shifts', label: 'Shifts', icon: Clock },
         ].map((tab) => {
           const TabIcon = tab.icon;
@@ -828,94 +769,6 @@ export default function POSOutletManagement() {
       </>
       )}
 
-      {/* Tax Profiles Tab */}
-      {activeTab === 'tax-profiles' && (
-        <div className="space-y-4">
-          <div className="flex items-center justify-between">
-            <h3 className="text-sm font-bold text-slate-900 dark:text-white">Tax Profiles</h3>
-            <button
-              onClick={() => setShowTaxProfileModal(true)}
-              className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-bold transition-all flex items-center gap-1"
-            >
-              <Plus size={14} />
-              Add Tax Profile
-            </button>
-          </div>
-          {taxProfiles.length === 0 ? (
-            <div className="text-center py-12">
-              <Shield className="w-12 h-12 text-slate-300 mx-auto mb-3" />
-              <p className="text-sm text-slate-500">No tax profiles configured yet</p>
-            </div>
-          ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {taxProfiles.map((profile: any) => (
-                <div key={profile.id} className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-4">
-                  <div className="flex items-center justify-between mb-2">
-                    <h4 className="text-sm font-bold text-slate-900 dark:text-white">{profile.name}</h4>
-                    <div className="flex gap-1">
-                      <button
-                        onClick={() => {
-                          setEditingTaxProfileId(profile.id);
-                          setTaxProfileForm({
-                            name: profile.name || '',
-                            description: profile.description || '',
-                            vat_rate: profile.vat_rate || 0,
-                            service_charge_rate: profile.service_charge_rate || 0,
-                            is_vat_exempt: profile.is_vat_exempt || false,
-                            is_service_charge_exempt: profile.is_service_charge_exempt || false,
-                          });
-                          setShowTaxProfileModal(true);
-                        }}
-                        className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg text-slate-500"
-                      >
-                        <Settings size={14} />
-                      </button>
-                      <button
-                        onClick={async () => {
-                          try {
-                            const token = localStorage.getItem('auth_token');
-                            const res = await fetch(`/api/pos/tax-profiles/${profile.id}`, {
-                              method: 'DELETE',
-                              headers: { 'Authorization': `Bearer ${token}` },
-                            });
-                            if (res.ok) {
-                              addNotification('Tax profile deleted', 'info', 'F&B');
-                              fetchTaxProfiles();
-                            } else {
-                              addNotification('Failed to delete tax profile', 'warning', 'F&B');
-                            }
-                          } catch (err) {
-                            addNotification('Failed to delete tax profile', 'warning', 'F&B');
-                          }
-                        }}
-                        className="p-1.5 hover:bg-rose-50 dark:hover:bg-rose-900/20 rounded-lg text-rose-500"
-                      >
-                        <Trash2 size={14} />
-                      </button>
-                    </div>
-                  </div>
-                  {profile.description && (
-                    <p className="text-xs text-slate-400 mb-2">{profile.description}</p>
-                  )}
-                  <div className="space-y-1 text-xs text-slate-500">
-                    <p>VAT Rate: <span className="font-bold text-slate-700 dark:text-slate-300">{profile.vat_rate}%</span></p>
-                    <p>Service Charge: <span className="font-bold text-slate-700 dark:text-slate-300">{profile.service_charge_rate}%</span></p>
-                  </div>
-                  <div className="flex gap-2 mt-2">
-                    {profile.is_vat_exempt && (
-                      <span className="px-2 py-0.5 bg-amber-100 dark:bg-amber-900/30 text-amber-600 rounded-full text-[9px] font-bold uppercase">VAT Exempt</span>
-                    )}
-                    {profile.is_service_charge_exempt && (
-                      <span className="px-2 py-0.5 bg-indigo-100 dark:bg-indigo-900/30 text-indigo-600 rounded-full text-[9px] font-bold uppercase">SC Exempt</span>
-                    )}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-
       {/* GL Mappings Tab */}
       {activeTab === 'gl-mappings' && (
         <div className="space-y-4">
@@ -951,118 +804,6 @@ export default function POSOutletManagement() {
         </div>
       )}
 
-      {/* Terminals Tab */}
-      {activeTab === 'terminals' && (
-        <div className="space-y-4">
-          <div className="flex items-center justify-between">
-            <h3 className="text-sm font-bold text-slate-900 dark:text-white">POS Terminals</h3>
-            <button
-              onClick={() => setShowTerminalModal(true)}
-              className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-bold transition-all flex items-center gap-1"
-            >
-              <Plus size={14} />
-              Add Terminal
-            </button>
-          </div>
-          {terminals.length === 0 ? (
-            <div className="text-center py-12">
-              <Coffee className="w-12 h-12 text-slate-300 mx-auto mb-3" />
-              <p className="text-sm text-slate-500">No POS terminals configured yet</p>
-            </div>
-          ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {terminals.map((terminal: any) => (
-                <div key={terminal.id} className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-4">
-                  <div className="flex items-center justify-between mb-2">
-                    <h4 className="text-sm font-bold text-slate-900 dark:text-white">{terminal.name}</h4>
-                    <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                      terminal.is_active
-                        ? 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400'
-                        : 'bg-slate-100 dark:bg-slate-700 text-slate-500'
-                    }`}>
-                      {terminal.is_active ? 'Active' : 'Inactive'}
-                    </span>
-                  </div>
-                  <div className="space-y-1 text-xs text-slate-500">
-                    <p>Code: <span className="font-mono">{terminal.code}</span></p>
-                    <p>Outlet: {terminal.outlet_id || 'Unassigned'}</p>
-                    <p>Hardware ID: {terminal.hardware_id || '—'}</p>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Tax Profile Modal */}
-      {showTaxProfileModal && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white dark:bg-slate-800 rounded-2xl max-w-md w-full p-6">
-            <div className="flex justify-between items-center mb-4">
-              <h3 className="text-lg font-bold text-slate-900 dark:text-white">{editingTaxProfileId ? 'Edit Tax Profile' : 'Add Tax Profile'}</h3>
-              <button onClick={() => { setShowTaxProfileModal(false); setEditingTaxProfileId(null); setTaxProfileForm({ name: '', description: '', vat_rate: 15, service_charge_rate: 10, is_vat_exempt: false, is_service_charge_exempt: false }); }} className="p-2 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg"><X size={20} /></button>
-            </div>
-            <form onSubmit={async (e) => {
-              e.preventDefault();
-              try {
-                const token = localStorage.getItem('auth_token');
-                const url = editingTaxProfileId ? `/api/pos/tax-profiles/${editingTaxProfileId}` : '/api/pos/tax-profiles';
-                const method = editingTaxProfileId ? 'PUT' : 'POST';
-                const res = await fetch(url, {
-                  method,
-                  headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-                  body: JSON.stringify(taxProfileForm),
-                });
-                if (res.ok) {
-                  addNotification(editingTaxProfileId ? 'Tax profile updated' : 'Tax profile created', 'success', 'F&B');
-                  setShowTaxProfileModal(false);
-                  setEditingTaxProfileId(null);
-                  setTaxProfileForm({ name: '', description: '', vat_rate: 15, service_charge_rate: 10, is_vat_exempt: false, is_service_charge_exempt: false });
-                  fetchTaxProfiles();
-                } else {
-                  const err = await res.json();
-                  addNotification(err.error || 'Failed to save tax profile', 'warning', 'F&B');
-                }
-              } catch (err) {
-                addNotification('Failed to save tax profile', 'warning', 'F&B');
-              }
-            }} className="space-y-3">
-              <div>
-                <label className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-1 block">Name *</label>
-                <input type="text" required value={taxProfileForm.name} onChange={(e) => setTaxProfileForm({ ...taxProfileForm, name: e.target.value })} className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-1 focus:ring-indigo-500 text-slate-900 dark:text-white" placeholder="e.g., Standard VAT" />
-              </div>
-              <div>
-                <label className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-1 block">Description</label>
-                <input type="text" value={taxProfileForm.description} onChange={(e) => setTaxProfileForm({ ...taxProfileForm, description: e.target.value })} className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-1 focus:ring-indigo-500 text-slate-900 dark:text-white" placeholder="e.g., Standard ERCA VAT 15%" />
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-1 block">VAT Rate (%)</label>
-                  <input type="number" step="0.01" min="0" max="100" value={taxProfileForm.vat_rate} onChange={(e) => setTaxProfileForm({ ...taxProfileForm, vat_rate: parseFloat(e.target.value) || 0 })} className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-1 focus:ring-indigo-500 text-slate-900 dark:text-white" />
-                </div>
-                <div>
-                  <label className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-1 block">Service Charge (%)</label>
-                  <input type="number" step="0.01" min="0" max="100" value={taxProfileForm.service_charge_rate} onChange={(e) => setTaxProfileForm({ ...taxProfileForm, service_charge_rate: parseFloat(e.target.value) || 0 })} className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-1 focus:ring-indigo-500 text-slate-900 dark:text-white" />
-                </div>
-              </div>
-              <div className="flex gap-4">
-                <label className="flex items-center gap-2 text-xs font-bold text-slate-700 dark:text-slate-300">
-                  <input type="checkbox" checked={taxProfileForm.is_vat_exempt} onChange={(e) => setTaxProfileForm({ ...taxProfileForm, is_vat_exempt: e.target.checked })} className="rounded" />
-                  VAT Exempt
-                </label>
-                <label className="flex items-center gap-2 text-xs font-bold text-slate-700 dark:text-slate-300">
-                  <input type="checkbox" checked={taxProfileForm.is_service_charge_exempt} onChange={(e) => setTaxProfileForm({ ...taxProfileForm, is_service_charge_exempt: e.target.checked })} className="rounded" />
-                  Service Charge Exempt
-                </label>
-              </div>
-              <button type="submit" className="w-full py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold text-sm">
-                {editingTaxProfileId ? 'Update' : 'Create'} Tax Profile
-              </button>
-            </form>
-          </div>
-        </div>
-      )}
 
       {/* GL Mapping Modal Placeholder */}
       {showGLMappingModal && (
@@ -1078,19 +819,6 @@ export default function POSOutletManagement() {
         </div>
       )}
 
-      {/* Terminal Modal Placeholder */}
-      {showTerminalModal && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white dark:bg-slate-800 rounded-2xl max-w-md w-full p-6">
-            <div className="flex justify-between items-center mb-4">
-              <h3 className="text-lg font-bold text-slate-900 dark:text-white">Add POS Terminal</h3>
-              <button onClick={() => setShowTerminalModal(false)} className="p-2 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg"><X size={20} /></button>
-            </div>
-            <p className="text-sm text-slate-500 mb-4">Terminal registration form will be available in the next phase.</p>
-            <button onClick={() => setShowTerminalModal(false)} className="w-full py-2 bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 rounded-xl font-bold text-sm">Close</button>
-          </div>
-        </div>
-      )}
 
       {/* Shifts Tab */}
       {activeTab === 'shifts' && (
@@ -1450,24 +1178,6 @@ export default function POSOutletManagement() {
                       <option value="suspended">Suspended</option>
                     </select>
                   </div>
-                </div>
-
-                <div className="mt-4">
-                  <label className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-1 block">
-                    Tax Profile
-                  </label>
-                  <select
-                    value={formData.tax_profile_id}
-                    onChange={(e) => setFormData({ ...formData, tax_profile_id: e.target.value })}
-                    className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-1 focus:ring-indigo-500 text-slate-900 dark:text-white"
-                  >
-                    <option value="">Select tax profile...</option>
-                    {taxProfiles.map((p) => (
-                      <option key={p.id} value={p.id}>
-                        {p.name} (VAT: {p.vat_rate}%, Service: {p.service_charge_rate}%)
-                      </option>
-                    ))}
-                  </select>
                 </div>
 
                 <div className="mt-4">

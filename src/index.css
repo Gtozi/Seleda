@@ -37,6 +37,37 @@
   --color-accent-guest-hover: #5C6347;
   --color-accent-admin: #4A3F35;
   --color-accent-admin-hover: #332B23;
+  --color-accent-fb: #C77B2C;
+  --color-accent-fb-hover: #9E621F;
+  --color-accent-hk: #3D8B7A;
+  --color-accent-hk-hover: #2D6B5E;
+
+  /* Per-department accents — extends the earthy luxury palette so every
+     portal has its own signature color while staying on-brand. */
+  --color-accent-eng: #8B6B4F;            /* Engineering — copper-bronze */
+  --color-accent-eng-hover: #6B5239;
+  --color-accent-inventory: #9C7B5B;      /* Inventory — warm umber */
+  --color-accent-inventory-hover: #7A5F44;
+  --color-accent-hr: #B47B6B;             /* Human Resources — dusty rose */
+  --color-accent-hr-hover: #8F5F52;
+  --color-accent-security: #5C5348;       /* Security — warm slate */
+  --color-accent-security-hover: #443E36;
+  --color-accent-executive: #8C6B3D;      /* Executive — deep bronze */
+  --color-accent-executive-hover: #6B5229;
+  --color-accent-procurement: #8A8B47;    /* Procurement — olive */
+  --color-accent-procurement-hover: #6B6C35;
+  --color-accent-ops: #C09B5A;            /* Operations — ochre sand */
+  --color-accent-ops-hover: #997A43;
+  --color-accent-sales: #C26B5C;          /* Sales — warm coral */
+  --color-accent-sales-hover: #9C5347;
+  --color-accent-transport: #6B7B8C;      /* Transportation — steel blue */
+  --color-accent-transport-hover: #525F6E;
+  --color-accent-spa: #7BA889;            /* Spa & Wellness — soft mint */
+  --color-accent-spa-hover: #5E8568;
+  --color-accent-banquet: #8B4A5C;        /* Banquet & Events — earthy wine */
+  --color-accent-banquet-hover: #6B3847;
+  --color-accent-revenue: #4F7A5C;        /* Revenue Management — deep forest */
+  --color-accent-revenue-hover: #3D6148;
 
   /* Semantic states */
   --color-success: #5F7A4F;
@@ -79,6 +110,36 @@
   --color-accent-guest-hover: #AAC38C;
   --color-accent-admin: #9CCF78;
   --color-accent-admin-hover: #B0A38A;
+  --color-accent-fb: #E8A04A;
+  --color-accent-fb-hover: #F0B868;
+  --color-accent-hk: #4DAE9C;
+  --color-accent-hk-hover: #6BC4B2;
+
+  /* Per-department accents — brightened for dark mode */
+  --color-accent-eng: #B08A6B;
+  --color-accent-eng-hover: #C49E7E;
+  --color-accent-inventory: #B89A78;
+  --color-accent-inventory-hover: #C9AE8E;
+  --color-accent-hr: #D49A8A;
+  --color-accent-hr-hover: #E2B0A0;
+  --color-accent-security: #8A8278;
+  --color-accent-security-hover: #A09890;
+  --color-accent-executive: #B89556;
+  --color-accent-executive-hover: #D0AC68;
+  --color-accent-procurement: #A8A95E;
+  --color-accent-procurement-hover: #BEC070;
+  --color-accent-ops: #D4B070;
+  --color-accent-ops-hover: #E4C488;
+  --color-accent-sales: #D88A7A;
+  --color-accent-sales-hover: #E8A094;
+  --color-accent-transport: #8A9CB0;
+  --color-accent-transport-hover: #A0B2C4;
+  --color-accent-spa: #94C2A0;
+  --color-accent-spa-hover: #AAD4B6;
+  --color-accent-banquet: #B06478;
+  --color-accent-banquet-hover: #C48094;
+  --color-accent-revenue: #6FA07C;
+  --color-accent-revenue-hover: #88B894;
 
   /* Semantic states */
   --color-success: #6FA068;
@@ -122,6 +183,36 @@
     --color-accent-guest-hover: #8FD99B;
     --color-accent-admin: #A8A8A8;
     --color-accent-admin-hover: #C0C0C0;
+    --color-accent-fb: #FFA94D;
+    --color-accent-fb-hover: #FFC078;
+    --color-accent-hk: #4ECDC4;
+    --color-accent-hk-hover: #7FE5DD;
+
+    /* Per-department accents — brightened for system dark mode */
+    --color-accent-eng: #D49A6B;
+    --color-accent-eng-hover: #E4B080;
+    --color-accent-inventory: #D4AA78;
+    --color-accent-inventory-hover: #E4C090;
+    --color-accent-hr: #E89A8A;
+    --color-accent-hr-hover: #F0B0A0;
+    --color-accent-security: #A8A098;
+    --color-accent-security-hover: #C0B8B0;
+    --color-accent-executive: #D4A956;
+    --color-accent-executive-hover: #E4C068;
+    --color-accent-procurement: #C4C45E;
+    --color-accent-procurement-hover: #D4D470;
+    --color-accent-ops: #E4C070;
+    --color-accent-ops-hover: #F0D088;
+    --color-accent-sales: #E88A7A;
+    --color-accent-sales-hover: #F0A094;
+    --color-accent-transport: #94A8C0;
+    --color-accent-transport-hover: #A8BCD4;
+    --color-accent-spa: #8EDCB0;
+    --color-accent-spa-hover: #A8E8C4;
+    --color-accent-banquet: #D06478;
+    --color-accent-banquet-hover: #E08094;
+    --color-accent-revenue: #8FE0A8;
+    --color-accent-revenue-hover: #AAE8C0;
 
     /* Semantic states */
     --color-success: #6BCB77;
@@ -231,6 +322,60 @@
 }
 
 /* ───────────────────────────────────────────
+   GLOBAL BUTTON INTERACTIVE STATES
+   Guarantees every button visibly signals that
+   it accepts input by shifting color on hover,
+   focus, active (press), and disabled states.
+
+   Uses `filter: brightness()` so the color shift
+   composes on top of any existing per-button
+   background (Tailwind hover:bg-* classes still
+   apply) instead of overriding palettes.
+
+   Scoped to the ERP shell; the public booking
+   route is excluded to preserve its intentional
+   styling (consistent with the rest of this file).
+   ─────────────────────────────────────────── */
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) button,
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) [role="button"],
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) input[type="submit"],
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) input[type="button"] {
+  transition: filter 0.15s ease, background-color 0.15s ease,
+              box-shadow 0.15s ease, transform 0.05s ease;
+}
+
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) button:hover,
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) [role="button"]:hover,
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) input[type="submit"]:hover,
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) input[type="button"]:hover {
+  filter: brightness(0.93);
+}
+
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) button:focus-visible,
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) [role="button"]:focus-visible,
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) input[type="submit"]:focus-visible,
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) input[type="button"]:focus-visible {
+  outline: 2px solid var(--color-accent-operations);
+  outline-offset: 2px;
+}
+
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) button:active,
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) [role="button"]:active,
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) input[type="submit"]:active,
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) input[type="button"]:active {
+  filter: brightness(0.85);
+  transform: translateY(1px);
+}
+
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) button:disabled,
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) [role="button"][aria-disabled="true"],
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) input[type="submit"]:disabled,
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) input[type="button"]:disabled {
+  filter: grayscale(0.5) opacity(0.55);
+  cursor: not-allowed;
+}
+
+/* ───────────────────────────────────────────
    GLOBAL DARK MODE OVERRIDES - Earthy Luxury
    Forces every module, card, and table into
    dark mode when <html> has .dark.
@@ -238,126 +383,126 @@
    ─────────────────────────────────────────── */
 
 /* Force light mode for booking route */
-#erp-master-view[data-route*="booking"] {
+#erp-master-view:is([data-route="/booking"], [data-route^="/booking/"]) {
   background-color: #FAF6EF !important;
 }
-#erp-master-view[data-route*="booking"] * {
+#erp-master-view:is([data-route="/booking"], [data-route^="/booking/"]) * {
   background-color: inherit !important;
   color: inherit !important;
 }
 /* Allow hero section background image and transparent overlays */
-#erp-master-view[data-route*="booking"] section[role="banner"],
-#erp-master-view[data-route*="booking"] .hero-section,
-#erp-master-view[data-route*="booking"] .hero-section * {
+#erp-master-view:is([data-route="/booking"], [data-route^="/booking/"]) section[role="banner"],
+#erp-master-view:is([data-route="/booking"], [data-route^="/booking/"]) .hero-section,
+#erp-master-view:is([data-route="/booking"], [data-route^="/booking/"]) .hero-section * {
   background-color: transparent !important;
 }
-#erp-master-view[data-route*="booking"] .bg-white,
-#erp-master-view[data-route*="booking"] .bg-white\/95,
-#erp-master-view[data-route*="booking"] .bg-white\/80,
-#erp-master-view[data-route*="booking"] .bg-white\/70,
-#erp-master-view[data-route*="booking"] .bg-white\/50 {
+#erp-master-view:is([data-route="/booking"], [data-route^="/booking/"]) .bg-white,
+#erp-master-view:is([data-route="/booking"], [data-route^="/booking/"]) .bg-white\/95,
+#erp-master-view:is([data-route="/booking"], [data-route^="/booking/"]) .bg-white\/80,
+#erp-master-view:is([data-route="/booking"], [data-route^="/booking/"]) .bg-white\/70,
+#erp-master-view:is([data-route="/booking"], [data-route^="/booking/"]) .bg-white\/50 {
   background-color: #FFFFFF !important;
 }
-#erp-master-view[data-route*="booking"] .bg-slate-50,
-#erp-master-view[data-route*="booking"] .bg-slate-100,
-#erp-master-view[data-route*="booking"] .bg-slate-200 {
+#erp-master-view:is([data-route="/booking"], [data-route^="/booking/"]) .bg-slate-50,
+#erp-master-view:is([data-route="/booking"], [data-route^="/booking/"]) .bg-slate-100,
+#erp-master-view:is([data-route="/booking"], [data-route^="/booking/"]) .bg-slate-200 {
   background-color: #F3ECE0 !important;
 }
-#erp-master-view[data-route*="booking"] .text-slate-900,
-#erp-master-view[data-route*="booking"] .text-slate-800,
-#erp-master-view[data-route*="booking"] .text-slate-700,
-#erp-master-view[data-route*="booking"] .text-slate-600 {
+#erp-master-view:is([data-route="/booking"], [data-route^="/booking/"]) .text-slate-900,
+#erp-master-view:is([data-route="/booking"], [data-route^="/booking/"]) .text-slate-800,
+#erp-master-view:is([data-route="/booking"], [data-route^="/booking/"]) .text-slate-700,
+#erp-master-view:is([data-route="/booking"], [data-route^="/booking/"]) .text-slate-600 {
   color: #2B2420 !important;
 }
-#erp-master-view[data-route*="booking"] .text-slate-500,
-#erp-master-view[data-route*="booking"] .text-slate-400 {
+#erp-master-view:is([data-route="/booking"], [data-route^="/booking/"]) .text-slate-500,
+#erp-master-view:is([data-route="/booking"], [data-route^="/booking/"]) .text-slate-400 {
   color: #6B5C4D !important;
 }
-#erp-master-view[data-route*="booking"] .border-slate-200,
-#erp-master-view[data-route*="booking"] .border-slate-100,
-#erp-master-view[data-route*="booking"] .border-slate-300 {
+#erp-master-view:is([data-route="/booking"], [data-route^="/booking/"]) .border-slate-200,
+#erp-master-view:is([data-route="/booking"], [data-route^="/booking/"]) .border-slate-100,
+#erp-master-view:is([data-route="/booking"], [data-route^="/booking/"]) .border-slate-300 {
   border-color: #C9BBA8 !important;
 }
 
 /* Exclude booking page from dark mode */
-#erp-master-view:not([data-route*="booking"]) .dark .bg-white,
-#erp-master-view:not([data-route*="booking"]) .dark .bg-white\/95,
-#erp-master-view:not([data-route*="booking"]) .dark .bg-white\/80,
-#erp-master-view:not([data-route*="booking"]) .dark .bg-white\/70,
-#erp-master-view:not([data-route*="booking"]) .dark .bg-white\/50 {
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark .bg-white,
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark .bg-white\/95,
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark .bg-white\/80,
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark .bg-white\/70,
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark .bg-white\/50 {
   background-color: var(--color-bg-page) !important;
 }
-#erp-master-view:not([data-route*="booking"]) .dark .bg-slate-50,
-#erp-master-view:not([data-route*="booking"]) .dark .bg-slate-100,
-#erp-master-view:not([data-route*="booking"]) .dark .bg-slate-200 {
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark .bg-slate-50,
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark .bg-slate-100,
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark .bg-slate-200 {
   background-color: var(--color-bg-surface) !important;
 }
-#erp-master-view:not([data-route*="booking"]) .dark .bg-slate-300 {
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark .bg-slate-300 {
   background-color: #4A4A4A !important;
 }
-#erp-master-view:not([data-route*="booking"]) .dark .text-slate-900,
-#erp-master-view:not([data-route*="booking"]) .dark .text-slate-800,
-#erp-master-view:not([data-route*="booking"]) .dark .text-slate-700,
-#erp-master-view:not([data-route*="booking"]) .dark .text-slate-600 {
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark .text-slate-900,
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark .text-slate-800,
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark .text-slate-700,
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark .text-slate-600 {
   color: var(--color-text-primary) !important;
 }
-#erp-master-view:not([data-route*="booking"]) .dark .text-slate-500 {
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark .text-slate-500 {
   color: var(--color-text-secondary) !important;
 }
-#erp-master-view:not([data-route*="booking"]) .dark .text-slate-400 {
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark .text-slate-400 {
   color: var(--color-text-secondary) !important;
 }
-#erp-master-view:not([data-route*="booking"]) .dark .border-slate-200,
-#erp-master-view:not([data-route*="booking"]) .dark .border-slate-100,
-#erp-master-view:not([data-route*="booking"]) .dark .border-slate-300 {
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark .border-slate-200,
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark .border-slate-100,
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark .border-slate-300 {
   border-color: var(--color-border) !important;
 }
-#erp-master-view:not([data-route*="booking"]) .dark .border-slate-400 {
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark .border-slate-400 {
   border-color: var(--color-border) !important;
 }
 
 /* Inputs & selects - Enhanced readability - EXCLUDE booking route */
-#erp-master-view:not([data-route*="booking"]) .dark input,
-#erp-master-view:not([data-route*="booking"]) .dark select,
-#erp-master-view:not([data-route*="booking"]) .dark textarea {
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark input,
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark select,
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark textarea {
   background-color: #2A2A2A !important;
   color: #E8E8E8 !important;
   border-color: #4A4A4A !important;
 }
-#erp-master-view:not([data-route*="booking"]) .dark input:focus,
-#erp-master-view:not([data-route*="booking"]) .dark select:focus,
-#erp-master-view:not([data-route*="booking"]) .dark textarea:focus {
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark input:focus,
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark select:focus,
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark textarea:focus {
   background-color: #333333 !important;
   border-color: #6BCB77 !important;
   outline: none !important;
   box-shadow: 0 0 0 2px rgba(107, 203, 119, 0.2) !important;
 }
-#erp-master-view:not([data-route*="booking"]) .dark input:disabled,
-#erp-master-view:not([data-route*="booking"]) .dark select:disabled,
-#erp-master-view:not([data-route*="booking"]) .dark textarea:disabled {
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark input:disabled,
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark select:disabled,
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark textarea:disabled {
   background-color: #1F1F1F !important;
   color: #666666 !important;
   border-color: #333333 !important;
 }
-#erp-master-view:not([data-route*="booking"]) .dark input[type="checkbox"],
-#erp-master-view:not([data-route*="booking"]) .dark input[type="radio"] {
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark input[type="checkbox"],
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark input[type="radio"] {
   background-color: #2A2A2A !important;
   border-color: #4A4A4A !important;
 }
-#erp-master-view:not([data-route*="booking"]) .dark input[type="checkbox"]:checked,
-#erp-master-view:not([data-route*="booking"]) .dark input[type="radio"]:checked {
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark input[type="checkbox"]:checked,
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark input[type="radio"]:checked {
   background-color: #6BCB77 !important;
   border-color: #6BCB77 !important;
 }
 
 /* Force text color for all input states - EXCLUDE booking route */
-#erp-master-view:not([data-route*="booking"]) .dark input::placeholder,
-#erp-master-view:not([data-route*="booking"]) .dark textarea::placeholder {
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark input::placeholder,
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark textarea::placeholder {
   color: #888888 !important;
 }
-#erp-master-view:not([data-route*="booking"]) .dark input:-webkit-autofill,
-#erp-master-view:not([data-route*="booking"]) .dark input:-webkit-autofill:hover,
-#erp-master-view:not([data-route*="booking"]) .dark input:-webkit-autofill:focus {
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark input:-webkit-autofill,
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark input:-webkit-autofill:hover,
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark input:-webkit-autofill:focus {
   -webkit-text-fill-color: #E8E8E8 !important;
   -webkit-box-shadow: 0 0 0 30px #2A2A2A inset !important;
   background-color: #2A2A2A !important;
@@ -365,214 +510,214 @@
 }
 
 /* Additional overrides for specific input types - EXCLUDE booking route */
-#erp-master-view:not([data-route*="booking"]) .dark input[type="text"],
-#erp-master-view:not([data-route*="booking"]) .dark input[type="email"],
-#erp-master-view:not([data-route*="booking"]) .dark input[type="password"],
-#erp-master-view:not([data-route*="booking"]) .dark input[type="number"],
-#erp-master-view:not([data-route*="booking"]) .dark input[type="tel"],
-#erp-master-view:not([data-route*="booking"]) .dark input[type="url"],
-#erp-master-view:not([data-route*="booking"]) .dark input[type="search"],
-#erp-master-view:not([data-route*="booking"]) .dark input[type="date"],
-#erp-master-view:not([data-route*="booking"]) .dark input[type="time"],
-#erp-master-view:not([data-route*="booking"]) .dark input[type="datetime-local"] {
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark input[type="text"],
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark input[type="email"],
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark input[type="password"],
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark input[type="number"],
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark input[type="tel"],
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark input[type="url"],
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark input[type="search"],
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark input[type="date"],
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark input[type="time"],
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark input[type="datetime-local"] {
   background-color: #2A2A2A !important;
   color: #E8E8E8 !important;
   border-color: #4A4A4A !important;
 }
 
 /* Tables */
-#erp-master-view:not([data-route*="booking"]) .dark table thead th {
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark table thead th {
   background-color: var(--color-bg-surface) !important;
   color: var(--color-text-primary) !important;
   border-bottom-color: var(--color-border) !important;
 }
-#erp-master-view:not([data-route*="booking"]) .dark table tbody td {
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark table tbody td {
   background-color: var(--color-bg-page) !important;
   color: var(--color-text-primary) !important;
   border-color: var(--color-border) !important;
 }
-#erp-master-view:not([data-route*="booking"]) .dark table tbody tr:nth-child(even) td {
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark table tbody tr:nth-child(even) td {
   background-color: var(--color-bg-surface) !important;
 }
-#erp-master-view:not([data-route*="booking"]) .dark table tbody tr:hover td {
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark table tbody tr:hover td {
   background-color: var(--color-border) !important;
 }
 
 /* Scrollbars */
-#erp-master-view:not([data-route*="booking"]) .dark ::-webkit-scrollbar-track {
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark ::-webkit-scrollbar-track {
   background: var(--color-bg-page);
 }
-#erp-master-view:not([data-route*="booking"]) .dark ::-webkit-scrollbar-thumb {
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark ::-webkit-scrollbar-thumb {
   background: var(--color-border);
 }
-#erp-master-view:not([data-route*="booking"]) .dark ::-webkit-scrollbar-thumb:hover {
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark ::-webkit-scrollbar-thumb:hover {
   background: var(--color-text-secondary);
 }
 
 /* Recharts / chart tooltips - EXCLUDE booking route */
-#erp-master-view:not([data-route*="booking"]) .dark .recharts-tooltip-wrapper .recharts-default-tooltip {
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark .recharts-tooltip-wrapper .recharts-default-tooltip {
   background-color: var(--color-bg-surface) !important;
   border-color: var(--color-border) !important;
   color: var(--color-text-primary) !important;
 }
-#erp-master-view:not([data-route*="booking"]) .dark .recharts-legend-item-text {
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark .recharts-legend-item-text {
   fill: var(--color-text-primary) !important;
 }
-#erp-master-view:not([data-route*="booking"]) .dark .recharts-text {
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark .recharts-text {
   fill: var(--color-text-secondary) !important;
 }
 
 /* Glassmorphism override - EXCLUDE booking route */
-#erp-master-view:not([data-route*="booking"]) .dark .glass {
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark .glass {
   background: rgba(28, 23, 20, 0.85) !important;
   border-color: rgba(70, 60, 50, 0.3) !important;
 }
 
 /* Gray palette (used in some components) */
-#erp-master-view:not([data-route*="booking"]) .dark .bg-gray-50,
-#erp-master-view:not([data-route*="booking"]) .dark .bg-gray-100,
-#erp-master-view:not([data-route*="booking"]) .dark .bg-gray-200 {
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark .bg-gray-50,
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark .bg-gray-100,
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark .bg-gray-200 {
   background-color: var(--color-bg-surface) !important;
 }
-#erp-master-view:not([data-route*="booking"]) .dark .bg-gray-300 {
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark .bg-gray-300 {
   background-color: var(--color-border) !important;
 }
-#erp-master-view:not([data-route*="booking"]) .dark .text-gray-900,
-#erp-master-view:not([data-route*="booking"]) .dark .text-gray-800,
-#erp-master-view:not([data-route*="booking"]) .dark .text-gray-700,
-#erp-master-view:not([data-route*="booking"]) .dark .text-gray-600 {
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark .text-gray-900,
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark .text-gray-800,
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark .text-gray-700,
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark .text-gray-600 {
   color: var(--color-text-primary) !important;
 }
-#erp-master-view:not([data-route*="booking"]) .dark .text-gray-500 {
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark .text-gray-500 {
   color: var(--color-text-secondary) !important;
 }
-#erp-master-view:not([data-route*="booking"]) .dark .text-gray-400 {
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark .text-gray-400 {
   color: var(--color-text-secondary) !important;
 }
-#erp-master-view:not([data-route*="booking"]) .dark .border-gray-200,
-#erp-master-view:not([data-route*="booking"]) .dark .border-gray-100,
-#erp-master-view:not([data-route*="booking"]) .dark .border-gray-300 {
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark .border-gray-200,
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark .border-gray-100,
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark .border-gray-300 {
   border-color: var(--color-border) !important;
 }
 
 /* Hover state overrides */
-#erp-master-view:not([data-route*="booking"]) .dark .hover\:bg-slate-100:hover,
-#erp-master-view:not([data-route*="booking"]) .dark .hover\:bg-slate-50:hover,
-#erp-master-view:not([data-route*="booking"]) .dark .hover\:bg-gray-100:hover,
-#erp-master-view:not([data-route*="booking"]) .dark .hover\:bg-gray-50:hover {
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark .hover\:bg-slate-100:hover,
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark .hover\:bg-slate-50:hover,
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark .hover\:bg-gray-100:hover,
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark .hover\:bg-gray-50:hover {
   background-color: var(--color-border) !important;
 }
-#erp-master-view:not([data-route*="booking"]) .dark .hover\:bg-white:hover {
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark .hover\:bg-white:hover {
   background-color: var(--color-bg-surface) !important;
 }
-#erp-master-view:not([data-route*="booking"]) .dark .hover\:text-slate-900:hover,
-#erp-master-view:not([data-route*="booking"]) .dark .hover\:text-gray-900:hover {
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark .hover\:text-slate-900:hover,
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark .hover\:text-gray-900:hover {
   color: var(--color-text-primary) !important;
 }
 
 /* Status tint backgrounds - EXCLUDE booking route */
-#erp-master-view:not([data-route*="booking"]) .dark .bg-emerald-50,
-#erp-master-view:not([data-route*="booking"]) .dark .bg-rose-50,
-#erp-master-view:not([data-route*="booking"]) .dark .bg-amber-50,
-#erp-master-view:not([data-route*="booking"]) .dark .bg-blue-50,
-#erp-master-view:not([data-route*="booking"]) .dark .bg-indigo-50,
-#erp-master-view:not([data-route*="booking"]) .dark .bg-purple-50,
-#erp-master-view:not([data-route*="booking"]) .dark .bg-teal-50,
-#erp-master-view:not([data-route*="booking"]) .dark .bg-orange-50,
-#erp-master-view:not([data-route*="booking"]) .dark .bg-cyan-50,
-#erp-master-view:not([data-route*="booking"]) .dark .bg-pink-50,
-#erp-master-view:not([data-route*="booking"]) .dark .bg-lime-50,
-#erp-master-view:not([data-route*="booking"]) .dark .bg-sky-50,
-#erp-master-view:not([data-route*="booking"]) .dark .bg-red-50,
-#erp-master-view:not([data-route*="booking"]) .dark .bg-yellow-50,
-#erp-master-view:not([data-route*="booking"]) .dark .bg-green-50 {
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark .bg-emerald-50,
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark .bg-rose-50,
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark .bg-amber-50,
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark .bg-blue-50,
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark .bg-indigo-50,
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark .bg-purple-50,
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark .bg-teal-50,
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark .bg-orange-50,
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark .bg-cyan-50,
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark .bg-pink-50,
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark .bg-lime-50,
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark .bg-sky-50,
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark .bg-red-50,
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark .bg-yellow-50,
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark .bg-green-50 {
   background-color: var(--color-bg-surface) !important;
 }
 
 /* Modal / dialog backdrops - EXCLUDE booking route */
-#erp-master-view:not([data-route*="booking"]) .dark [class*="backdrop"],
-#erp-master-view:not([data-route*="booking"]) .dark [class*="overlay"],
-#erp-master-view:not([data-route*="booking"]) .dark [class*="modal-bg"] {
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark [class*="backdrop"],
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark [class*="overlay"],
+#erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .dark [class*="modal-bg"] {
   background-color: rgba(28, 23, 20, 0.8) !important;
 }
 
 @media (prefers-color-scheme: dark) {
   /* Exclude booking page from dark mode */
-  #erp-master-view:not([data-route*="booking"]) .bg-white,
-  #erp-master-view:not([data-route*="booking"]) .bg-white\/95,
-  #erp-master-view:not([data-route*="booking"]) .bg-white\/80,
-  #erp-master-view:not([data-route*="booking"]) .bg-white\/70,
-  #erp-master-view:not([data-route*="booking"]) .bg-white\/50 {
+  #erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .bg-white,
+  #erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .bg-white\/95,
+  #erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .bg-white\/80,
+  #erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .bg-white\/70,
+  #erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .bg-white\/50 {
     background-color: var(--color-bg-page) !important;
   }
-  #erp-master-view:not([data-route*="booking"]) .bg-slate-50,
-  #erp-master-view:not([data-route*="booking"]) .bg-slate-100,
-  #erp-master-view:not([data-route*="booking"]) .bg-slate-200 {
+  #erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .bg-slate-50,
+  #erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .bg-slate-100,
+  #erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .bg-slate-200 {
     background-color: var(--color-bg-surface) !important;
   }
-  #erp-master-view:not([data-route*="booking"]) .bg-slate-300 {
+  #erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .bg-slate-300 {
     background-color: var(--color-border) !important;
   }
-  #erp-master-view:not([data-route*="booking"]) .text-slate-900,
-  #erp-master-view:not([data-route*="booking"]) .text-slate-800,
-  #erp-master-view:not([data-route*="booking"]) .text-slate-700,
-  #erp-master-view:not([data-route*="booking"]) .text-slate-600 {
+  #erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .text-slate-900,
+  #erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .text-slate-800,
+  #erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .text-slate-700,
+  #erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .text-slate-600 {
     color: var(--color-text-primary) !important;
   }
-  #erp-master-view:not([data-route*="booking"]) .text-slate-500 {
+  #erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .text-slate-500 {
     color: var(--color-text-secondary) !important;
   }
-  #erp-master-view:not([data-route*="booking"]) .text-slate-400 {
+  #erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .text-slate-400 {
     color: var(--color-text-secondary) !important;
   }
-  #erp-master-view:not([data-route*="booking"]) .border-slate-200,
-  #erp-master-view:not([data-route*="booking"]) .border-slate-100,
-  #erp-master-view:not([data-route*="booking"]) .border-slate-300 {
+  #erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .border-slate-200,
+  #erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .border-slate-100,
+  #erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .border-slate-300 {
     border-color: var(--color-border) !important;
   }
-  #erp-master-view:not([data-route*="booking"]) .border-slate-400 {
+  #erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .border-slate-400 {
     border-color: var(--color-border) !important;
   }
 
   /* Inputs & selects */
-  #erp-master-view:not([data-route*="booking"]) input,
-  #erp-master-view:not([data-route*="booking"]) select,
-  #erp-master-view:not([data-route*="booking"]) textarea {
+  #erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) input,
+  #erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) select,
+  #erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) textarea {
     background-color: var(--color-bg-surface) !important;
     color: var(--color-text-primary) !important;
     border-color: var(--color-border) !important;
   }
-  #erp-master-view:not([data-route*="booking"]) input::placeholder,
-  #erp-master-view:not([data-route*="booking"]) textarea::placeholder {
+  #erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) input::placeholder,
+  #erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) textarea::placeholder {
     color: var(--color-text-secondary) !important;
   }
 
   /* Tables */
-  #erp-master-view:not([data-route*="booking"]) table thead th {
+  #erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) table thead th {
     background-color: var(--color-bg-surface) !important;
     color: var(--color-text-primary) !important;
     border-bottom-color: var(--color-border) !important;
   }
-  #erp-master-view:not([data-route*="booking"]) table tbody td {
+  #erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) table tbody td {
     background-color: var(--color-bg-page) !important;
     color: var(--color-text-primary) !important;
     border-color: var(--color-border) !important;
   }
-  #erp-master-view:not([data-route*="booking"]) table tbody tr:nth-child(even) td {
+  #erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) table tbody tr:nth-child(even) td {
     background-color: var(--color-bg-surface) !important;
   }
-  #erp-master-view:not([data-route*="booking"]) table tbody tr:hover td {
+  #erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) table tbody tr:hover td {
     background-color: var(--color-border) !important;
   }
 
   /* Scrollbars */
-  #erp-master-view:not([data-route*="booking"]) ::-webkit-scrollbar-track {
+  #erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) ::-webkit-scrollbar-track {
     background: var(--color-bg-page);
   }
-  #erp-master-view:not([data-route*="booking"]) ::-webkit-scrollbar-thumb {
+  #erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) ::-webkit-scrollbar-thumb {
     background: var(--color-border);
   }
-  #erp-master-view:not([data-route*="booking"]) ::-webkit-scrollbar-thumb:hover {
+  #erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) ::-webkit-scrollbar-thumb:hover {
     background: var(--color-text-secondary);
   }
 
@@ -596,44 +741,44 @@
   }
 
   /* Gray palette (used in some components) */
-  #erp-master-view:not([data-route*="booking"]) .bg-gray-50,
-  #erp-master-view:not([data-route*="booking"]) .bg-gray-100,
-  #erp-master-view:not([data-route*="booking"]) .bg-gray-200 {
+  #erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .bg-gray-50,
+  #erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .bg-gray-100,
+  #erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .bg-gray-200 {
     background-color: var(--color-bg-surface) !important;
   }
-  #erp-master-view:not([data-route*="booking"]) .bg-gray-300 {
+  #erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .bg-gray-300 {
     background-color: var(--color-border) !important;
   }
-  #erp-master-view:not([data-route*="booking"]) .text-gray-900,
-  #erp-master-view:not([data-route*="booking"]) .text-gray-800,
-  #erp-master-view:not([data-route*="booking"]) .text-gray-700,
-  #erp-master-view:not([data-route*="booking"]) .text-gray-600 {
+  #erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .text-gray-900,
+  #erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .text-gray-800,
+  #erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .text-gray-700,
+  #erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .text-gray-600 {
     color: var(--color-text-primary) !important;
   }
-  #erp-master-view:not([data-route*="booking"]) .text-gray-500 {
+  #erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .text-gray-500 {
     color: var(--color-text-secondary) !important;
   }
-  #erp-master-view:not([data-route*="booking"]) .text-gray-400 {
+  #erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .text-gray-400 {
     color: var(--color-text-secondary) !important;
   }
-  #erp-master-view:not([data-route*="booking"]) .border-gray-200,
-  #erp-master-view:not([data-route*="booking"]) .border-gray-100,
-  #erp-master-view:not([data-route*="booking"]) .border-gray-300 {
+  #erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .border-gray-200,
+  #erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .border-gray-100,
+  #erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .border-gray-300 {
     border-color: var(--color-border) !important;
   }
 
   /* Hover state overrides */
-  #erp-master-view:not([data-route*="booking"]) .hover\:bg-slate-100:hover,
-  #erp-master-view:not([data-route*="booking"]) .hover\:bg-slate-50:hover,
-  #erp-master-view:not([data-route*="booking"]) .hover\:bg-gray-100:hover,
-  #erp-master-view:not([data-route*="booking"]) .hover\:bg-gray-50:hover {
+  #erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .hover\:bg-slate-100:hover,
+  #erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .hover\:bg-slate-50:hover,
+  #erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .hover\:bg-gray-100:hover,
+  #erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .hover\:bg-gray-50:hover {
     background-color: var(--color-border) !important;
   }
-  #erp-master-view:not([data-route*="booking"]) .hover\:bg-white:hover {
+  #erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .hover\:bg-white:hover {
     background-color: var(--color-bg-surface) !important;
   }
-  #erp-master-view:not([data-route*="booking"]) .hover\:text-slate-900:hover,
-  #erp-master-view:not([data-route*="booking"]) .hover\:text-gray-900:hover {
+  #erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .hover\:text-slate-900:hover,
+  #erp-master-view:not(:is([data-route="/booking"], [data-route^="/booking/"])) .hover\:text-gray-900:hover {
     color: var(--color-text-primary) !important;
   }
 
@@ -727,6 +872,46 @@
   --tw-shadow-color: var(--color-accent-operations) !important;
 }
 
+/* Food & Beverage (saffron) */
+.accent-fb {
+  --accent-color: var(--color-accent-fb);
+  --accent-hover: var(--color-accent-fb-hover);
+  /* Remap operations accent so shared FrontOffice UI components pick up FB saffron */
+  --color-accent-operations: var(--color-accent-fb);
+  --color-accent-operations-hover: var(--color-accent-fb-hover);
+}
+.accent-fb .bg-primary,
+.accent-fb .bg-indigo-600,
+.accent-fb .bg-blue-600 {
+  background-color: var(--color-accent-fb) !important;
+}
+.accent-fb .hover\:bg-primary:hover,
+.accent-fb .hover\:bg-indigo-600:hover,
+.accent-fb .hover\:bg-blue-600:hover {
+  background-color: var(--color-accent-fb-hover) !important;
+}
+.accent-fb .text-primary,
+.accent-fb .text-indigo-600,
+.accent-fb .text-blue-600 {
+  color: var(--color-accent-fb) !important;
+}
+.accent-fb .border-primary,
+.accent-fb .border-indigo-600,
+.accent-fb .border-blue-600 {
+  border-color: var(--color-accent-fb) !important;
+}
+.accent-fb .ring-offset,
+.accent-fb .focus\:ring-indigo-500:focus,
+.accent-fb .focus\:ring-blue-500:focus {
+  --tw-ring-color: var(--color-accent-fb) !important;
+}
+.accent-fb .shadow-indigo-500\/20,
+.accent-fb .shadow-indigo-500\/30,
+.accent-fb .shadow-indigo-500\/40,
+.accent-fb .shadow-indigo-500\/50 {
+  --tw-shadow-color: var(--color-accent-fb) !important;
+}
+
 /* Finance & Compliance (brass) */
 .accent-finance {
   --accent-color: var(--color-accent-finance);
@@ -762,6 +947,10 @@
 .accent-guest {
   --accent-color: var(--color-accent-guest);
   --accent-hover: var(--color-accent-guest-hover);
+  /* Remap the shared operations accent so brandTheme primitives
+     (button.primary, StatCard, Badge) resolve to the guest accent. */
+  --color-accent-operations: var(--color-accent-guest);
+  --color-accent-operations-hover: var(--color-accent-guest-hover);
 }
 .accent-guest .bg-primary,
 .accent-guest .bg-indigo-600,
@@ -818,6 +1007,376 @@
 .accent-admin .focus\:ring-indigo-500:focus,
 .accent-admin .focus\:ring-blue-500:focus {
   --tw-ring-color: var(--color-accent-admin) !important;
+}
+
+/* Housekeeping (teal) */
+.accent-hk {
+  --accent-color: var(--color-accent-hk);
+  --accent-hover: var(--color-accent-hk-hover);
+  /* Remap operations accent so shared FrontOffice UI components pick up HK teal */
+  --color-accent-operations: var(--color-accent-hk);
+  --color-accent-operations-hover: var(--color-accent-hk-hover);
+}
+.accent-hk .bg-primary,
+.accent-hk .bg-indigo-600,
+.accent-hk .bg-blue-600 {
+  background-color: var(--color-accent-hk) !important;
+}
+.accent-hk .hover\:bg-primary:hover,
+.accent-hk .hover\:bg-indigo-600:hover,
+.accent-hk .hover\:bg-blue-600:hover {
+  background-color: var(--color-accent-hk-hover) !important;
+}
+.accent-hk .text-primary,
+.accent-hk .text-indigo-600,
+.accent-hk .text-blue-600 {
+  color: var(--color-accent-hk) !important;
+}
+.accent-hk .border-primary,
+.accent-hk .border-indigo-600,
+.accent-hk .border-blue-600 {
+  border-color: var(--color-accent-hk) !important;
+}
+.accent-hk .ring-offset,
+.accent-hk .focus\:ring-indigo-500:focus,
+.accent-hk .focus\:ring-blue-500:focus {
+  --tw-ring-color: var(--color-accent-hk) !important;
+}
+.accent-hk .shadow-indigo-500\/20,
+.accent-hk .shadow-indigo-500\/30,
+.accent-hk .shadow-indigo-500\/40,
+.accent-hk .shadow-indigo-500\/50 {
+  --tw-shadow-color: var(--color-accent-hk) !important;
+}
+
+/* ───────────────────────────────────────────
+   PER-DEPARTMENT ACCENT CLASSES
+   Each class sets --accent-color / --accent-hover and remaps
+   --color-accent-operations so shared UI components that reference
+   the operations variable pick up the department's signature color.
+   The override rules below are shared across all new accents via
+   grouped selectors — var(--accent-color) resolves per-element.
+   ─────────────────────────────────────────── */
+
+.accent-eng {
+  --accent-color: var(--color-accent-eng);
+  --accent-hover: var(--color-accent-eng-hover);
+  --color-accent-operations: var(--color-accent-eng);
+  --color-accent-operations-hover: var(--color-accent-eng-hover);
+}
+.accent-inventory {
+  --accent-color: var(--color-accent-inventory);
+  --accent-hover: var(--color-accent-inventory-hover);
+  --color-accent-operations: var(--color-accent-inventory);
+  --color-accent-operations-hover: var(--color-accent-inventory-hover);
+}
+.accent-hr {
+  --accent-color: var(--color-accent-hr);
+  --accent-hover: var(--color-accent-hr-hover);
+  --color-accent-operations: var(--color-accent-hr);
+  --color-accent-operations-hover: var(--color-accent-hr-hover);
+}
+.accent-security {
+  --accent-color: var(--color-accent-security);
+  --accent-hover: var(--color-accent-security-hover);
+  --color-accent-operations: var(--color-accent-security);
+  --color-accent-operations-hover: var(--color-accent-security-hover);
+}
+.accent-executive {
+  --accent-color: var(--color-accent-executive);
+  --accent-hover: var(--color-accent-executive-hover);
+  --color-accent-operations: var(--color-accent-executive);
+  --color-accent-operations-hover: var(--color-accent-executive-hover);
+}
+.accent-procurement {
+  --accent-color: var(--color-accent-procurement);
+  --accent-hover: var(--color-accent-procurement-hover);
+  --color-accent-operations: var(--color-accent-procurement);
+  --color-accent-operations-hover: var(--color-accent-procurement-hover);
+}
+.accent-ops {
+  --accent-color: var(--color-accent-ops);
+  --accent-hover: var(--color-accent-ops-hover);
+  --color-accent-operations: var(--color-accent-ops);
+  --color-accent-operations-hover: var(--color-accent-ops-hover);
+}
+.accent-sales {
+  --accent-color: var(--color-accent-sales);
+  --accent-hover: var(--color-accent-sales-hover);
+  --color-accent-operations: var(--color-accent-sales);
+  --color-accent-operations-hover: var(--color-accent-sales-hover);
+}
+.accent-transport {
+  --accent-color: var(--color-accent-transport);
+  --accent-hover: var(--color-accent-transport-hover);
+  --color-accent-operations: var(--color-accent-transport);
+  --color-accent-operations-hover: var(--color-accent-transport-hover);
+}
+.accent-spa {
+  --accent-color: var(--color-accent-spa);
+  --accent-hover: var(--color-accent-spa-hover);
+  --color-accent-operations: var(--color-accent-spa);
+  --color-accent-operations-hover: var(--color-accent-spa-hover);
+}
+.accent-banquet {
+  --accent-color: var(--color-accent-banquet);
+  --accent-hover: var(--color-accent-banquet-hover);
+  --color-accent-operations: var(--color-accent-banquet);
+  --color-accent-operations-hover: var(--color-accent-banquet-hover);
+}
+.accent-revenue {
+  --accent-color: var(--color-accent-revenue);
+  --accent-hover: var(--color-accent-revenue-hover);
+  --color-accent-operations: var(--color-accent-revenue);
+  --color-accent-operations-hover: var(--color-accent-revenue-hover);
+}
+
+/* Shared override rules — grouped selectors.
+   var(--accent-color) resolves per-element from the class above. */
+.accent-eng .bg-primary,
+.accent-eng .bg-indigo-600,
+.accent-eng .bg-blue-600,
+.accent-inventory .bg-primary,
+.accent-inventory .bg-indigo-600,
+.accent-inventory .bg-blue-600,
+.accent-hr .bg-primary,
+.accent-hr .bg-indigo-600,
+.accent-hr .bg-blue-600,
+.accent-security .bg-primary,
+.accent-security .bg-indigo-600,
+.accent-security .bg-blue-600,
+.accent-executive .bg-primary,
+.accent-executive .bg-indigo-600,
+.accent-executive .bg-blue-600,
+.accent-procurement .bg-primary,
+.accent-procurement .bg-indigo-600,
+.accent-procurement .bg-blue-600,
+.accent-ops .bg-primary,
+.accent-ops .bg-indigo-600,
+.accent-ops .bg-blue-600,
+.accent-sales .bg-primary,
+.accent-sales .bg-indigo-600,
+.accent-sales .bg-blue-600,
+.accent-transport .bg-primary,
+.accent-transport .bg-indigo-600,
+.accent-transport .bg-blue-600,
+.accent-spa .bg-primary,
+.accent-spa .bg-indigo-600,
+.accent-spa .bg-blue-600,
+.accent-banquet .bg-primary,
+.accent-banquet .bg-indigo-600,
+.accent-banquet .bg-blue-600,
+.accent-revenue .bg-primary,
+.accent-revenue .bg-indigo-600,
+.accent-revenue .bg-blue-600 {
+  background-color: var(--accent-color) !important;
+}
+
+.accent-eng .hover\:bg-primary:hover,
+.accent-eng .hover\:bg-indigo-600:hover,
+.accent-eng .hover\:bg-blue-600:hover,
+.accent-inventory .hover\:bg-primary:hover,
+.accent-inventory .hover\:bg-indigo-600:hover,
+.accent-inventory .hover\:bg-blue-600:hover,
+.accent-hr .hover\:bg-primary:hover,
+.accent-hr .hover\:bg-indigo-600:hover,
+.accent-hr .hover\:bg-blue-600:hover,
+.accent-security .hover\:bg-primary:hover,
+.accent-security .hover\:bg-indigo-600:hover,
+.accent-security .hover\:bg-blue-600:hover,
+.accent-executive .hover\:bg-primary:hover,
+.accent-executive .hover\:bg-indigo-600:hover,
+.accent-executive .hover\:bg-blue-600:hover,
+.accent-procurement .hover\:bg-primary:hover,
+.accent-procurement .hover\:bg-indigo-600:hover,
+.accent-procurement .hover\:bg-blue-600:hover,
+.accent-ops .hover\:bg-primary:hover,
+.accent-ops .hover\:bg-indigo-600:hover,
+.accent-ops .hover\:bg-blue-600:hover,
+.accent-sales .hover\:bg-primary:hover,
+.accent-sales .hover\:bg-indigo-600:hover,
+.accent-sales .hover\:bg-blue-600:hover,
+.accent-transport .hover\:bg-primary:hover,
+.accent-transport .hover\:bg-indigo-600:hover,
+.accent-transport .hover\:bg-blue-600:hover,
+.accent-spa .hover\:bg-primary:hover,
+.accent-spa .hover\:bg-indigo-600:hover,
+.accent-spa .hover\:bg-blue-600:hover,
+.accent-banquet .hover\:bg-primary:hover,
+.accent-banquet .hover\:bg-indigo-600:hover,
+.accent-banquet .hover\:bg-blue-600:hover,
+.accent-revenue .hover\:bg-primary:hover,
+.accent-revenue .hover\:bg-indigo-600:hover,
+.accent-revenue .hover\:bg-blue-600:hover {
+  background-color: var(--accent-hover) !important;
+}
+
+.accent-eng .text-primary,
+.accent-eng .text-indigo-600,
+.accent-eng .text-blue-600,
+.accent-inventory .text-primary,
+.accent-inventory .text-indigo-600,
+.accent-inventory .text-blue-600,
+.accent-hr .text-primary,
+.accent-hr .text-indigo-600,
+.accent-hr .text-blue-600,
+.accent-security .text-primary,
+.accent-security .text-indigo-600,
+.accent-security .text-blue-600,
+.accent-executive .text-primary,
+.accent-executive .text-indigo-600,
+.accent-executive .text-blue-600,
+.accent-procurement .text-primary,
+.accent-procurement .text-indigo-600,
+.accent-procurement .text-blue-600,
+.accent-ops .text-primary,
+.accent-ops .text-indigo-600,
+.accent-ops .text-blue-600,
+.accent-sales .text-primary,
+.accent-sales .text-indigo-600,
+.accent-sales .text-blue-600,
+.accent-transport .text-primary,
+.accent-transport .text-indigo-600,
+.accent-transport .text-blue-600,
+.accent-spa .text-primary,
+.accent-spa .text-indigo-600,
+.accent-spa .text-blue-600,
+.accent-banquet .text-primary,
+.accent-banquet .text-indigo-600,
+.accent-banquet .text-blue-600,
+.accent-revenue .text-primary,
+.accent-revenue .text-indigo-600,
+.accent-revenue .text-blue-600 {
+  color: var(--accent-color) !important;
+}
+
+.accent-eng .border-primary,
+.accent-eng .border-indigo-600,
+.accent-eng .border-blue-600,
+.accent-inventory .border-primary,
+.accent-inventory .border-indigo-600,
+.accent-inventory .border-blue-600,
+.accent-hr .border-primary,
+.accent-hr .border-indigo-600,
+.accent-hr .border-blue-600,
+.accent-security .border-primary,
+.accent-security .border-indigo-600,
+.accent-security .border-blue-600,
+.accent-executive .border-primary,
+.accent-executive .border-indigo-600,
+.accent-executive .border-blue-600,
+.accent-procurement .border-primary,
+.accent-procurement .border-indigo-600,
+.accent-procurement .border-blue-600,
+.accent-ops .border-primary,
+.accent-ops .border-indigo-600,
+.accent-ops .border-blue-600,
+.accent-sales .border-primary,
+.accent-sales .border-indigo-600,
+.accent-sales .border-blue-600,
+.accent-transport .border-primary,
+.accent-transport .border-indigo-600,
+.accent-transport .border-blue-600,
+.accent-spa .border-primary,
+.accent-spa .border-indigo-600,
+.accent-spa .border-blue-600,
+.accent-banquet .border-primary,
+.accent-banquet .border-indigo-600,
+.accent-banquet .border-blue-600,
+.accent-revenue .border-primary,
+.accent-revenue .border-indigo-600,
+.accent-revenue .border-blue-600 {
+  border-color: var(--accent-color) !important;
+}
+
+.accent-eng .ring-offset,
+.accent-eng .focus\:ring-indigo-500:focus,
+.accent-eng .focus\:ring-blue-500:focus,
+.accent-inventory .ring-offset,
+.accent-inventory .focus\:ring-indigo-500:focus,
+.accent-inventory .focus\:ring-blue-500:focus,
+.accent-hr .ring-offset,
+.accent-hr .focus\:ring-indigo-500:focus,
+.accent-hr .focus\:ring-blue-500:focus,
+.accent-security .ring-offset,
+.accent-security .focus\:ring-indigo-500:focus,
+.accent-security .focus\:ring-blue-500:focus,
+.accent-executive .ring-offset,
+.accent-executive .focus\:ring-indigo-500:focus,
+.accent-executive .focus\:ring-blue-500:focus,
+.accent-procurement .ring-offset,
+.accent-procurement .focus\:ring-indigo-500:focus,
+.accent-procurement .focus\:ring-blue-500:focus,
+.accent-ops .ring-offset,
+.accent-ops .focus\:ring-indigo-500:focus,
+.accent-ops .focus\:ring-blue-500:focus,
+.accent-sales .ring-offset,
+.accent-sales .focus\:ring-indigo-500:focus,
+.accent-sales .focus\:ring-blue-500:focus,
+.accent-transport .ring-offset,
+.accent-transport .focus\:ring-indigo-500:focus,
+.accent-transport .focus\:ring-blue-500:focus,
+.accent-spa .ring-offset,
+.accent-spa .focus\:ring-indigo-500:focus,
+.accent-spa .focus\:ring-blue-500:focus,
+.accent-banquet .ring-offset,
+.accent-banquet .focus\:ring-indigo-500:focus,
+.accent-banquet .focus\:ring-blue-500:focus,
+.accent-revenue .ring-offset,
+.accent-revenue .focus\:ring-indigo-500:focus,
+.accent-revenue .focus\:ring-blue-500:focus {
+  --tw-ring-color: var(--accent-color) !important;
+}
+
+.accent-eng .shadow-indigo-500\/20,
+.accent-eng .shadow-indigo-500\/30,
+.accent-eng .shadow-indigo-500\/40,
+.accent-eng .shadow-indigo-500\/50,
+.accent-inventory .shadow-indigo-500\/20,
+.accent-inventory .shadow-indigo-500\/30,
+.accent-inventory .shadow-indigo-500\/40,
+.accent-inventory .shadow-indigo-500\/50,
+.accent-hr .shadow-indigo-500\/20,
+.accent-hr .shadow-indigo-500\/30,
+.accent-hr .shadow-indigo-500\/40,
+.accent-hr .shadow-indigo-500\/50,
+.accent-security .shadow-indigo-500\/20,
+.accent-security .shadow-indigo-500\/30,
+.accent-security .shadow-indigo-500\/40,
+.accent-security .shadow-indigo-500\/50,
+.accent-executive .shadow-indigo-500\/20,
+.accent-executive .shadow-indigo-500\/30,
+.accent-executive .shadow-indigo-500\/40,
+.accent-executive .shadow-indigo-500\/50,
+.accent-procurement .shadow-indigo-500\/20,
+.accent-procurement .shadow-indigo-500\/30,
+.accent-procurement .shadow-indigo-500\/40,
+.accent-procurement .shadow-indigo-500\/50,
+.accent-ops .shadow-indigo-500\/20,
+.accent-ops .shadow-indigo-500\/30,
+.accent-ops .shadow-indigo-500\/40,
+.accent-ops .shadow-indigo-500\/50,
+.accent-sales .shadow-indigo-500\/20,
+.accent-sales .shadow-indigo-500\/30,
+.accent-sales .shadow-indigo-500\/40,
+.accent-sales .shadow-indigo-500\/50,
+.accent-transport .shadow-indigo-500\/20,
+.accent-transport .shadow-indigo-500\/30,
+.accent-transport .shadow-indigo-500\/40,
+.accent-transport .shadow-indigo-500\/50,
+.accent-spa .shadow-indigo-500\/20,
+.accent-spa .shadow-indigo-500\/30,
+.accent-spa .shadow-indigo-500\/40,
+.accent-spa .shadow-indigo-500\/50,
+.accent-banquet .shadow-indigo-500\/20,
+.accent-banquet .shadow-indigo-500\/30,
+.accent-banquet .shadow-indigo-500\/40,
+.accent-banquet .shadow-indigo-500\/50,
+.accent-revenue .shadow-indigo-500\/20,
+.accent-revenue .shadow-indigo-500\/30,
+.accent-revenue .shadow-indigo-500\/40,
+.accent-revenue .shadow-indigo-500\/50 {
+  --tw-shadow-color: var(--accent-color) !important;
 }
 
 /* Semantic state utilities */
@@ -966,3 +1525,31 @@
     margin: 1.2cm;
   }
 }
+
+/* ── Concierge guest-profiles accent ──────────────────────────────────────
+   The concierge portal embeds the Front Office guest-profiles UI, which
+   hardcodes Tailwind blue-* utilities. Keep the concierge indigo accent by
+   remapping those utilities inside this scope only (the FO page itself is
+   unchanged). Unlayered rules beat the layered utilities. */
+.concierge-fo-scope .bg-blue-50 { background-color: #eef2ff; }
+.concierge-fo-scope .bg-blue-100 { background-color: #e0e7ff; }
+.concierge-fo-scope .bg-blue-600 { background-color: #4f46e5; }
+.concierge-fo-scope .border-blue-600 { border-color: #4f46e5; }
+.concierge-fo-scope .text-blue-700 { color: #4338ca; }
+.concierge-fo-scope .hover\:bg-blue-700:hover { background-color: #4338ca; }
+.concierge-fo-scope .hover\:border-blue-400:hover { border-color: #818cf8; }
+.concierge-fo-scope .hover\:text-blue-700:hover { color: #4338ca; }
+.concierge-fo-scope .focus\:ring-blue-500:focus { --tw-ring-color: #6366f1; }
+
+/* dark variants — cover both Tailwind's media-query gating and the app's
+   .dark class toggle */
+@media (prefers-color-scheme: dark) {
+  .concierge-fo-scope .dark\:bg-blue-900\/20 { background-color: rgb(49 46 129 / 0.2); }
+  .concierge-fo-scope .dark\:bg-blue-900\/30 { background-color: rgb(49 46 129 / 0.3); }
+  .concierge-fo-scope .dark\:text-blue-300 { color: #a5b4fc; }
+  .concierge-fo-scope .dark\:text-blue-400 { color: #818cf8; }
+}
+.dark .concierge-fo-scope .dark\:bg-blue-900\/20 { background-color: rgb(49 46 129 / 0.2); }
+.dark .concierge-fo-scope .dark\:bg-blue-900\/30 { background-color: rgb(49 46 129 / 0.3); }
+.dark .concierge-fo-scope .dark\:text-blue-300 { color: #a5b4fc; }
+.dark .concierge-fo-scope .dark\:text-blue-400 { color: #818cf8; }

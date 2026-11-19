@@ -203,7 +203,9 @@ export default function CalendarMonthView({
       const statusKey = (res.status || '').toLowerCase();
       const statusMatch =
         selectedStatuses.has(res.status) || selectedStatuses.has(statusKey);
-      if (!statusMatch) continue;
+      if (!statusMatch) {
+        continue;
+      }
 
       let checkIn: Date, checkOut: Date;
       try {
@@ -214,7 +216,9 @@ export default function CalendarMonthView({
       }
 
       const roomNumbers = effectiveRoomNumbers(res);
-      if (roomNumbers.length === 0) continue; // skip unassigned reservations in matrix
+      if (roomNumbers.length === 0) {
+        continue; // skip unassigned reservations in matrix
+      }
 
       // Find contiguous index range within dateRange that falls in [checkIn, checkOut)
       let startIndex = -1;

@@ -29,7 +29,8 @@ import {
   BarChart3, 
   Settings,
   ChevronLeft,
-  ChevronRight
+  ChevronRight,
+  ClipboardList
 } from 'lucide-react';
 import ConciergeDashboardModule from './modules/ConciergeDashboardModule';
 import GuestServiceCenterModule from './modules/GuestServiceCenterModule';
@@ -53,6 +54,7 @@ import VendorManagementModule from './modules/VendorManagementModule';
 import BillingChargesModule from './modules/BillingChargesModule';
 import ConciergeReportsModule from './modules/ConciergeReportsModule';
 import ConfigurationModule from './modules/ConfigurationModule';
+import DepartmentRequisitionForm from '../Inventory/DepartmentRequisitionForm';
 
 type ConciergeTab = 
   | 'dashboard'
@@ -75,6 +77,7 @@ type ConciergeTab =
   | 'guest-communication'
   | 'vendor-management'
   | 'billing-charges'
+  | 'requisitions'
   | 'reports'
   | 'configuration';
 
@@ -100,7 +103,7 @@ const customScrollbarStyles = `
   }
 `;
 
-const CONCIERGE_TABS = [
+const CONCIERGE_TABS: { id: ConciergeTab; label: string; icon: typeof LayoutDashboard }[] = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { id: 'service-center', label: 'Service Center', icon: Headphones },
   { id: 'guest-profiles', label: 'Guest Profiles', icon: Users },
@@ -121,18 +124,20 @@ const CONCIERGE_TABS = [
   { id: 'guest-communication', label: 'Communication', icon: MessageSquare },
   { id: 'vendor-management', label: 'Vendors', icon: Building },
   { id: 'billing-charges', label: 'Billing', icon: CreditCard },
+  { id: 'requisitions', label: 'Requisitions', icon: ClipboardList },
   { id: 'reports', label: 'Reports', icon: BarChart3 },
   { id: 'configuration', label: 'Configuration', icon: Settings },
 ];
 
 export default function ConciergePortal({
-  currentUser,
   activeTab: externalActiveTab,
-  onTabChange
+  onTabChange,
+  embedded = false
 }: {
   currentUser?: any;
   activeTab?: ConciergeTab;
   onTabChange?: (tab: ConciergeTab) => void;
+  embedded?: boolean;
 }) {
   const [internalActiveTab, setInternalActiveTab] = useState<ConciergeTab>('dashboard');
   const [navCollapsed, setNavCollapsed] = useState(false);
@@ -178,8 +183,9 @@ export default function ConciergePortal({
   return (
     <>
       <style>{customScrollbarStyles}</style>
-      <div className="flex h-screen overflow-hidden">
+      <div className={embedded ? 'accent-guest flex h-screen overflow-hidden' : 'accent-guest flex h-full'}>
       {/* Concierge Portal Side Navigation */}
+      {embedded && (
       <aside className={`bg-white dark:bg-slate-900 border-r border-slate-200 dark:border-slate-800 flex flex-col flex-shrink-0 transition-all duration-300 ease-in-out h-full overflow-hidden ${
         navCollapsed ? 'w-16' : 'w-64'
       }`}>
@@ -225,6 +231,7 @@ export default function ConciergePortal({
           </ul>
         </nav>
       </aside>
+      )}
 
       {/* Module content */}
       <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar">
@@ -232,6 +239,7 @@ export default function ConciergePortal({
           <ConciergeDashboardModule
             onViewGuestProfile={handleViewGuestProfile}
             onViewRequest={handleViewRequest}
+            onNavigate={setActiveTab}
           />
         )}
 
@@ -253,6 +261,7 @@ export default function ConciergePortal({
           <GuestRequestsModule
             selectedRequestId={selectedRequestId}
             onClearSelectedRequestId={() => setSelectedRequestId(undefined)}
+            onSelectRequestId={setSelectedRequestId}
             onViewGuestProfile={handleViewGuestProfile}
           />
         )}
@@ -348,6 +357,10 @@ export default function ConciergePortal({
           <BillingChargesModule
             onViewGuestProfile={handleViewGuestProfile}
           />
+        )}
+
+        {activeTab === 'requisitions' && (
+          <DepartmentRequisitionForm department="Concierge" />
         )}
 
         {activeTab === 'reports' && (

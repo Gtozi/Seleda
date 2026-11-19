@@ -191,21 +191,21 @@ export async function enrichUserWithDerivedPermissions(user: User): Promise<User
       'cfo': ['finance', 'settings'],
       'accountant': ['finance', 'settings'],
       'auditor': ['finance', 'settings'],
-      'revenue_manager': ['finance', 'settings'],
-      'revenue': ['finance', 'settings'],
-      'guest': ['finance', 'settings'], // Accountant role
+      'revenue_manager': ['revenue', 'settings'],
+      'revenue': ['revenue', 'settings'],
+      'guest': [], // Hotel guests have no ERP access — guest portal only
       // HR
       'hr': ['hr', 'settings'],
       'hr_manager': ['hr', 'settings'],
       'human_resources_manager': ['hr', 'settings'],
       // Executive
-      'executive': ['executive', 'frontoffice', 'housekeeping', 'f&b', 'maintenance', 'inventory', 'finance', 'hr', 'admin', 'procurement', 'operations', 'sales', 'settings'],
-      'general_manager': ['executive', 'frontoffice', 'housekeeping', 'f&b', 'maintenance', 'inventory', 'finance', 'hr', 'admin', 'procurement', 'operations', 'sales', 'settings'],
-      'gm': ['executive', 'frontoffice', 'housekeeping', 'f&b', 'maintenance', 'inventory', 'finance', 'hr', 'admin', 'procurement', 'operations', 'sales', 'settings'],
-      'owner': ['executive', 'frontoffice', 'housekeeping', 'f&b', 'maintenance', 'inventory', 'finance', 'hr', 'admin', 'procurement', 'operations', 'sales', 'settings'],
+      'executive': ['executive', 'frontoffice', 'housekeeping', 'f&b', 'maintenance', 'inventory', 'finance', 'hr', 'admin', 'procurement', 'operations', 'sales', 'revenue', 'settings'],
+      'general_manager': ['executive', 'frontoffice', 'housekeeping', 'f&b', 'maintenance', 'inventory', 'finance', 'hr', 'admin', 'procurement', 'operations', 'sales', 'revenue', 'settings'],
+      'gm': ['executive', 'frontoffice', 'housekeeping', 'f&b', 'maintenance', 'inventory', 'finance', 'hr', 'admin', 'procurement', 'operations', 'sales', 'revenue', 'settings'],
+      'owner': ['executive', 'frontoffice', 'housekeeping', 'f&b', 'maintenance', 'inventory', 'finance', 'hr', 'admin', 'procurement', 'operations', 'sales', 'revenue', 'settings'],
       // Admin
-      'admin': ['admin', 'frontoffice', 'housekeeping', 'f&b', 'maintenance', 'inventory', 'finance', 'hr', 'executive', 'procurement', 'operations', 'sales', 'settings'],
-      'system_admin': ['admin', 'frontoffice', 'housekeeping', 'f&b', 'maintenance', 'inventory', 'finance', 'hr', 'executive', 'procurement', 'operations', 'sales', 'settings'],
+      'admin': ['admin', 'frontoffice', 'housekeeping', 'f&b', 'maintenance', 'inventory', 'finance', 'hr', 'executive', 'procurement', 'operations', 'sales', 'revenue', 'settings'],
+      'system_admin': ['admin', 'frontoffice', 'housekeeping', 'f&b', 'maintenance', 'inventory', 'finance', 'hr', 'executive', 'procurement', 'operations', 'sales', 'revenue', 'settings'],
       // Procurement
       'procurement': ['procurement', 'settings'],
       'procurement_manager': ['procurement', 'settings'],
@@ -227,11 +227,12 @@ export async function enrichUserWithDerivedPermissions(user: User): Promise<User
       'spa_director': ['spa-wellness', 'settings'],
       'wellness_manager': ['spa-wellness', 'settings'],
       // Banquet & Events
-      'banquet': ['frontoffice', 'settings'],
+      'banquet': ['banquet-events', 'settings'],
       // Transportation
       'transportation': ['operations', 'settings'],
       // Security
-      'security_manager': ['operations', 'settings'],
+      'security_manager': ['security', 'settings'],
+    'security_officer': ['security', 'settings'],
       // Member roles (guest-facing)
       'member': ['settings'],
     };
@@ -259,7 +260,7 @@ export async function enrichUserWithDerivedPermissions(user: User): Promise<User
         if (roleData.is_superuser) {
           return {
             ...user,
-            allowedTabs: ['frontoffice', 'housekeeping', 'f&b', 'maintenance', 'inventory', 'finance', 'hr', 'executive', 'admin', 'procurement', 'operations', 'sales', 'settings'] as AllowedTab[],
+            allowedTabs: ['frontoffice', 'housekeeping', 'f&b', 'maintenance', 'inventory', 'finance', 'hr', 'executive', 'admin', 'procurement', 'operations', 'sales', 'revenue', 'security', 'settings'] as AllowedTab[],
             allowedSettings: { ...(user.allowedSettings || {}) },
           };
         }
@@ -274,6 +275,7 @@ export async function enrichUserWithDerivedPermissions(user: User): Promise<User
           'hr': 'hr', 'executive': 'executive',
           'admin': 'admin', 'procurement': 'procurement',
           'operations': 'operations', 'sales': 'sales', 'settings': 'settings',
+          'revenue': 'revenue', 'security': 'security',
           // Sub-module prefixes → parent tab
           'fo_': 'frontoffice', 'hk_': 'housekeeping',
           'fb_': 'f&b', 'eng_': 'maintenance',
@@ -281,6 +283,7 @@ export async function enrichUserWithDerivedPermissions(user: User): Promise<User
           'hr_': 'hr', 'exec_': 'executive',
           'admin_': 'admin', 'proc_': 'procurement',
           'sales_': 'sales', 'ops_': 'operations',
+          'rms_': 'revenue', 'sec_': 'security',
         };
 
         // Start fresh — don't inherit stale allowedTabs from DB
@@ -366,9 +369,9 @@ export async function enrichUserWithDerivedPermissions(user: User): Promise<User
     'cfo': ['finance', 'settings'],
     'accountant': ['finance', 'settings'],
     'auditor': ['finance', 'settings'],
-    'revenue_manager': ['finance', 'settings'],
-    'revenue': ['finance', 'settings'],
-    'guest': ['finance', 'settings'], // Accountant role
+    'revenue_manager': ['revenue', 'settings'],
+    'revenue': ['revenue', 'settings'],
+    'guest': [], // Hotel guests have no ERP access — guest portal only
     // HR
     'hr': ['hr', 'settings'],
     'hr_manager': ['hr', 'settings'],
@@ -394,11 +397,12 @@ export async function enrichUserWithDerivedPermissions(user: User): Promise<User
     'spa_director': ['spa-wellness', 'settings'],
     'wellness_manager': ['spa-wellness', 'settings'],
     // Banquet & Events
-    'banquet': ['frontoffice', 'settings'],
+    'banquet': ['banquet-events', 'settings'],
     // Transportation
     'transportation': ['operations', 'settings'],
     // Security
-    'security_manager': ['operations', 'settings'],
+    'security_manager': ['security', 'settings'],
+    'security_officer': ['security', 'settings'],
     // Member roles (guest-facing)
     'member': ['settings'],
   };
@@ -426,7 +430,7 @@ export async function enrichUserWithDerivedPermissions(user: User): Promise<User
     return {
       ...user,
       allowedTabs: isSuper
-        ? (['frontoffice', 'housekeeping', 'f&b', 'maintenance', 'inventory', 'finance', 'hr', 'executive', 'admin', 'procurement', 'operations', 'sales', 'settings'] as AllowedTab[])
+        ? (['frontoffice', 'housekeeping', 'f&b', 'maintenance', 'inventory', 'finance', 'hr', 'executive', 'admin', 'procurement', 'operations', 'sales', 'security', 'settings'] as AllowedTab[])
         : (derived.allowedTabs.length > 0 ? derived.allowedTabs : user.allowedTabs),
       allowedSettings: { ...(derived.allowedSettings || {}), ...(user.allowedSettings || {}) },
     };
@@ -443,14 +447,14 @@ export async function fetchPasswordPolicy(): Promise<PasswordPolicy | null> {
 }
 
 export async function writeAuditEvent(params: {
-  req: any; user: User; action: string; module?: string; entityType?: string;
+  req: any; user?: User | null; action: string; module?: string; entityType?: string;
   entityId?: string; details?: any; outcome?: string;
 }): Promise<void> {
   const { req, user, action, module: mod, entityType, entityId, details, outcome } = params;
   if (!hasSupabaseAdminConfig || !supabaseAdmin) return;
   try {
     const event: Record<string, any> = {
-      user_id: user.id,
+      user_id: user?.id ?? null,
       action,
       module: mod || 'system',
       timestamp: new Date().toISOString(),

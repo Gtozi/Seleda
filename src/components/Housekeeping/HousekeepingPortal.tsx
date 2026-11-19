@@ -3,80 +3,68 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from 'react';
-import { 
-  Sparkles, 
-  LayoutGrid, 
-  Users, 
-  Waves, 
-  Archive, 
-  History,
-  Activity,
-  Package,
-  CheckCircle2,
-  AlertTriangle,
-  TrendingUp
-} from 'lucide-react';
+import React, { useEffect } from 'react';
+import { useSearchParams } from 'react-router-dom';
+import { layout } from '../FrontOffice/brandTheme';
 
 import HKDashboard from './HKDashboard';
 import RoomBoardModule from './RoomBoardModule';
-import StaffManagementModule from './StaffManagementModule';
-import LaundryModule from './LaundryModule';
-import LostAndFoundModule from './LostAndFoundModule';
-import HousekeepingInventoryModule from './HousekeepingInventoryModule';
-import GuestAmenitiesModule from './GuestAmenitiesModule';
 import TaskManagementModule from './TaskManagementModule';
-import PublicAreaCleaningModule from './PublicAreaCleaningModule';
 import RoomInspectionsModule from './RoomInspectionsModule';
+import StaffManagementModule from './StaffManagementModule';
 import SupervisorConsoleModule from './SupervisorConsoleModule';
+import LaundryModule from './LaundryModule';
+import GuestAmenitiesModule from './GuestAmenitiesModule';
 import MinibarOperationsModule from './MinibarOperationsModule';
+import LostAndFoundModule from './LostAndFoundModule';
 import GuestRequestsModule from './GuestRequestsModule';
 import DeepCleaningModule from './DeepCleaningModule';
 import PreventiveCleaningModule from './PreventiveCleaningModule';
 import MaintenanceCoordinationModule from './MaintenanceCoordinationModule';
+import HousekeepingInventoryModule from './HousekeepingInventoryModule';
+import HKSupplyProcurementModule from './HKSupplyProcurementModule';
 import CommunicationCenterModule from './CommunicationCenterModule';
+import HKReportsModule from './HKReportsModule';
 import ConfigurationModule from './ConfigurationModule';
-// import TaskOptimizationModule from './TaskOptimizationModule';
-// import PerformanceAnalyticsModule from './PerformanceAnalyticsModule';
-import DepartmentReportsModule from '../Shared/DepartmentReportsModule';
-import { StandardHKReports } from './StandardHKReports';
 
+/**
+ * Housekeeping Portal tab ids — 19 modules per docs/Housekeeping Portal new.md
+ * (§3). Room Cleaning (§7) and Public Area Cleaning (§8) have been
+ * consolidated into Task Management (§6) as a unified master-detail interface.
+ */
 export type HKTab =
   | 'dashboard'
   | 'rooms'
   | 'tasks'
-  | 'public-area'
   | 'inspections'
+  | 'staff'
   | 'supervisor'
+  | 'laundry'
+  | 'amenities'
   | 'minibar'
+  | 'lostfound'
   | 'guest-requests'
   | 'deep-cleaning'
   | 'preventive-cleaning'
   | 'maintenance'
-  | 'communication'
-  | 'configuration'
-  | 'optimization'
-  | 'analytics'
-  | 'laundry'
   | 'inventory'
-  | 'amenities'
-  | 'lostfound'
-  | 'staff'
+  | 'supply-procurement'
+  | 'communication'
   | 'reports'
-  | 'standard-reports';
+  | 'configuration';
 
-export type RoomCleaningStatus = 
-  | 'Vacant Clean' 
-  | 'Vacant Dirty' 
-  | 'Occupied Clean' 
-  | 'Occupied Dirty' 
-  | 'Inspected' 
+export type RoomCleaningStatus =
+  | 'Vacant Clean'
+  | 'Vacant Dirty'
+  | 'Occupied Clean'
+  | 'Occupied Dirty'
+  | 'Inspected'
   | 'Ready'
   | 'Pickup'
   | 'Sleep-Out'
   | 'Do Not Disturb'
-  | 'Out of Order' 
-  | 'Out of Service' 
+  | 'Out of Order'
+  | 'Out of Service'
   | 'Maintenance Required';
 
 export type TaskStatus = 'Pending' | 'In Progress' | 'Completed' | 'Verified';
@@ -84,7 +72,20 @@ export type TaskPriority = 'Low' | 'Medium' | 'High' | 'Critical';
 
 export interface HKTask {
   id: string;
-  type: 'Checkout Cleaning' | 'Stayover Service' | 'VIP Preparation' | 'Turndown Service' | 'Special Cleaning' | 'Emergency Cleaning' | 'Deep Cleaning' | 'Public Area Cleaning' | 'Garden Cleaning' | 'Pool Cleaning' | 'Pest Control' | 'Maintenance Follow-up';
+  type:
+    | 'Checkout Cleaning'
+    | 'Stayover Service'
+    | 'VIP Preparation'
+    | 'Turndown Service'
+    | 'Early Arrival Preparation'
+    | 'Deep Cleaning'
+    | 'Preventive Cleaning'
+    | 'Public Area Cleaning'
+    | 'Special Cleaning'
+    | 'Emergency Cleaning'
+    | 'Biohazard Cleaning'
+    | 'Room Refresh'
+    | 'Guest Complaint Follow-up';
   category: 'Automatic' | 'Manual';
   location: string;
   assignedTo?: string;
@@ -107,54 +108,39 @@ export interface LaundryItem {
   timestamp: string;
 }
 
-export default function HousekeepingPortal({ activeTab }: { activeTab: HKTab }) {
+export default function HousekeepingPortal({ activeTab, onTabChange }: { activeTab: HKTab; onTabChange?: (tab: string) => void }) {
+  const [searchParams] = useSearchParams();
 
-  // Shared state 
-  const [priorityQueue, setPriorityQueue] = useState<string[]>(['102', '304']);
-  const [housekeepers, setHousekeepers] = useState<any[]>([
-    { id: 'HK-01', name: 'Staff Member A', avatar: 'SA', status: 'Active Duty', assignedRooms: ['102', '103', '402'], solvedToday: 3, qualityScore: 94 },
-    { id: 'HK-02', name: 'Staff Member B', avatar: 'SB', status: 'Active Duty', assignedRooms: ['104', '203'], solvedToday: 5, qualityScore: 88 },
-    { id: 'HK-03', name: 'Staff Member C', avatar: 'SC', status: 'On Break', assignedRooms: ['304'], solvedToday: 2, qualityScore: 97 },
-    { id: 'HK-04', name: 'Staff Member D', avatar: 'SD', status: 'Active Duty', assignedRooms: [], solvedToday: 4, qualityScore: 91 },
-  ]);
+  // Read URL parameters for deep-linking (module switch) — mirrors F&B portal
+  useEffect(() => {
+    const module = searchParams.get('module');
+    if (module) {
+      onTabChange?.(module);
+    }
+  }, [searchParams, onTabChange]);
 
   return (
-    <div className="space-y-6 animate-fade-in" id="modular-housekeeping-suite">
+    <div className={['accent-hk', layout.sectionStack, 'animate-fade-in'].join(' ')} id="modular-housekeeping-suite">
       <div className="min-h-[600px]">
         {activeTab === 'dashboard' && <HKDashboard />}
-        {activeTab === 'rooms' && (
-          <RoomBoardModule
-            priorityQueue={priorityQueue}
-            setPriorityQueue={setPriorityQueue}
-            housekeepers={housekeepers}
-            setHousekeepers={setHousekeepers}
-          />
-        )}
+        {activeTab === 'rooms' && <RoomBoardModule />}
         {activeTab === 'tasks' && <TaskManagementModule />}
-        {activeTab === 'public-area' && <PublicAreaCleaningModule />}
         {activeTab === 'inspections' && <RoomInspectionsModule />}
+        {activeTab === 'staff' && <StaffManagementModule />}
         {activeTab === 'supervisor' && <SupervisorConsoleModule />}
+        {activeTab === 'laundry' && <LaundryModule />}
+        {activeTab === 'amenities' && <GuestAmenitiesModule />}
         {activeTab === 'minibar' && <MinibarOperationsModule />}
+        {activeTab === 'lostfound' && <LostAndFoundModule />}
         {activeTab === 'guest-requests' && <GuestRequestsModule />}
         {activeTab === 'deep-cleaning' && <DeepCleaningModule />}
         {activeTab === 'preventive-cleaning' && <PreventiveCleaningModule />}
         {activeTab === 'maintenance' && <MaintenanceCoordinationModule />}
-        {activeTab === 'communication' && <CommunicationCenterModule />}
-        {activeTab === 'configuration' && <ConfigurationModule />}
-        {/* {activeTab === 'optimization' && <TaskOptimizationModule />} */}
-        {/* {activeTab === 'analytics' && <PerformanceAnalyticsModule />} */}
-        {activeTab === 'laundry' && <LaundryModule />}
         {activeTab === 'inventory' && <HousekeepingInventoryModule />}
-        {activeTab === 'amenities' && <GuestAmenitiesModule />}
-        {activeTab === 'lostfound' && <LostAndFoundModule />}
-        {activeTab === 'staff' && (
-          <StaffManagementModule
-            housekeepers={housekeepers}
-            setHousekeepers={setHousekeepers}
-          />
-        )}
-        {activeTab === 'reports' && <DepartmentReportsModule departmentName="Housekeeping" />}
-        {activeTab === 'standard-reports' && <StandardHKReports />}
+        {activeTab === 'supply-procurement' && <HKSupplyProcurementModule />}
+        {activeTab === 'communication' && <CommunicationCenterModule />}
+        {activeTab === 'reports' && <HKReportsModule />}
+        {activeTab === 'configuration' && <ConfigurationModule />}
       </div>
     </div>
   );

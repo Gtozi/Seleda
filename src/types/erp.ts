@@ -197,6 +197,10 @@ export interface Reservation {
   corporateAccountId?: string;
   bookingGroupId?: string; // Links multiple rooms booked together under one guest
   bookingType?: BookingType;
+  // Explicit billing mode override — determines folio hierarchy at check-in
+  // (see ensureFolio()/check-in in reservations.routes.ts). When unset, the
+  // backend infers it from corporateAccountId/bookingGroupId as a fallback.
+  billingMode?: 'individual' | 'group' | 'corporate';
   roomTypeId?: string; // Foreign key to room_types table (canonical after Step 2.4)
   // Dynamic folio routing for this reservation
   folioRoutingOverrides?: {
@@ -638,8 +642,8 @@ export interface Notification {
   id: string;
   time: string; // ISO or local date string
   message: string;
-  type: 'info' | 'warning' | 'success' | 'task';
-  department: 'Front Office' | 'Housekeeping' | 'F&B' | 'Maintenance' | 'Finance' | 'Procurement' | 'HR' | 'Spa' | 'Executive';
+  type: 'info' | 'warning' | 'success' | 'task' | 'danger';
+  department: 'Front Office' | 'Housekeeping' | 'F&B' | 'Maintenance' | 'Finance' | 'Procurement' | 'HR' | 'Spa' | 'Executive' | 'Inventory' | 'Transportation' | 'Security';
   read: boolean;
 }
 
@@ -686,7 +690,13 @@ export interface ERPStats {
   departuresTodayCount: number;
 }
 
-export type UserRole = 'frontoffice' | 'housekeeping' | 'f&b' | 'maintenance' | 'inventory' | 'finance' | 'hr' | 'executive' | 'procurement' | 'sales' | 'operations' | 'general_manager' | 'system_admin' | 'admin' | 'custom' | 'gm' | 'owner' | 'pos';
+export type UserRole =
+  | 'frontoffice' | 'front office manager' | 'housekeeping' | 'f&b' | 'fb_manager'
+  | 'maintenance' | 'inventory' | 'finance' | 'fin_manager' | 'hr' | 'executive'
+  | 'procurement' | 'sales' | 'operations' | 'ops_manager' | 'general_manager'
+  | 'system_admin' | 'admin' | 'custom' | 'gm' | 'owner' | 'pos'
+  | 'concierge' | 'concierge_manager' | 'guest_services_manager'
+  | 'spa' | 'banquet' | 'transportation' | 'revenue' | 'security_manager' | 'guest';
 
 /**
  * Base roles that are always granted full (superuser-equivalent) access,
@@ -800,6 +810,13 @@ export interface GlobalHotelSettings {
   creditLimitDefault?: number;
   vipSpendThreshold?: number;
   autoNightAuditTime?: string;
+  nightAuditPostRoomCharges?: boolean;
+  nightAuditGenerateSummary?: boolean;
+  nightAuditCheckinReminders?: boolean;
+  timezone?: string;
+  defaultLanguage?: string;
+  dateFormat?: string;
+  baseCurrency?: string;
   operatingHours?: {
     frontDesk: string;
     restaurant: string;
@@ -829,6 +846,7 @@ export interface GlobalHotelSettings {
   maintenanceMode?: boolean;
   maintenanceMessage?: string;
   publicBookingEnabled?: boolean;
+  guestPortalEnabled?: boolean;
   hotelLogo?: string;
   bookingHeroTitle?: string;
   bookingHeroDescription?: string;
@@ -890,6 +908,7 @@ export interface User {
   status?: 'Active' | 'Inactive' | 'Pending' | 'Suspended' | 'Locked';
   lastLogin?: string;
   authUserId?: string; // UUID from auth.users table for POS and other auth-based references
+  propertyId?: string; // system_users.property_id — the user's assigned property
 
   // Expanded RBAC & HR Fields
   employeeId?: string;
@@ -915,7 +934,7 @@ export interface User {
     propertyAccess: 'Single' | 'Multiple' | 'Corporate';
   };
 
-  allowedTabs?: ('frontoffice' | 'housekeeping' | 'f&b' | 'maintenance' | 'inventory' | 'finance' | 'hr' | 'executive' | 'admin' | 'procurement' | 'operations' | 'sales' | 'settings')[];
+  allowedTabs?: ('frontoffice' | 'housekeeping' | 'f&b' | 'maintenance' | 'inventory' | 'finance' | 'hr' | 'security' | 'executive' | 'admin' | 'procurement' | 'operations' | 'sales' | 'transportation' | 'concierge' | 'spa-wellness' | 'banquet-events' | 'revenue' | 'settings')[];
   allowedSettings?: {
     editGlobalSettings?: boolean;
     adjustHotelTaxes?: boolean;

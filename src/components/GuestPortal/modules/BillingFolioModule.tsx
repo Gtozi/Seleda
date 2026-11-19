@@ -24,7 +24,6 @@ import {
 import {
   fetchReservationFolio,
   postPayment,
-  generateInvoice,
   PaymentSplit,
 } from '../../../services/folioService';
 import { MappedFolio, MappedFolioLine, MappedFolioPayment } from '../../../services/dataMapper';
@@ -56,7 +55,13 @@ const getCategoryColor = (lineType: string): string => {
   return colors[lineType] || colors.Extra;
 };
 
-const BillingFolioModule: React.FC<BillingFolioModuleProps> = ({ reservationId }) => {
+function authHeaders(): Record<string, string> {
+  const token = typeof window !== 'undefined' ? localStorage.getItem('auth_token') : null;
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+const BillingFolioModule: React.FC<BillingFolioModuleProps> = ({ reservationId, guestId }) => {
+  const [resolvedReservationId, setResolvedReservationId] = useState<string | undefined>();
   const [folios, setFolios] = useState<MappedFolio[]>([]);
   const [lines, setLines] = useState<MappedFolioLine[]>([]);
   const [payments, setPayments] = useState<MappedFolioPayment[]>([]);
@@ -88,7 +93,7 @@ const BillingFolioModule: React.FC<BillingFolioModuleProps> = ({ reservationId }
   };
 
   const loadFolio = useCallback(async () => {
-    if (!reservationId) {
+    if (!reservationId && !guestId) {
       setFolios([]);
       setLines([]);
       setPayments([]);
@@ -97,7 +102,31 @@ const BillingFolioModule: React.FC<BillingFolioModuleProps> = ({ reservationId }
     setLoading(true);
     setError(null);
     try {
-      const data = await fetchReservationFolio(reservationId);
+      let resvId = reservationId;
+      if (!resvId && guestId) {
+        // Pick the in-house stay first, else the soonest upcoming reservation.
+        const res = await fetch(`/api/guest-portal/reservations/${encodeURIComponent(guestId)}`, {
+          headers: authHeaders(), credentials: 'include',
+        });
+        const payload = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(payload.error || `Failed to resolve stay (${res.status})`);
+        const rows: any[] = payload.reservations || [];
+        const today = new Date().toISOString().slice(0, 10);
+        resvId = rows.find(r => r.status === 'CheckedIn')?.id
+          || rows.filter(r => ['Reserved', 'Pending', 'Confirmed'].includes(r.status)
+              && r.checkInDate <= today && r.checkOutDate >= today)[0]?.id
+          || rows.filter(r => ['Reserved', 'Pending', 'Confirmed'].includes(r.status))
+              .sort((a, b) => a.checkInDate.localeCompare(b.checkInDate))[0]?.id;
+      }
+      if (!resvId) {
+        setResolvedReservationId(undefined);
+        setFolios([]);
+        setLines([]);
+        setPayments([]);
+        return;
+      }
+      setResolvedReservationId(resvId);
+      const data = await fetchReservationFolio(resvId, guestId);
       setFolios(data.folios || []);
       setLines(data.lines || []);
       setPayments(data.payments || []);
@@ -110,7 +139,7 @@ const BillingFolioModule: React.FC<BillingFolioModuleProps> = ({ reservationId }
     } finally {
       setLoading(false);
     }
-  }, [reservationId]);
+  }, [reservationId, guestId]);
 
   useEffect(() => {
     loadFolio();
@@ -129,32 +158,58 @@ const BillingFolioModule: React.FC<BillingFolioModuleProps> = ({ reservationId }
     if (showPaymentModal) setPaymentAmount(consolidatedBalance > 0 ? consolidatedBalance : 0);
   }, [showPaymentModal, consolidatedBalance]);
 
-  const handleDownloadInvoice = async () => {
+  // Invoice generation is staff-only (it writes invoice + journal-entry
+  // records), so guests get a folio statement rendered from the loaded data.
+  const handleDownloadStatement = () => {
     if (!primaryFolio) return;
     setInvoiceInFlight(true);
     try {
-      const result = await generateInvoice(primaryFolio.id);
-      showToast('success', `Invoice ${result.invoice.invoice_number} generated`);
-      // Trigger a download of the invoice details as JSON (lightweight client-side export).
-      const blob = new Blob([JSON.stringify(result.invoice, null, 2)], { type: 'application/json' });
+      const statement = {
+        type: 'folio_statement',
+        generatedAt: new Date().toISOString(),
+        reservationId: resolvedReservationId,
+        currency,
+        status: folioStatus,
+        totals: {
+          charges: consolidatedCharges,
+          payments: consolidatedPayments,
+          tax: taxTotal,
+          serviceCharge: serviceChargeTotal,
+          balance: consolidatedBalance,
+        },
+        charges: lines.map((l) => ({
+          date: l.transactionDate,
+          description: l.description,
+          type: l.lineType,
+          quantity: (l as any).quantity,
+          amount: l.amount,
+        })),
+        payments: payments.map((p) => ({
+          date: p.paymentDate,
+          method: p.paymentMethod,
+          reference: p.referenceNumber,
+          amount: p.amount,
+        })),
+      };
+      const blob = new Blob([JSON.stringify(statement, null, 2)], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `${result.invoice.invoice_number}.json`;
+      a.download = `folio-statement-${resolvedReservationId || 'guest'}.json`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
-      await loadFolio();
+      showToast('success', 'Folio statement downloaded');
     } catch (err: any) {
-      showToast('error', err.message || 'Failed to generate invoice');
+      showToast('error', err.message || 'Failed to download statement');
     } finally {
       setInvoiceInFlight(false);
     }
   };
 
   const handleMakePayment = async () => {
-    if (!reservationId) return;
+    if (!resolvedReservationId) return;
     if (!paymentMethod || typeof paymentAmount !== 'number' || paymentAmount <= 0) {
       showToast('error', 'A positive amount and payment method are required');
       return;
@@ -170,8 +225,8 @@ const BillingFolioModule: React.FC<BillingFolioModuleProps> = ({ reservationId }
         paymentMethod,
         reference: paymentReference.trim() || null,
       };
-      await postPayment(reservationId, split);
-      showToast('success', 'Payment processed');
+      await postPayment(resolvedReservationId, split, guestId);
+      showToast('success', 'Payment recorded');
       setShowPaymentModal(false);
       setPaymentReference('');
       await loadFolio();
@@ -183,7 +238,7 @@ const BillingFolioModule: React.FC<BillingFolioModuleProps> = ({ reservationId }
   };
 
   const handleSplitBill = async () => {
-    if (!reservationId) return;
+    if (!resolvedReservationId) return;
     if (splitWays < 2 || splitWays > 10) {
       showToast('error', 'Split ways must be between 2 and 10');
       return;
@@ -203,7 +258,7 @@ const BillingFolioModule: React.FC<BillingFolioModuleProps> = ({ reservationId }
       const total = splits.reduce((s, p) => s + p.amount, 0);
       splits[splits.length - 1].amount = Math.round((perPerson + (consolidatedBalance - total)) * 100) / 100;
 
-      await postPayment(reservationId, splits);
+      await postPayment(resolvedReservationId, splits, guestId);
       showToast('success', `Bill split into ${splitWays} payments`);
       setShowSplitBillModal(false);
       await loadFolio();
@@ -222,16 +277,31 @@ const BillingFolioModule: React.FC<BillingFolioModuleProps> = ({ reservationId }
     });
   };
 
-  // No reservation selected
-  if (!reservationId) {
+  // No guest context at all — match the other guest modules' sign-in state
+  if (!guestId && !reservationId) {
     return (
-      <div className="p-6">
-        <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-xl p-6 flex items-start gap-3">
+      <div className="p-4 sm:p-6">
+        <div className="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 p-8 sm:p-12 text-center">
+          <Receipt className="w-12 h-12 mx-auto text-slate-300 dark:text-slate-600 mb-4" />
+          <h3 className="text-lg font-semibold text-slate-900 dark:text-white mb-2">Sign in required</h3>
+          <p className="text-sm text-slate-500 dark:text-slate-400">
+            Sign in to view your folio and manage payments.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  // Guest signed in but no stay could be resolved
+  if (!reservationId && !resolvedReservationId && !loading && !error) {
+    return (
+      <div className="p-4 sm:p-6">
+        <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-xl p-4 sm:p-6 flex items-start gap-3">
           <AlertCircle className="w-5 h-5 text-amber-600 mt-0.5" />
           <div>
-            <h3 className="font-semibold text-amber-800 dark:text-amber-400">No reservation selected</h3>
+            <h3 className="font-semibold text-amber-800 dark:text-amber-400">No reservation found</h3>
             <p className="text-sm text-amber-700 dark:text-amber-500 mt-1">
-              Please select a reservation to view its billing and folio details.
+              There is no current or upcoming stay linked to your account, so no folio is available yet.
             </p>
           </div>
         </div>
@@ -240,7 +310,7 @@ const BillingFolioModule: React.FC<BillingFolioModuleProps> = ({ reservationId }
   }
 
   return (
-    <div className="p-6 space-y-6">
+    <div className="p-4 sm:p-6 space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
@@ -250,12 +320,12 @@ const BillingFolioModule: React.FC<BillingFolioModuleProps> = ({ reservationId }
           </p>
         </div>
         <button
-          onClick={handleDownloadInvoice}
+          onClick={handleDownloadStatement}
           disabled={invoiceInFlight || !primaryFolio}
           className="flex items-center gap-2 px-4 py-2 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-900/20 transition text-sm font-medium disabled:opacity-50"
         >
           {invoiceInFlight ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download size={16} />}
-          Download Invoice
+          Download Statement
         </button>
       </div>
 
@@ -294,7 +364,7 @@ const BillingFolioModule: React.FC<BillingFolioModuleProps> = ({ reservationId }
       ) : (
         <>
           {/* Folio Summary */}
-          <div className="bg-gradient-to-br from-indigo-500 to-purple-600 rounded-xl p-6 text-white">
+          <div className="bg-gradient-to-br from-indigo-500 to-purple-600 rounded-xl p-4 sm:p-6 text-white">
             <div className="flex items-center justify-between mb-6">
               <div>
                 <div className="text-sm font-medium opacity-90 mb-1">Folio Status</div>
@@ -358,7 +428,7 @@ const BillingFolioModule: React.FC<BillingFolioModuleProps> = ({ reservationId }
           </div>
 
           {/* Folio Lines */}
-          <div className="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 p-6">
+          <div className="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 p-4 sm:p-6">
             <h3 className="text-lg font-semibold text-slate-900 dark:text-white mb-4">Folio Details</h3>
             {lines.length === 0 ? (
               <div className="py-8 text-center text-sm text-slate-500 dark:text-slate-400">
@@ -398,7 +468,7 @@ const BillingFolioModule: React.FC<BillingFolioModuleProps> = ({ reservationId }
             )}
 
             {/* Summary */}
-            <div className="mt-6 pt-6 border-t border-slate-200 dark:border-slate-700">
+            <div className="mt-6 pt-4 sm:pt-6 border-t border-slate-200 dark:border-slate-700">
               <div className="space-y-2">
                 <div className="flex justify-between text-sm">
                   <span className="text-slate-600 dark:text-slate-400">Subtotal (Charges)</span>
@@ -436,7 +506,7 @@ const BillingFolioModule: React.FC<BillingFolioModuleProps> = ({ reservationId }
 
           {/* Payments History */}
           {payments.length > 0 && (
-            <div className="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 p-6">
+            <div className="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 p-4 sm:p-6">
               <h3 className="text-lg font-semibold text-slate-900 dark:text-white mb-4">Payment History</h3>
               <div className="space-y-2">
                 {payments.map((p) => (
@@ -468,7 +538,7 @@ const BillingFolioModule: React.FC<BillingFolioModuleProps> = ({ reservationId }
       {/* Payment Modal */}
       {showPaymentModal && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="bg-white dark:bg-slate-800 rounded-xl p-6 max-w-md w-full mx-4">
+          <div className="bg-white dark:bg-slate-800 rounded-xl p-4 sm:p-6 max-w-md w-full mx-4">
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-lg font-semibold text-slate-900 dark:text-white">Make Payment</h3>
               <button
@@ -531,6 +601,10 @@ const BillingFolioModule: React.FC<BillingFolioModuleProps> = ({ reservationId }
                   </span>
                 </div>
               </div>
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                This records your payment on the folio for the front desk to reconcile (e.g. a
+                mobile-money or bank-transfer reference). No card is charged by this action.
+              </p>
             </div>
             <div className="flex justify-end gap-3 mt-6">
               <button
@@ -555,7 +629,7 @@ const BillingFolioModule: React.FC<BillingFolioModuleProps> = ({ reservationId }
       {/* Split Bill Modal */}
       {showSplitBillModal && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="bg-white dark:bg-slate-800 rounded-xl p-6 max-w-md w-full mx-4">
+          <div className="bg-white dark:bg-slate-800 rounded-xl p-4 sm:p-6 max-w-md w-full mx-4">
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-lg font-semibold text-slate-900 dark:text-white">Split Bill</h3>
               <button

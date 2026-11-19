@@ -33,10 +33,23 @@ export const guestApiSchema = z.object({
 export type GuestApiInput = z.infer<typeof guestApiSchema>;
 
 // Reservation validation (backend API)
+// NOTE: this schema is used by `PUT /api/reservations/:id`, which is the
+// primary persistence path called from ReservationContext (addReservation /
+// updateReservation) via supabaseService.upsertReservation(). zod's default
+// z.object() *silently strips* any key not declared below — so every field
+// the billing/folio system depends on (billing_mode, corporate_account_id,
+// booking_group_id, booking_type, discount_percent, ...) must be listed here
+// as optional, or it will never actually reach the database even though the
+// frontend appears to save it successfully. room_type_id was previously
+// required, which made validation fail (and therefore silently drop the
+// entire update — see upsertReservation's catch-and-warn) for any reservation
+// created without an explicit room_type_id FK (the common case, since the
+// booking form only sets the free-text room_type).
 export const reservationApiSchema = z.object({
   id: idSchema.optional(),
   guest_id: idSchema.optional(),
-  room_type_id: idSchema,
+  room_type_id: idSchema.optional(),
+  room_type: z.string().optional(),
   room_number: z.string().optional(),
   check_in_date: dateSchema,
   check_out_date: dateSchema,
@@ -52,7 +65,14 @@ export const reservationApiSchema = z.object({
   special_requests: z.string().optional(),
   notes: z.string().optional(),
   created_by: idSchema.optional(),
-}).refine((data) => {
+  // ── Billing / folio-routing fields ──────────────────────────────────
+  // Kept in sync with mapReservationToDb() in src/services/dataMapper.ts.
+  billing_mode: z.enum(['individual', 'group', 'corporate']).optional(),
+  corporate_account_id: z.string().optional().nullable(),
+  booking_group_id: z.string().optional().nullable(),
+  booking_type: z.enum(['Individual', 'Group', 'Corporate']).optional(),
+  discount_percent: z.coerce.number().min(0).max(100).optional(),
+}).passthrough().refine((data) => {
   const start = new Date(data.check_in_date);
   const end = new Date(data.check_out_date);
   return end > start;
@@ -141,15 +161,23 @@ export const yieldPolicyApiSchema = z.object({
 export type YieldPolicyApiInput = z.infer<typeof yieldPolicyApiSchema>;
 
 // Airport Shuttle Request validation (backend API)
+// Matches the real airport_shuttle_requests columns (migration 040/041/523).
 export const airportShuttleApiSchema = z.object({
-  id: idSchema.optional(),
-  reservation_id: idSchema.optional(),
-  direction: z.enum(['pickup', 'dropoff']),
-  flight_number: z.string().min(1, 'Flight number is required'),
-  scheduled_time: dateSchema,
-  passenger_count: z.coerce.number().int().min(1),
+  id: z.string().optional(),
+  guest_id: z.string().optional(),
+  guest_name: z.string().optional(),
+  reservation_id: z.string().optional(),
+  room_number: z.string().nullable().optional(),
+  scheduled_date: z.string().min(1, 'Scheduled date is required'),
+  scheduled_time: z.string().min(1, 'Scheduled time is required'),
+  shuttle_type: z.enum(['Pickup', 'Drop-off']),
+  flight_number: z.string().optional(),
+  flight_time: z.string().nullable().optional(),
+  pickup_location: z.string().optional(),
+  dropoff_location: z.string().optional(),
+  status: z.enum(['Pending', 'Confirmed', 'Completed', 'Cancelled']).default('Pending'),
   notes: z.string().optional(),
-  status: z.enum(['Scheduled', 'Completed', 'Cancelled']).default('Scheduled'),
+  quantity: z.coerce.number().int().min(1).optional(),
 });
 
 export type AirportShuttleApiInput = z.infer<typeof airportShuttleApiSchema>;

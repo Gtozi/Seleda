@@ -1,385 +1,418 @@
 /**
- * Operations Command Center
- * Live operational overview across all departments
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Operations Command Center — Operations Portal
+ * (/erp/operations/command-center).
+ *
+ * Live operational overview across every department portal in the system.
+ *
+ * DB-integrated: fetches /api/ops-portal/command-center, which computes
+ * department statuses and generates alerts from the real tables of the
+ * other portals (housekeeping tasks, engineering work orders, security
+ * incidents, transport, spa, F&B orders, laundry, events, guest requests,
+ * inventory). Alerts persist in ops_command_alerts (migration 627) and
+ * acknowledge writes back to the DB.
+ *
+ * UI follows the shared portal design language (PageHeader, SectionCard,
+ * StatCard, Badge, brandTheme tokens) — same as the HK / Engineering /
+ * F&B modules. Department cards click through to that department's portal.
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import type { LucideIcon } from 'lucide-react';
 import {
   Command,
   Activity,
   AlertTriangle,
   CheckCircle2,
   XCircle,
-  Clock,
   Users,
-  Bed,
+  BedDouble,
   Utensils,
+  ChefHat,
+  Shirt,
+  Flower2,
   Wrench,
   Shield,
   Car,
-  Calendar,
+  CalendarDays,
+  ConciergeBell,
+  Package,
   RefreshCw,
   Bell,
-  Filter,
   Search,
-  MoreVertical,
-  ChevronRight,
   Play,
   Pause,
-  Radio
+  Radio,
+  Loader2,
+  ChevronRight,
 } from 'lucide-react';
+import StatCard from '../../FrontOffice/StatCard';
+import { PageHeader, SectionCard, Badge } from '../../FrontOffice/ui';
+import { button, layout, statusTone, type StatusTone } from '../../FrontOffice/brandTheme';
+import { useERP } from '../../../context/ERPContext';
+import { DEPARTMENT_BY_KEY, type DepartmentKey } from '../../../config/departments';
+import {
+  fetchCommandCenterOverview,
+  acknowledgeCommandCenterAlert,
+  type CommandCenterAlert,
+  type CommandCenterDepartment,
+  type CommandCenterDeptStatus,
+  type CommandCenterOverview,
+  type CommandCenterSeverity,
+} from '../../../services/operationsService';
 
-interface DepartmentStatus {
-  name: string;
-  status: 'operational' | 'degraded' | 'critical' | 'offline';
-  statusText: string;
-  lastUpdate: string;
-  activeIssues: number;
-  icon: any;
+// ── Static registries ────────────────────────────────────────────────────
+
+const DEPT_ICON: Record<string, LucideIcon> = {
+  frontoffice: Users,
+  housekeeping: BedDouble,
+  engineering: Wrench,
+  fnb: Utensils,
+  kitchen: ChefHat,
+  laundry: Shirt,
+  spa: Flower2,
+  security: Shield,
+  transportation: Car,
+  events: CalendarDays,
+  concierge: ConciergeBell,
+  inventory: Package,
+};
+
+const STATUS_TONE: Record<CommandCenterDeptStatus, StatusTone> = {
+  operational: 'success',
+  degraded: 'warning',
+  critical: 'danger',
+  offline: 'neutral',
+};
+
+const SEVERITY_TONE: Record<CommandCenterSeverity, StatusTone> = {
+  critical: 'danger',
+  warning: 'warning',
+  info: 'info',
+};
+
+const SEVERITY_ICON: Record<CommandCenterSeverity, LucideIcon> = {
+  critical: XCircle,
+  warning: AlertTriangle,
+  info: Bell,
+};
+
+const STATUS_LABEL: Record<CommandCenterDeptStatus, string> = {
+  operational: 'Operational',
+  degraded: 'Degraded',
+  critical: 'Critical',
+  offline: 'Offline',
+};
+
+const POLL_MS = 30_000;
+
+// ── Helpers ──────────────────────────────────────────────────────────────
+
+function timeAgo(iso: string | null | undefined): string {
+  if (!iso) return '';
+  const t = new Date(iso).getTime();
+  if (isNaN(t)) return '';
+  const s = Math.max(0, Math.floor((Date.now() - t) / 1000));
+  if (s < 60) return `${s}s ago`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m} min ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.floor(h / 24)}d ago`;
 }
 
-interface LiveAlert {
-  id: string;
-  type: 'critical' | 'warning' | 'info';
-  category: string;
-  message: string;
-  timestamp: string;
-  department: string;
-  acknowledged: boolean;
-}
+// ── Component ────────────────────────────────────────────────────────────
 
 const OperationsCommandCenter: React.FC = () => {
+  const { currentPropertyId, addNotification } = useERP();
+  const navigate = useNavigate();
+
+  const [overview, setOverview] = useState<CommandCenterOverview | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [isLive, setIsLive] = useState(true);
-  const [selectedFilter, setSelectedFilter] = useState<'all' | 'critical' | 'warning' | 'info'>('all');
-  const [searchQuery, setSearchQuery] = useState('');
-  const [departments, setDepartments] = useState<DepartmentStatus[]>([]);
-  const [alerts, setAlerts] = useState<LiveAlert[]>([]);
+  const [acknowledging, setAcknowledging] = useState<string | null>(null);
 
-  const mockDepartments: DepartmentStatus[] = [
-    {
-      name: 'Front Office',
-      status: 'operational',
-      statusText: 'Normal Operations',
-      lastUpdate: '2 min ago',
-      activeIssues: 0,
-      icon: Users
-    },
-    {
-      name: 'Housekeeping',
-      status: 'degraded',
-      statusText: 'Staff Shortage',
-      lastUpdate: '5 min ago',
-      activeIssues: 2,
-      icon: Bed
-    },
-    {
-      name: 'Engineering',
-      status: 'critical',
-      statusText: 'HVAC Failure',
-      lastUpdate: '1 min ago',
-      activeIssues: 3,
-      icon: Wrench
-    },
-    {
-      name: 'Food & Beverage',
-      status: 'operational',
-      statusText: 'Normal Operations',
-      lastUpdate: '3 min ago',
-      activeIssues: 0,
-      icon: Utensils
-    },
-    {
-      name: 'Kitchen',
-      status: 'operational',
-      statusText: 'Normal Operations',
-      lastUpdate: '4 min ago',
-      activeIssues: 0,
-      icon: Utensils
-    },
-    {
-      name: 'Laundry',
-      status: 'operational',
-      statusText: 'Normal Operations',
-      lastUpdate: '10 min ago',
-      activeIssues: 0,
-      icon: Activity
-    },
-    {
-      name: 'Spa',
-      status: 'operational',
-      statusText: 'Normal Operations',
-      lastUpdate: '15 min ago',
-      activeIssues: 0,
-      icon: Activity
-    },
-    {
-      name: 'Security',
-      status: 'operational',
-      statusText: 'Normal Operations',
-      lastUpdate: '1 min ago',
-      activeIssues: 0,
-      icon: Shield
-    },
-    {
-      name: 'Transportation',
-      status: 'degraded',
-      statusText: 'Vehicle Maintenance',
-      lastUpdate: '20 min ago',
-      activeIssues: 1,
-      icon: Car
-    },
-    {
-      name: 'Events',
-      status: 'operational',
-      statusText: 'Normal Operations',
-      lastUpdate: '8 min ago',
-      activeIssues: 0,
-      icon: Calendar
+  const [severityFilter, setSeverityFilter] = useState<'all' | CommandCenterSeverity>('all');
+  const [search, setSearch] = useState('');
+
+  // ── Load ──────────────────────────────────────────────────────────────
+  // silent=true keeps the current data on screen during background polls.
+  const load = useCallback(async (silent = false) => {
+    if (silent) setRefreshing(true);
+    else setLoading(true);
+    try {
+      const data = await fetchCommandCenterOverview(currentPropertyId || undefined);
+      setOverview(data);
+      setError(null);
+    } catch (e: any) {
+      setError(e?.message || 'Failed to load command center');
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
     }
-  ];
+  }, [currentPropertyId]);
 
-  const mockAlerts: LiveAlert[] = [
-    {
-      id: '1',
-      type: 'critical',
-      category: 'Equipment Failure',
-      message: 'HVAC system failure on Floor 3 affecting 12 rooms',
-      timestamp: '10 min ago',
-      department: 'Engineering',
-      acknowledged: false
-    },
-    {
-      id: '2',
-      type: 'warning',
-      category: 'Staff Shortage',
-      message: '3 housekeepers called in sick for afternoon shift',
-      timestamp: '25 min ago',
-      department: 'Housekeeping',
-      acknowledged: false
-    },
-    {
-      id: '3',
-      type: 'critical',
-      category: 'Guest Escalation',
-      message: 'Guest in Room 305 reporting water leak, immediate attention required',
-      timestamp: '5 min ago',
-      department: 'Front Office',
-      acknowledged: true
-    },
-    {
-      id: '4',
-      type: 'warning',
-      category: 'Equipment Failure',
-      message: 'Airport shuttle van requires maintenance - 1 vehicle out of service',
-      timestamp: '30 min ago',
-      department: 'Transportation',
-      acknowledged: false
-    },
-    {
-      id: '5',
-      type: 'info',
-      category: 'VIP Arrival',
-      message: 'VVIP guest Mr. Smith arriving at 3:00 PM, suite preparation in progress',
-      timestamp: '1 hour ago',
-      department: 'Front Office',
-      acknowledged: true
-    }
-  ];
+  useEffect(() => { load(); }, [load]);
 
+  // Live mode polls the aggregated endpoint; pausing stops the interval.
   useEffect(() => {
-    setDepartments(mockDepartments);
-    setAlerts(mockAlerts);
-  }, []);
+    if (!isLive) return;
+    const t = setInterval(() => load(true), POLL_MS);
+    return () => clearInterval(t);
+  }, [isLive, load]);
 
-  const getStatusColor = (status: DepartmentStatus['status']) => {
-    switch (status) {
-      case 'operational':
-        return 'bg-emerald-100 dark:bg-emerald-950/30 text-emerald-700 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800';
-      case 'degraded':
-        return 'bg-amber-100 dark:bg-amber-950/30 text-amber-700 dark:text-amber-400 border-amber-200 dark:border-amber-800';
-      case 'critical':
-        return 'bg-rose-100 dark:bg-rose-950/30 text-rose-700 dark:text-rose-400 border-rose-200 dark:border-rose-800';
-      case 'offline':
-        return 'bg-slate-100 dark:bg-slate-950/30 text-slate-700 dark:text-slate-400 border-slate-200 dark:border-slate-800';
+  // ── Derived ───────────────────────────────────────────────────────────
+  const departments = useMemo(() => overview?.departments || [], [overview]);
+  const alerts = useMemo(() => overview?.alerts || [], [overview]);
+
+  const filteredAlerts = useMemo(
+    () =>
+      alerts.filter(a => {
+        const matchesSeverity = severityFilter === 'all' || a.type === severityFilter;
+        const q = search.trim().toLowerCase();
+        const matchesSearch =
+          !q ||
+          a.message.toLowerCase().includes(q) ||
+          a.department.toLowerCase().includes(q) ||
+          a.category.toLowerCase().includes(q);
+        return matchesSeverity && matchesSearch;
+      }),
+    [alerts, severityFilter, search]
+  );
+
+  const stats = useMemo(() => {
+    const critical = alerts.filter(a => a.type === 'critical' && !a.acknowledged).length;
+    const degraded = departments.filter(d => d.status === 'degraded' || d.status === 'critical').length;
+    const issues = departments.reduce((sum, d) => sum + d.activeIssues, 0);
+    const reporting = departments.length;
+    return { critical, degraded, issues, reporting };
+  }, [alerts, departments]);
+
+  // ── Actions ───────────────────────────────────────────────────────────
+  const acknowledge = async (alertId: string) => {
+    const previous = alerts;
+    setAcknowledging(alertId);
+    // Optimistic update — the row dims immediately.
+    setOverview(prev =>
+      prev
+        ? {
+            ...prev,
+            alerts: prev.alerts.map(a => (a.id === alertId ? { ...a, acknowledged: true } : a)),
+          }
+        : prev);
+    try {
+      await acknowledgeCommandCenterAlert(alertId);
+      addNotification('Alert acknowledged.', 'task', 'Executive');
+    } catch (e: any) {
+      setOverview(prev => (prev ? { ...prev, alerts: previous } : prev));
+      addNotification(e?.message || 'Failed to acknowledge alert', 'warning', 'Executive');
+    } finally {
+      setAcknowledging(null);
     }
   };
 
-  const getStatusIcon = (status: DepartmentStatus['status']) => {
-    switch (status) {
-      case 'operational':
-        return <CheckCircle2 size={16} />;
-      case 'degraded':
-        return <AlertTriangle size={16} />;
-      case 'critical':
-        return <XCircle size={16} />;
-      case 'offline':
-        return <XCircle size={16} />;
-    }
+  const openDepartment = (card: CommandCenterDepartment) => {
+    const dept = DEPARTMENT_BY_KEY[card.deptKey as DepartmentKey];
+    if (dept) navigate(`/erp/${dept.urlSegment}/${dept.defaultTab}`);
   };
 
-  const getAlertTypeColor = (type: LiveAlert['type']) => {
-    switch (type) {
-      case 'critical':
-        return 'bg-rose-50 dark:bg-rose-950/20 border-rose-200 dark:border-rose-800';
-      case 'warning':
-        return 'bg-amber-50 dark:bg-amber-950/20 border-amber-200 dark:border-amber-800';
-      case 'info':
-        return 'bg-blue-50 dark:bg-blue-950/20 border-blue-200 dark:border-blue-800';
-    }
-  };
+  // ── Render ────────────────────────────────────────────────────────────
 
-  const filteredAlerts = alerts.filter(alert => {
-    const matchesFilter = selectedFilter === 'all' || alert.type === selectedFilter;
-    const matchesSearch = searchQuery === '' || 
-      alert.message.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      alert.department.toLowerCase().includes(searchQuery.toLowerCase());
-    return matchesFilter && matchesSearch;
-  });
-
-  const handleAcknowledge = (alertId: string) => {
-    setAlerts(prev => prev.map(alert => 
-      alert.id === alertId ? { ...alert, acknowledged: true } : alert
-    ));
-  };
+  if (loading && !overview) {
+    return (
+      <div className="flex items-center justify-center py-24">
+        <Loader2 size={28} className="animate-spin text-[var(--color-accent-operations)]" />
+      </div>
+    );
+  }
 
   return (
-    <div className="p-6 space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-slate-900 dark:text-white flex items-center gap-3">
-            <Command size={28} />
-            Operations Command Center
-          </h1>
-          <p className="text-slate-600 dark:text-slate-400 mt-1">
-            Live operational overview across all departments
-          </p>
+    <div className={layout.sectionStack}>
+      <PageHeader
+        title="Operations Command Center"
+        subtitle="Live operational overview across all departments"
+        icon={Command}
+        actions={
+          <>
+            <div className="flex items-center gap-2">
+              <span className={`w-2 h-2 rounded-full ${isLive ? statusTone.success.dot + ' animate-pulse' : 'bg-gray-400'}`} />
+              <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                {isLive ? 'Live' : 'Paused'}
+              </span>
+            </div>
+            <button
+              onClick={() => setIsLive(v => !v)}
+              className={button.secondary}
+              title={isLive ? 'Pause live updates' : 'Resume live updates'}
+            >
+              {isLive ? <Pause size={16} /> : <Play size={16} />}
+            </button>
+            <button
+              onClick={() => load(true)}
+              disabled={refreshing}
+              className={button.secondary}
+              title="Refresh now"
+            >
+              <RefreshCw size={16} className={refreshing ? 'animate-spin' : ''} />
+            </button>
+            {overview && (
+              <span className="text-xs text-gray-500 dark:text-gray-400 hidden sm:inline">
+                Updated {timeAgo(overview.generatedAt)}
+              </span>
+            )}
+          </>
+        }
+      />
+
+      {error && (
+        <div className="flex items-center gap-3 p-4 rounded-2xl border border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-800">
+          <AlertTriangle size={18} className="text-[var(--color-warning)] shrink-0" />
+          <p className="text-sm text-gray-700 dark:text-gray-300 flex-1">{error}</p>
+          <button onClick={() => load()} className={button.secondary}>Retry</button>
         </div>
-        <div className="flex items-center gap-3">
-          <div className="flex items-center gap-2">
-            <div className={`w-2 h-2 rounded-full ${isLive ? 'bg-emerald-500 animate-pulse' : 'bg-slate-400'}`} />
-            <span className="text-sm font-medium text-slate-700 dark:text-slate-300">
-              {isLive ? 'Live' : 'Paused'}
-            </span>
-          </div>
-          <button
-            onClick={() => setIsLive(!isLive)}
-            className="p-2 bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors"
-          >
-            {isLive ? <Pause size={20} className="text-slate-600 dark:text-slate-400" /> : <Play size={20} className="text-slate-600 dark:text-slate-400" />}
-          </button>
-          <button className="p-2 bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors">
-            <RefreshCw size={20} className="text-slate-600 dark:text-slate-400" />
-          </button>
-        </div>
+      )}
+
+      {/* KPI row */}
+      <div className={layout.kpiGrid}>
+        <StatCard title="Critical Alerts" value={stats.critical} icon={XCircle} tone="danger" caption="unacknowledged" />
+        <StatCard title="Degraded Departments" value={stats.degraded} icon={AlertTriangle} tone="warning" caption="degraded or critical" />
+        <StatCard title="Open Issues" value={stats.issues} icon={Activity} tone="info" caption="across all departments" />
+        <StatCard title="Departments Reporting" value={stats.reporting} icon={Radio} tone="accent" caption="live feeds" />
       </div>
 
-      {/* Department Status Grid */}
-      <div>
-        <h3 className="text-sm font-bold text-slate-900 dark:text-white mb-3 flex items-center gap-2">
-          <Radio size={16} />
-          Live Department Status
-        </h3>
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-3">
-          {departments.map((dept) => {
-            const Icon = dept.icon;
+      {/* Department status grid */}
+      <SectionCard
+        title="Live Department Status"
+        subtitle="Click a department to open its portal"
+        icon={Radio}
+        tone="info"
+        pad="md"
+      >
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+          {departments.map(dept => {
+            const Icon = DEPT_ICON[dept.key] || Activity;
+            const tone = STATUS_TONE[dept.status];
+            const toneStyles = statusTone[tone];
             return (
-              <div
-                key={dept.name}
-                className={`p-4 rounded-lg border ${getStatusColor(dept.status)}`}
+              <button
+                key={dept.key}
+                onClick={() => openDepartment(dept)}
+                className="text-left p-4 rounded-xl border border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-800 hover:border-[var(--color-accent-operations)] hover:shadow-sm smooth-transition group"
               >
-                <div className="flex items-start justify-between">
-                  <div className="flex items-center gap-2">
-                    <Icon size={18} />
-                    <span className="font-semibold text-sm">{dept.name}</span>
+                <div className="flex items-start justify-between gap-2">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className={`shrink-0 p-1.5 rounded-lg ${toneStyles.soft}`}>
+                      <Icon size={15} />
+                    </span>
+                    <span className="font-semibold text-sm text-gray-900 dark:text-white truncate">
+                      {dept.name}
+                    </span>
                   </div>
-                  {getStatusIcon(dept.status)}
+                  <Badge tone={tone} icon={dept.status === 'operational' ? CheckCircle2 : dept.status === 'degraded' ? AlertTriangle : XCircle}>
+                    {STATUS_LABEL[dept.status]}
+                  </Badge>
                 </div>
-                <p className="text-xs mt-2 font-medium">{dept.statusText}</p>
-                <div className="flex items-center justify-between mt-3 text-xs">
-                  <span className="opacity-75">{dept.lastUpdate}</span>
-                  {dept.activeIssues > 0 && (
-                    <span className="font-semibold">{dept.activeIssues} issue{dept.activeIssues > 1 ? 's' : ''}</span>
-                  )}
+                <p className="text-xs text-gray-600 dark:text-gray-400 mt-2 font-medium">
+                  {dept.statusText}
+                </p>
+                <div className="flex items-center justify-between mt-3 text-xs text-gray-500 dark:text-gray-500">
+                  <span>{dept.lastUpdate ? `Updated ${timeAgo(dept.lastUpdate)}` : '—'}</span>
+                  <span className="inline-flex items-center gap-1 text-gray-400 group-hover:text-[var(--color-accent-operations)] smooth-transition">
+                    Open <ChevronRight size={12} />
+                  </span>
                 </div>
-              </div>
+              </button>
             );
           })}
         </div>
-      </div>
+      </SectionCard>
 
-      {/* Live Alerts */}
-      <div>
-        <div className="flex items-center justify-between mb-3">
-          <h3 className="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
-            <Bell size={16} />
-            Live Alerts
-          </h3>
+      {/* Live alerts feed */}
+      <SectionCard
+        title="Live Alerts"
+        subtitle="Generated from live data across every portal — acknowledge to clear"
+        icon={Bell}
+        tone="danger"
+        pad="none"
+        actions={
           <div className="flex items-center gap-2">
             <div className="relative">
-              <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+              <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
               <input
                 type="text"
                 placeholder="Search alerts..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="pl-9 pr-4 py-1.5 text-sm bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg focus:ring-1 focus:ring-indigo-500 outline-none"
+                value={search}
+                onChange={e => setSearch(e.target.value)}
+                className="pl-8 pr-3 py-1.5 text-sm w-44 sm:w-56 bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-lg focus:ring-1 focus:ring-[var(--color-accent-operations)] outline-none text-gray-900 dark:text-white"
               />
             </div>
             <select
-              value={selectedFilter}
-              onChange={(e) => setSelectedFilter(e.target.value as any)}
-              className="px-3 py-1.5 text-sm bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg focus:ring-1 focus:ring-indigo-500 outline-none"
+              value={severityFilter}
+              onChange={e => setSeverityFilter(e.target.value as 'all' | CommandCenterSeverity)}
+              className="px-3 py-1.5 text-sm bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-lg focus:ring-1 focus:ring-[var(--color-accent-operations)] outline-none text-gray-900 dark:text-white"
             >
-              <option value="all">All Alerts</option>
+              <option value="all">All severities</option>
               <option value="critical">Critical</option>
               <option value="warning">Warning</option>
               <option value="info">Info</option>
             </select>
           </div>
-        </div>
-        <div className="space-y-2">
-          {filteredAlerts.length === 0 ? (
-            <div className="text-center py-8 text-slate-500 dark:text-slate-400">
-              No alerts match your filters
-            </div>
-          ) : (
-            filteredAlerts.map((alert) => (
+        }
+        bodyClassName="divide-y divide-gray-100 dark:divide-slate-700/60"
+      >
+        {filteredAlerts.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-10 text-gray-500 dark:text-gray-400">
+            <CheckCircle2 size={24} className="mb-2 text-[var(--color-success)]" />
+            <p className="text-sm">No alerts match your filters</p>
+          </div>
+        ) : (
+          filteredAlerts.map(alert => {
+            const SevIcon = SEVERITY_ICON[alert.type];
+            return (
               <div
                 key={alert.id}
-                className={`p-4 rounded-lg border ${getAlertTypeColor(alert.type)} ${alert.acknowledged ? 'opacity-60' : ''}`}
+                className={`flex items-start gap-4 px-6 py-4 border-l-4 ${statusTone[SEVERITY_TONE[alert.type]].border} ${alert.acknowledged ? 'opacity-55' : ''}`}
               >
-                <div className="flex items-start justify-between">
-                  <div className="flex-1">
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs font-mono uppercase font-bold text-slate-600 dark:text-slate-400">
-                        {alert.category}
-                      </span>
-                      <span className="text-xs text-slate-500 dark:text-slate-500">
-                        {alert.timestamp}
-                      </span>
-                    </div>
-                    <p className="font-medium text-slate-900 dark:text-white mt-1">
-                      {alert.message}
-                    </p>
-                    <span className="text-xs text-slate-600 dark:text-slate-400 mt-1 inline-block">
-                      {alert.department}
+                <span className={`shrink-0 mt-0.5 p-2 rounded-lg ${statusTone[SEVERITY_TONE[alert.type]].soft}`}>
+                  <SevIcon size={16} />
+                </span>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-xs font-bold uppercase tracking-wide text-gray-500 dark:text-gray-400">
+                      {alert.category}
+                    </span>
+                    <Badge tone={SEVERITY_TONE[alert.type]}>{alert.type}</Badge>
+                    <span className="text-xs text-gray-400 dark:text-gray-500">
+                      {timeAgo(alert.timestamp)}
                     </span>
                   </div>
-                  {!alert.acknowledged && (
-                    <button
-                      onClick={() => handleAcknowledge(alert.id)}
-                      className="px-3 py-1.5 text-xs font-medium bg-white dark:bg-slate-800 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors"
-                    >
-                      Acknowledge
-                    </button>
-                  )}
+                  <p className="font-medium text-sm text-gray-900 dark:text-white mt-1">
+                    {alert.message}
+                  </p>
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                    {alert.department}
+                    {alert.acknowledged && alert.acknowledgedBy ? ` — acknowledged by ${alert.acknowledgedBy}` : ''}
+                  </p>
                 </div>
+                {!alert.acknowledged && (
+                  <button
+                    onClick={() => acknowledge(alert.id)}
+                    disabled={acknowledging === alert.id}
+                    className={button.secondary + ' shrink-0 !px-3 !py-1.5 text-xs'}
+                  >
+                    {acknowledging === alert.id ? <Loader2 size={14} className="animate-spin" /> : 'Acknowledge'}
+                  </button>
+                )}
               </div>
-            ))
-          )}
-        </div>
-      </div>
+            );
+          })
+        )}
+      </SectionCard>
     </div>
   );
 };

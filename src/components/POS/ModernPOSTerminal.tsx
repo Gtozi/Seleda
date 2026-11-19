@@ -32,7 +32,6 @@ import {
   Sparkles,
   ChevronDown,
   Scan,
-  Mic,
   Trash2,
   Edit,
   Send
@@ -51,6 +50,19 @@ interface ModernPOSTerminalProps {
     code: string;
     user_role?: string;
   };
+  user?: {
+    id: string;
+    name?: string;
+    email?: string;
+    erpUser?: any;
+  };
+  onOpenSettings?: () => void;
+}
+
+interface InHouseRoom {
+  reservationId: string;
+  roomNumber: string;
+  guestName: string;
 }
 
 interface MenuCategory {
@@ -126,13 +138,19 @@ interface Table {
   };
 }
 
-export default function ModernPOSTerminal({ outlet }: ModernPOSTerminalProps) {
+export default function ModernPOSTerminal({ outlet, user, onOpenSettings }: ModernPOSTerminalProps) {
   const { formatAmount, formatTaxesAndFees, addNotification, userProfile } = useERP();
+  const cashierId = user?.id || userProfile?.id || '';
+  const cashierName = user?.name || userProfile?.name || 'POS User';
   
   // Data State
   const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
   const [categories, setCategories] = useState<MenuCategory[]>([]);
   const [dbTables, setDbTables] = useState<DbTable[]>([]);
+  const [inHouseRooms, setInHouseRooms] = useState<InHouseRoom[]>([]);
+  const [recentOrders, setRecentOrders] = useState<any[]>([]);
+  const [activeKdsOrders, setActiveKdsOrders] = useState<any[]>([]);
+  const [openShift, setOpenShift] = useState<any | null>(null);
   const [dataLoading, setDataLoading] = useState(true);
   
   // UI State
@@ -155,6 +173,7 @@ export default function ModernPOSTerminal({ outlet }: ModernPOSTerminalProps) {
   // Payment
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [invoicePrintData, setInvoicePrintData] = useState<any | null>(null);
+  const [lastInvoice, setLastInvoice] = useState<any | null>(null);
   const [processingPayment, setProcessingPayment] = useState(false);
   
   // Modals
@@ -166,20 +185,22 @@ export default function ModernPOSTerminal({ outlet }: ModernPOSTerminalProps) {
   // Quick Actions
   const [showQuickActions, setShowQuickActions] = useState(false);
 
-  // Fetch menu items, categories, and tables from API
+  // Fetch menu items, categories, tables, and in-house rooms from API
+  // (session cookie auth — credentials: 'include')
   const fetchData = useCallback(async () => {
     setDataLoading(true);
     try {
-      const token = localStorage.getItem('auth_token');
-      const headers: Record<string, string> = {
-        'Content-Type': 'application/json',
-      };
-      if (token) headers['Authorization'] = `Bearer ${token}`;
-
-      const [itemsRes, catRes, tablesRes] = await Promise.all([
-        fetch(`/api/pos/menu-items?outlet_id=${outlet.id}&is_active=true`, { headers }),
-        fetch(`/api/pos/outlet-categories?outlet_id=${outlet.id}`, { headers }),
-        fetch(`/api/pos/tables?outlet_id=${outlet.id}`, { headers }),
+      const opts = { credentials: 'include' as const };
+      const todayStart = new Date();
+      todayStart.setHours(0, 0, 0, 0);
+      const [itemsRes, catRes, tablesRes, roomsRes, ordersRes, kdsRes, shiftsRes] = await Promise.all([
+        fetch(`/api/pos/menu-items?outlet_id=${outlet.id}&is_active=true`, opts),
+        fetch(`/api/pos/outlet-categories?outlet_id=${outlet.id}`, opts),
+        fetch(`/api/pos/tables?outlet_id=${outlet.id}`, opts),
+        fetch(`/api/pos/in-house-rooms`, opts),
+        fetch(`/api/pos/transactions?outlet_id=${outlet.id}&from=${todayStart.toISOString()}&limit=50`, opts),
+        fetch(`/api/pos/kds/orders?outlet_id=${outlet.id}`, opts),
+        fetch(`/api/pos/shifts?outlet_id=${outlet.id}&status=open`, opts),
       ]);
 
       if (itemsRes.ok) {
@@ -194,17 +215,87 @@ export default function ModernPOSTerminal({ outlet }: ModernPOSTerminalProps) {
         const tablesData = await tablesRes.json();
         setDbTables(tablesData.tables || []);
       }
+      if (roomsRes.ok) {
+        const roomsData = await roomsRes.json();
+        setInHouseRooms(roomsData.rooms || []);
+      }
+      if (ordersRes.ok) {
+        const ordersData = await ordersRes.json();
+        setRecentOrders(ordersData.transactions || []);
+      }
+      if (kdsRes.ok) {
+        const kdsData = await kdsRes.json();
+        setActiveKdsOrders(
+          (kdsData.orders || []).filter((o: any) => ['fired', 'in_progress', 'ready'].includes(o.status))
+        );
+      }
+      if (shiftsRes.ok) {
+        const shiftsData = await shiftsRes.json();
+        setOpenShift((shiftsData.shifts || []).find((s: any) => s.cashier_id === cashierId) || null);
+      }
     } catch (error) {
       console.error('Failed to fetch POS data:', error);
       addNotification('Failed to load outlet data', 'warning', 'F&B');
     } finally {
       setDataLoading(false);
     }
-  }, [outlet.id, addNotification]);
+  }, [outlet.id, addNotification, cashierId]);
 
   useEffect(() => {
     fetchData();
   }, [fetchData]);
+
+  // ── Offline transaction queue ─────────────────────────────────────
+  const OFFLINE_QUEUE_KEY = 'pos_offline_queue';
+
+  const flushOfflineQueue = useCallback(async () => {
+    try {
+      const raw = localStorage.getItem(OFFLINE_QUEUE_KEY);
+      const queue: any[] = raw ? JSON.parse(raw) : [];
+      if (queue.length === 0) return;
+
+      const res = await fetch('/api/pos/sync/transactions', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ transactions: queue }),
+      });
+      if (!res.ok) return;
+      const result = await res.json();
+
+      // Keep only transactions that failed with non-duplicate errors
+      const failedInvoices = new Set(
+        (result.results || []).filter((r: any) => !r.success).map((r: any) => r.transactionId)
+      );
+      const remaining = queue.filter(tx => failedInvoices.has(tx.invoice_number));
+      if (remaining.length === 0) {
+        localStorage.removeItem(OFFLINE_QUEUE_KEY);
+        addNotification(`${result.synced} offline transaction(s) synced`, 'success', 'F&B');
+      } else {
+        localStorage.setItem(OFFLINE_QUEUE_KEY, JSON.stringify(remaining));
+      }
+    } catch {
+      // Still offline — keep the queue
+    }
+  }, [addNotification]);
+
+  const enqueueOfflineTransaction = useCallback((payload: any) => {
+    try {
+      const raw = localStorage.getItem(OFFLINE_QUEUE_KEY);
+      const queue: any[] = raw ? JSON.parse(raw) : [];
+      queue.push(payload);
+      localStorage.setItem(OFFLINE_QUEUE_KEY, JSON.stringify(queue));
+    } catch (err) {
+      console.error('Failed to queue offline transaction:', err);
+    }
+  }, []);
+
+  useEffect(() => {
+    flushOfflineQueue();
+    const onOnline = () => flushOfflineQueue();
+    window.addEventListener('online', onOnline);
+    return () => window.removeEventListener('online', onOnline);
+  }, [flushOfflineQueue]);
 
   // Build category name lookup
   const categoryNameMap = useMemo(() => {
@@ -323,14 +414,16 @@ export default function ModernPOSTerminal({ outlet }: ModernPOSTerminalProps) {
       notes: c.notes || undefined,
     }));
 
+    const selectedRoom = inHouseRooms.find(r => r.roomNumber === selectedRoomId);
     const payload = {
       outlet_id: outlet.id,
       invoice_number: invoiceNum,
-      cashier_id: userProfile?.id || 'unknown',
-      cashier_name: userProfile?.name || 'POS User',
-      customer_type: selectedRoomId ? 'in_house' : 'walk_in',
+      cashier_id: cashierId,
+      cashier_name: cashierName,
+      customer_type: selectedRoomId ? 'in_house_guest' : 'walk_in',
+      reservation_id: selectedRoom?.reservationId,
       room_number: selectedRoomId || undefined,
-      guest_name: customerName || undefined,
+      guest_name: customerName || selectedRoom?.guestName || undefined,
       line_items: lineItems,
       subtotal,
       discount_amount: discountAmount,
@@ -340,37 +433,41 @@ export default function ModernPOSTerminal({ outlet }: ModernPOSTerminalProps) {
         .reduce((sum, a) => sum + a.amount, 0),
       tax_amount: taxData.taxAmount,
       total_amount: total,
-      payment_method: splits[0]?.method?.toLowerCase().replace(/\s+/g, '_') || 'cash',
+      payment_method: splits[0]?.method || 'Cash',
       split_payments: splits.length > 1 ? splits.map(s => ({
-        method: s.method.toLowerCase().replace(/\s+/g, '_'),
+        method: s.method,
         amount: s.amount,
       })) : undefined,
       status: 'completed',
     };
 
     try {
-      const token = localStorage.getItem('auth_token');
       const response = await fetch('/api/pos/transactions', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
-        },
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
 
       if (!response.ok) {
         const err = await response.json();
         addNotification(err.error || 'Failed to record transaction', 'warning', 'F&B');
+        setProcessingPayment(false);
+        return;
+      }
+      const saved = await response.json();
+      if (saved.folio_posted === false && saved.folio_error) {
+        addNotification(`Payment recorded, but room charge was NOT posted to the folio: ${saved.folio_error}`, 'warning', 'F&B');
       } else {
         addNotification(`Payment processed: ${formatAmount(total)}`, 'success', 'F&B');
       }
     } catch (err) {
       console.error('Transaction POST failed:', err);
-      addNotification('Transaction saved offline — will sync', 'warning', 'F&B');
+      enqueueOfflineTransaction(payload);
+      addNotification('Transaction saved offline — will sync when connection returns', 'warning', 'F&B');
     }
 
-    setInvoicePrintData({
+    const invoiceData = {
       invoiceNumber: invoiceNum,
       date: new Date().toLocaleDateString() + ' ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       customerName: finalCustomerName,
@@ -385,7 +482,10 @@ export default function ModernPOSTerminal({ outlet }: ModernPOSTerminalProps) {
       total,
       paymentMethod: finalPaymentMethod,
       splitPayments: splits.length > 1 ? splits : undefined
-    });
+    };
+    setInvoicePrintData(invoiceData);
+    setLastInvoice(invoiceData);
+    fetchData();
 
     setCart([]);
     setCustomerName('');
@@ -394,6 +494,102 @@ export default function ModernPOSTerminal({ outlet }: ModernPOSTerminalProps) {
     setDiscountReason('');
     setShowPaymentModal(false);
     setProcessingPayment(false);
+  };
+
+  // Barcode lookup — scans pos_menu_items for this outlet
+  const handleBarcodeScan = async () => {
+    const barcode = window.prompt('Scan or enter barcode:');
+    if (!barcode?.trim()) return;
+    try {
+      const res = await fetch(
+        `/api/pos/products/barcode/${encodeURIComponent(barcode.trim())}?outlet_id=${outlet.id}`,
+        { credentials: 'include' }
+      );
+      if (!res.ok) {
+        addNotification('No menu item found for that barcode', 'warning', 'F&B');
+        return;
+      }
+      const item = await res.json();
+      const product: Product = {
+        id: item.id,
+        name: item.name,
+        price: Number(item.selling_price),
+        category: item.category_id ? (categoryNameMap.get(item.category_id) || 'Uncategorized') : 'Uncategorized',
+        categoryId: item.category_id || undefined,
+        image: item.image_url,
+        isAvailable: item.is_available !== false,
+        description: item.description,
+        taxable: item.is_taxable !== false,
+        serviceChargeApplicable: item.is_service_charge_applicable !== false,
+        preparationTime: item.preparation_time,
+      };
+      addToCart(product);
+    } catch (err) {
+      console.error('Barcode lookup failed:', err);
+      addNotification('Barcode lookup failed', 'warning', 'F&B');
+    }
+  };
+
+  // Open a POS shift for the current cashier
+  const handleOpenShift = async () => {
+    try {
+      const res = await fetch('/api/pos/shifts', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          outlet_id: outlet.id,
+          cashier_id: cashierId,
+          cashier_name: cashierName,
+          opening_float: 0,
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        addNotification(err.error || 'Failed to open shift', 'warning', 'F&B');
+        return;
+      }
+      const shift = await res.json();
+      setOpenShift(shift);
+      addNotification(`Shift #${shift.shift_number} opened`, 'success', 'F&B');
+    } catch (err) {
+      console.error('Open shift failed:', err);
+      addNotification('Failed to open shift', 'warning', 'F&B');
+    }
+  };
+
+  // Reprint the last completed invoice
+  const handleReprint = () => {
+    if (!lastInvoice) {
+      addNotification('No completed order to reprint', 'warning', 'F&B');
+      return;
+    }
+    setInvoicePrintData(lastInvoice);
+  };
+
+  // Reprint a past order from the Orders list
+  const reprintOrder = (order: any) => {
+    const items = Array.isArray(order.line_items) ? order.line_items : [];
+    setInvoicePrintData({
+      invoiceNumber: order.invoice_number,
+      date: new Date(order.transaction_date).toLocaleDateString() + ' ' +
+        new Date(order.transaction_date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      customerName: order.guest_name || order.room_number || 'Walk-in',
+      customerEmail: '',
+      roomNo: order.room_number || '',
+      items: items.map((li: any) => ({
+        productName: li.name || 'Item',
+        quantity: li.quantity || 1,
+        price: Number(li.unit_price) || 0,
+      })),
+      subtotal: Number(order.subtotal) || 0,
+      fees: [
+        ...(Number(order.service_charge_amount) > 0 ? [{ label: 'Service Charge', amount: Number(order.service_charge_amount) }] : []),
+        { label: 'VAT', amount: Number(order.tax_amount) || 0 },
+      ],
+      total: Number(order.total_amount) || 0,
+      paymentMethod: order.payment_method || 'Cash',
+    });
   };
 
   const getOutletIcon = () => {
@@ -432,7 +628,7 @@ export default function ModernPOSTerminal({ outlet }: ModernPOSTerminalProps) {
               <h1 className="text-xl font-black text-slate-900 dark:text-white">{outlet.name}</h1>
               <p className="text-xs text-slate-500 dark:text-slate-400 flex items-center gap-1">
                 <User size={12} />
-                {userProfile?.name || 'Server'} • {outlet.user_role}
+                {cashierName} • {outlet.user_role}
               </p>
             </div>
           </div>
@@ -493,15 +689,31 @@ export default function ModernPOSTerminal({ outlet }: ModernPOSTerminalProps) {
                     className="absolute right-0 top-full mt-2 w-48 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-xl z-50"
                   >
                     <div className="p-2">
-                      <button className="w-full flex items-center gap-3 px-3 py-2 text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg transition-all">
+                      <button
+                        onClick={() => { handleReprint(); setShowQuickActions(false); }}
+                        className="w-full flex items-center gap-3 px-3 py-2 text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg transition-all"
+                      >
                         <Printer size={16} />
-                        Print Receipt
+                        Reprint Last Receipt
                       </button>
-                      <button className="w-full flex items-center gap-3 px-3 py-2 text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg transition-all">
-                        <RotateCcw size={16} />
-                        Open Shift
-                      </button>
-                      <button className="w-full flex items-center gap-3 px-3 py-2 text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg transition-all">
+                      {openShift ? (
+                        <div className="w-full flex items-center gap-3 px-3 py-2 text-sm text-emerald-600 dark:text-emerald-400">
+                          <RotateCcw size={16} />
+                          Shift #{openShift.shift_number} open
+                        </div>
+                      ) : (
+                        <button
+                          onClick={() => { handleOpenShift(); setShowQuickActions(false); }}
+                          className="w-full flex items-center gap-3 px-3 py-2 text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg transition-all"
+                        >
+                          <RotateCcw size={16} />
+                          Open Shift
+                        </button>
+                      )}
+                      <button
+                        onClick={() => { onOpenSettings?.(); setShowQuickActions(false); }}
+                        className="w-full flex items-center gap-3 px-3 py-2 text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg transition-all"
+                      >
                         <Settings size={16} />
                         Settings
                       </button>
@@ -531,11 +743,12 @@ export default function ModernPOSTerminal({ outlet }: ModernPOSTerminalProps) {
                   className="w-full pl-11 pr-4 py-3 bg-slate-50 dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 text-slate-900 dark:text-white"
                 />
                 <div className="absolute right-3 top-1/2 -translate-y-1/2 flex gap-2">
-                  <button className="p-1 hover:bg-slate-200 dark:hover:bg-slate-600 rounded-lg transition-all" title="Barcode Scanner">
+                  <button
+                    onClick={handleBarcodeScan}
+                    className="p-1 hover:bg-slate-200 dark:hover:bg-slate-600 rounded-lg transition-all"
+                    title="Barcode Scanner"
+                  >
                     <Scan size={16} className="text-slate-400" />
-                  </button>
-                  <button className="p-1 hover:bg-slate-200 dark:hover:bg-slate-600 rounded-lg transition-all" title="Voice Search">
-                    <Mic size={16} className="text-slate-400" />
                   </button>
                 </div>
               </div>
@@ -644,13 +857,15 @@ export default function ModernPOSTerminal({ outlet }: ModernPOSTerminalProps) {
                     <Table className="w-16 h-16 text-slate-300 mx-auto mb-4" />
                     <p className="text-sm text-slate-500 dark:text-slate-400">No tables configured for this outlet</p>
                   </div>
-                ) : tables.map(table => (
+                ) : tables.map(table => {
+                  const liveOrder = activeKdsOrders.find(o => o.table_number === table.number);
+                  return (
                   <motion.button
                     key={table.id}
                     onClick={() => setSelectedTable(table)}
                     whileHover={{ scale: 1.02 }}
                     whileTap={{ scale: 0.98 }}
-                    className={`p-6 rounded-2xl border-2 transition-all ${getTableStatusColor(table.status)}`}
+                    className={`p-6 rounded-2xl border-2 transition-all ${getTableStatusColor(liveOrder ? 'occupied' : table.status)}`}
                   >
                     <div className="flex items-center justify-between mb-3">
                       <h4 className="text-2xl font-black">{table.number}</h4>
@@ -660,36 +875,82 @@ export default function ModernPOSTerminal({ outlet }: ModernPOSTerminalProps) {
                       </div>
                     </div>
                     
-                    {table.currentOrder ? (
+                    {liveOrder ? (
                       <div className="space-y-1">
                         <div className="flex justify-between text-xs">
-                          <span>Order: {table.currentOrder.id}</span>
-                          <span className="font-bold">{formatAmount(table.currentOrder.total)}</span>
+                          <span>Order: {liveOrder.order_id}</span>
+                          <span className="font-bold capitalize">{String(liveOrder.status || '').replace('_', ' ')}</span>
                         </div>
                         <div className="flex justify-between text-xs opacity-75">
-                          <span>{table.currentOrder.time}</span>
-                          <span>{table.currentOrder.items} items</span>
+                          <span>{new Date(liveOrder.fired_at || liveOrder.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                          <span>{(liveOrder.items || []).reduce((s: number, i: any) => s + (i.quantity || 1), 0)} items</span>
                         </div>
                       </div>
                     ) : (
                       <p className="text-xs font-bold capitalize">{table.status}</p>
                     )}
                   </motion.button>
-                ))}
+                  );
+                })}
               </div>
             )}
 
             {viewMode === 'orders' && (
               <div className="space-y-3">
-                <div className="text-center py-12">
-                  <Receipt className="w-16 h-16 text-slate-300 mx-auto mb-4" />
-                  <h4 className="text-lg font-semibold text-slate-900 dark:text-white mb-2">
-                    Active Orders
-                  </h4>
-                  <p className="text-slate-500 dark:text-slate-400">
-                    View and manage current orders
-                  </p>
-                </div>
+                {recentOrders.length === 0 ? (
+                  <div className="text-center py-12">
+                    <Receipt className="w-16 h-16 text-slate-300 mx-auto mb-4" />
+                    <h4 className="text-lg font-semibold text-slate-900 dark:text-white mb-2">
+                      No Orders Today
+                    </h4>
+                    <p className="text-slate-500 dark:text-slate-400">
+                      Completed orders for this outlet will appear here
+                    </p>
+                  </div>
+                ) : recentOrders.map(order => {
+                  const itemCount = Array.isArray(order.line_items)
+                    ? order.line_items.reduce((s: number, li: any) => s + (li.quantity || 1), 0)
+                    : 0;
+                  return (
+                    <div
+                      key={order.id}
+                      className="flex items-center justify-between p-4 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl"
+                    >
+                      <div className="flex items-center gap-3 min-w-0">
+                        <div className={`w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0 ${
+                          order.status === 'completed'
+                            ? 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-600'
+                            : 'bg-amber-100 dark:bg-amber-900/30 text-amber-600'
+                        }`}>
+                          <Receipt size={16} />
+                        </div>
+                        <div className="min-w-0">
+                          <h4 className="text-sm font-bold text-slate-900 dark:text-white truncate">
+                            {order.invoice_number}
+                          </h4>
+                          <p className="text-[10px] text-slate-500 dark:text-slate-400">
+                            {new Date(order.transaction_date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                            {' • '}{itemCount} items
+                            {order.room_number ? ` • Room ${order.room_number}` : ''}
+                            {' • '}{String(order.payment_method || '').replace(/_/g, ' ')}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <span className="text-sm font-bold text-indigo-600 dark:text-indigo-400">
+                          {formatAmount(Number(order.total_amount) || 0)}
+                        </span>
+                        <button
+                          onClick={() => reprintOrder(order)}
+                          className="p-2 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg text-slate-500 transition-all"
+                          title="Reprint receipt"
+                        >
+                          <Printer size={16} />
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             )}
           </div>
@@ -740,6 +1001,27 @@ export default function ModernPOSTerminal({ outlet }: ModernPOSTerminalProps) {
                 onChange={(e) => setCustomerName(e.target.value)}
                 className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 text-slate-900 dark:text-white"
               />
+            </div>
+
+            {/* Room Charge — in-house guest selection */}
+            <div className="mt-2">
+              <select
+                value={selectedRoomId}
+                onChange={(e) => {
+                  const roomNo = e.target.value;
+                  setSelectedRoomId(roomNo);
+                  const room = inHouseRooms.find(r => r.roomNumber === roomNo);
+                  if (room?.guestName) setCustomerName(room.guestName);
+                }}
+                className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 text-slate-900 dark:text-white"
+              >
+                <option value="">Charge to room… (in-house guests)</option>
+                {inHouseRooms.map(room => (
+                  <option key={room.reservationId} value={room.roomNumber}>
+                    Room {room.roomNumber} — {room.guestName}
+                  </option>
+                ))}
+              </select>
             </div>
           </div>
 
@@ -866,9 +1148,9 @@ export default function ModernPOSTerminal({ outlet }: ModernPOSTerminalProps) {
                   onClick={async () => {
                     if (cart.length === 0) return;
                     try {
-                      const token = localStorage.getItem('auth_token');
                       const kdsPayload = {
                         orderId: `KDS-${outlet.code}-${Date.now()}`,
+                        outlet_id: outlet.id,
                         items: cart.map(c => ({
                           menu_item_id: c.product.id,
                           name: c.product.name,
@@ -876,15 +1158,15 @@ export default function ModernPOSTerminal({ outlet }: ModernPOSTerminalProps) {
                           notes: c.notes || orderNotes || undefined,
                         })),
                         tableNumber: selectedTable?.number || undefined,
+                        customer_name: customerName || undefined,
                         priority: 'normal',
                         station: outlet.outlet_type === 'restaurant' ? 'kitchen' : 'bar',
+                        notes: orderNotes || undefined,
                       };
                       const response = await fetch('/api/pos/kds/orders', {
                         method: 'POST',
-                        headers: {
-                          'Content-Type': 'application/json',
-                          ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
-                        },
+                        credentials: 'include',
+                        headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify(kdsPayload),
                       });
                       if (response.ok) {
@@ -939,6 +1221,8 @@ export default function ModernPOSTerminal({ outlet }: ModernPOSTerminalProps) {
                 onPaymentComplete={processPayment}
                 currency="ETB"
                 availableMethods={['Cash', 'Card', 'Mobile', 'Room Charge']}
+                isRoomChargeAvailable={inHouseRooms.length > 0}
+                selectedRoomId={selectedRoomId || undefined}
               />
             </div>
           </div>

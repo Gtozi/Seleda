@@ -1,9 +1,14 @@
 /**
  * Profile & Preferences Module
  * Manages guest personal information and stay preferences
+ *
+ * DB-integrated via /api/guest-portal/profile/:guestId — reads/writes the
+ * shared `guests` row. Stay preferences persist to guests.preferences JSONB
+ * with the same keys the front-office Guest Profiles module edits, so both
+ * portals stay in sync.
  */
 
-import { useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   User,
   Mail,
@@ -11,17 +16,26 @@ import {
   Globe,
   DollarSign,
   Bed,
-  Coffee,
   Thermometer,
-  Heart,
   Accessibility,
   Save,
   Edit,
-  CheckCircle2
+  CheckCircle2,
+  AlertTriangle,
+  Loader2
 } from 'lucide-react';
 
 interface ProfilePreferencesModuleProps {
+  reservationId?: string;
   guestId?: string;
+}
+
+function authHeaders(json = false): Record<string, string> {
+  const token = typeof window !== 'undefined' ? localStorage.getItem('auth_token') : null;
+  const headers: Record<string, string> = {};
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+  if (json) headers['Content-Type'] = 'application/json';
+  return headers;
 }
 
 interface PersonalInfo {
@@ -45,41 +59,111 @@ interface StayPreferences {
   accessibilityNeeds: string[];
 }
 
+const EMPTY_PERSONAL: PersonalInfo = {
+  firstName: '',
+  lastName: '',
+  email: '',
+  phone: '',
+  nationality: '',
+  preferredLanguage: 'en',
+  preferredCurrency: 'USD'
+};
+
+const EMPTY_STAY: StayPreferences = {
+  bedType: 'King',
+  pillowType: 'Medium',
+  floorPreference: 'Any',
+  smokingPreference: 'Non-Smoking',
+  roomTemperature: 22,
+  dietaryPreferences: [],
+  allergies: [],
+  accessibilityNeeds: []
+};
+
 const ProfilePreferencesModule: React.FC<ProfilePreferencesModuleProps> = ({
+  reservationId,
   guestId
 }) => {
   const [editing, setEditing] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
-  const [personalInfo, setPersonalInfo] = useState<PersonalInfo>({
-    firstName: 'John',
-    lastName: 'Doe',
-    email: 'john.doe@example.com',
-    phone: '+251 911 123 456',
-    nationality: 'Ethiopian',
-    preferredLanguage: 'en',
-    preferredCurrency: 'USD'
-  });
+  const [personalInfo, setPersonalInfo] = useState<PersonalInfo>(EMPTY_PERSONAL);
+  const [stayPreferences, setStayPreferences] = useState<StayPreferences>(EMPTY_STAY);
+  // Server snapshot so Cancel can restore the last persisted values.
+  const [persisted, setPersisted] = useState<{ personal: PersonalInfo; stay: StayPreferences } | null>(null);
 
-  const [stayPreferences, setStayPreferences] = useState<StayPreferences>({
-    bedType: 'King',
-    pillowType: 'Medium',
-    floorPreference: 'Higher',
-    smokingPreference: 'Non-Smoking',
-    roomTemperature: 22,
-    dietaryPreferences: ['Vegetarian'],
-    allergies: ['Peanuts'],
-    accessibilityNeeds: []
-  });
+  const loadProfile = useCallback(async () => {
+    if (!guestId) {
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    try {
+      const cred = reservationId ? `?reservationId=${encodeURIComponent(reservationId)}` : '';
+      const res = await fetch(`/api/guest-portal/profile/${encodeURIComponent(guestId)}${cred}`, {
+        headers: authHeaders(), credentials: 'include',
+      });
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(payload.error || `Failed to load profile (${res.status})`);
 
-  const handleSave = () => {
-    setEditing(false);
-    setSaveSuccess(true);
-    setTimeout(() => setSaveSuccess(false), 3000);
-    // API call to save preferences would go here
+      const personal: PersonalInfo = { ...EMPTY_PERSONAL, ...(payload.profile || {}) };
+      const stay: StayPreferences = { ...EMPTY_STAY, ...(payload.stayPreferences || {}) };
+      setPersonalInfo(personal);
+      setStayPreferences(stay);
+      setPersisted({ personal, stay });
+    } catch (e: any) {
+      setError(e?.message || 'Failed to load profile');
+    } finally {
+      setLoading(false);
+    }
+  }, [guestId, reservationId]);
+
+  useEffect(() => { loadProfile(); }, [loadProfile]);
+
+  const handleSave = async () => {
+    if (!guestId) return;
+    setSaving(true);
+    setSaveError(null);
+    try {
+      const res = await fetch(`/api/guest-portal/profile/${encodeURIComponent(guestId)}`, {
+        method: 'PUT',
+        headers: authHeaders(true),
+        credentials: 'include',
+        body: JSON.stringify({
+          reservationId: reservationId || undefined,
+          profile: personalInfo,
+          stayPreferences,
+        }),
+      });
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(payload.error || `Save failed (${res.status})`);
+
+      const personal: PersonalInfo = { ...EMPTY_PERSONAL, ...(payload.profile || {}) };
+      const stay: StayPreferences = { ...EMPTY_STAY, ...(payload.stayPreferences || {}) };
+      setPersonalInfo(personal);
+      setStayPreferences(stay);
+      setPersisted({ personal, stay });
+      setEditing(false);
+      setSaveSuccess(true);
+      setTimeout(() => setSaveSuccess(false), 3000);
+    } catch (e: any) {
+      setSaveError(e?.message || 'Failed to save profile');
+    } finally {
+      setSaving(false);
+    }
   };
 
   const handleCancel = () => {
+    if (persisted) {
+      setPersonalInfo(persisted.personal);
+      setStayPreferences(persisted.stay);
+    }
+    setSaveError(null);
     setEditing(false);
   };
 
@@ -129,8 +213,25 @@ const ProfilePreferencesModule: React.FC<ProfilePreferencesModuleProps> = ({
   const allergyOptions = ['Peanuts', 'Tree Nuts', 'Shellfish', 'Dairy', 'Eggs', 'Soy', 'Wheat'];
   const accessibilityOptions = ['Wheelchair Access', 'Hearing Assistance', 'Visual Assistance', 'Service Animal'];
 
+  if (!guestId) {
+    return (
+      <div className="p-4 sm:p-6">
+        <p className="text-slate-500 dark:text-slate-400">Sign in to view your profile and preferences.</p>
+      </div>
+    );
+  }
+
+  if (loading) {
+    return (
+      <div className="p-4 sm:p-6 flex items-center gap-3 text-slate-500 dark:text-slate-400">
+        <Loader2 size={20} className="animate-spin" />
+        <span className="text-sm">Loading your profile…</span>
+      </div>
+    );
+  }
+
   return (
-    <div className="p-6 space-y-6">
+    <div className="p-4 sm:p-6 space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
@@ -148,7 +249,7 @@ const ProfilePreferencesModule: React.FC<ProfilePreferencesModuleProps> = ({
           )}
           {!editing ? (
             <button
-              onClick={() => setEditing(true)}
+              onClick={() => { setSaveError(null); setEditing(true); }}
               className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition text-sm font-medium"
             >
               <Edit size={16} />
@@ -158,24 +259,33 @@ const ProfilePreferencesModule: React.FC<ProfilePreferencesModuleProps> = ({
             <div className="flex items-center gap-2">
               <button
                 onClick={handleCancel}
-                className="px-4 py-2 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-900/20 transition text-sm font-medium"
+                disabled={saving}
+                className="px-4 py-2 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-900/20 transition text-sm font-medium disabled:opacity-50"
               >
                 Cancel
               </button>
               <button
                 onClick={handleSave}
-                className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition text-sm font-medium"
+                disabled={saving}
+                className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition text-sm font-medium disabled:opacity-50"
               >
-                <Save size={16} />
-                Save Changes
+                {saving ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
+                {saving ? 'Saving…' : 'Save Changes'}
               </button>
             </div>
           )}
         </div>
       </div>
 
+      {(error || saveError) && (
+        <div className="flex items-center gap-2 p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-700/50 rounded-lg text-red-700 dark:text-red-400 text-sm">
+          <AlertTriangle size={16} />
+          {error || saveError}
+        </div>
+      )}
+
       {/* Personal Information */}
-      <div className="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 p-6">
+      <div className="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 p-4 sm:p-6">
         <div className="flex items-center gap-3 mb-6">
           <div className="w-10 h-10 bg-indigo-100 dark:bg-indigo-900/20 rounded-lg flex items-center justify-center">
             <User size={20} className="text-indigo-600 dark:text-indigo-400" />
@@ -290,7 +400,7 @@ const ProfilePreferencesModule: React.FC<ProfilePreferencesModuleProps> = ({
       </div>
 
       {/* Stay Preferences */}
-      <div className="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 p-6">
+      <div className="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 p-4 sm:p-6">
         <div className="flex items-center gap-3 mb-6">
           <div className="w-10 h-10 bg-indigo-100 dark:bg-indigo-900/20 rounded-lg flex items-center justify-center">
             <Bed size={20} className="text-indigo-600 dark:text-indigo-400" />

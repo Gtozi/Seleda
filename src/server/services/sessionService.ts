@@ -134,6 +134,8 @@ export function mapSystemUserFromDb(db: any): User {
     avatarInitials: db.avatar_initials || db.name?.slice(0, 2).toUpperCase() || 'U',
     status: db.status,
     lastLogin: db.last_login,
+    authUserId: db.auth_user_id || undefined,
+    propertyId: db.property_id || undefined,
     employeeId: db.employee_id,
     username: db.username,
     mobileNumber: db.mobile_number,

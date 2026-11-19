@@ -29,7 +29,7 @@ const ExpensePortal = () => {
   
   const [newRequest, setNewRequest] = useState({
     department: 'Front Office',
-    category: 'Operational',
+    category: 'Payroll',
     subcategory: '',
     description: '',
     amount: 0,
@@ -67,7 +67,7 @@ const ExpensePortal = () => {
       });
       setNewRequest({
         department: 'Front Office',
-        category: 'Operational',
+        category: 'Payroll',
         subcategory: '',
         description: '',
         amount: 0,
@@ -210,11 +210,16 @@ const ExpensePortal = () => {
                               onChange={e => setNewRequest({...newRequest, category: e.target.value})}
                               className="w-full bg-slate-50 dark:bg-slate-800 border-none rounded-2xl px-5 py-4 text-xs font-bold outline-none focus:ring-2 focus:ring-indigo-500/20 transition-all cursor-pointer"
                            >
-                              <option>Operational</option>
-                              <option>Administrative</option>
-                              <option>Utility</option>
-                              <option>Service</option>
-                              <option>Asset Purchase</option>
+                              <option>Payroll</option>
+                              <option>Utilities</option>
+                              <option>Maintenance</option>
+                              <option>Marketing</option>
+                              <option>Insurance</option>
+                              <option>Office Supplies</option>
+                              <option>Food Cost</option>
+                              <option>Beverage Cost</option>
+                              <option>Laundry Cost</option>
+                              <option>Other</option>
                            </select>
                         </div>
 

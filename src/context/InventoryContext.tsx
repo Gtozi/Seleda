@@ -1,13 +1,35 @@
 /**
  * @license
  * SPDX-License-Identifier: Apache-2.0
+ *
+ * InventoryContext — frontend state bridge for the unified inventory.
+ *
+ * Previously backed by legacy inventory_items/inventory_stores tables via
+ * supabaseService. Now uses inventoryService.ts (uinv-portal) as the single
+ * source of truth, with localStorage as an offline cache fallback.
  */
 
 import React, { createContext, useContext, useState, useCallback } from 'react';
 import { InventoryItem, Store, Requisition, RequisitionStatus, StockMovement, Supplier } from '../types/inventory';
 import { useSystem } from './SystemContext';
-import { supabaseService } from '../services/supabaseService';
-import { initialInventoryItems, initialInventoryStores } from './initialState';
+import {
+  fetchItems as fetchUinvItems,
+  fetchStores as fetchUinvStores,
+  fetchIssues as fetchUinvIssues,
+  fetchLedger as fetchUinvLedger,
+  createItem as createUinvItem,
+  updateItem as updateUinvItem,
+  deleteItem as deleteUinvItem,
+  createStore as createUinvStore,
+  updateStore as updateUinvStore,
+  deleteStore as deleteUinvStore,
+  createIssue as createUinvIssue,
+  deleteIssue as deleteUinvIssue,
+  type UinvItem,
+  type UinvStore,
+  type UinvIssue,
+  type UinvLedgerEntry,
+} from '../services/inventoryService';
 
 export interface InventoryContextType {
   inventoryItems: InventoryItem[];
@@ -39,15 +61,84 @@ export const useInventory = () => {
   return context;
 };
 
+// ── Mappers: uinv_* → legacy frontend types ──────────────────────────────
+
+function uinvItemToLegacy(u: UinvItem): InventoryItem {
+  return {
+    id: u.id,
+    code: u.item_code || '',
+    name: u.item_name || '',
+    category: (u.category as any) || 'Operating Supplies',
+    subcategory: (u.subcategory as any) || 'Consumables',
+    unit: u.unit_of_measure || 'PCS',
+    brand: u.brand || undefined,
+    supplierId: '',
+    minStock: u.min_stock || 0,
+    maxStock: u.max_stock || 0,
+    reorderLevel: u.reorder_point || 0,
+    lastCost: u.last_cost || 0,
+    avgCost: u.avg_cost || u.last_cost || 0,
+    currentStock: 0, // Stock lives in uinv_stock_balances, not on the item
+    location: '',
+    storeId: u.default_store_id || undefined,
+  };
+}
+
+function uinvStoreToLegacy(s: UinvStore): Store {
+  return {
+    id: s.id,
+    name: s.store_name || '',
+    type: (s.store_type as any) || 'Main',
+    manager: s.manager || '',
+  };
+}
+
+function uinvIssueToLegacy(r: UinvIssue): Requisition {
+  return {
+    id: r.id,
+    number: r.issue_number || '',
+    department: r.department || '',
+    requestedBy: r.requester || '',
+    requestDate: r.created_at ? String(r.created_at).slice(0, 10) : '',
+    priority: 'Normal',
+    status: (r.approval_status as any) || 'Pending',
+    items: (r.lines || []).map((l: any) => ({
+      itemId: l.itemId || '',
+      name: l.itemName || '',
+      requestedQty: l.requestedQty || 0,
+      issuedQty: l.issuedQty || 0,
+      unit: l.unit || 'PCS',
+      cost: l.unitCost || 0,
+    })),
+  };
+}
+
+function uinvLedgerToLegacy(l: UinvLedgerEntry): StockMovement {
+  return {
+    id: l.id,
+    date: l.transaction_date || '',
+    itemId: l.item_id || '',
+    itemName: '',
+    type: (l.transaction_type as any) || 'Adjustment',
+    quantity: (l.quantity_in || 0) - (l.quantity_out || 0),
+    cost: l.unit_cost || 0,
+    reference: l.reference || '',
+    user: l.performed_by || '',
+    storeFrom: l.store_id || undefined,
+  };
+}
+
+// ── Provider ─────────────────────────────────────────────────────────────
+
 export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { logAudit } = useSystem();
-  
+
   const [inventoryItems, setInventoryItems] = useState<InventoryItem[]>(() => {
     if (typeof window !== 'undefined') {
       const saved = localStorage.getItem('hotel_erp_inventory_items_v2');
       if (saved) return JSON.parse(saved);
     }
-    return supabaseService.isConfigured() ? [] : initialInventoryItems;
+    return [];
   });
 
   const [inventoryStores, setInventoryStores] = useState<Store[]>(() => {
@@ -55,7 +146,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       const saved = localStorage.getItem('hotel_erp_inventory_stores_v1');
       if (saved) return JSON.parse(saved);
     }
-    return supabaseService.isConfigured() ? [] : initialInventoryStores;
+    return [];
   });
 
   const [inventoryRequisitions, setInventoryRequisitions] = useState<Requisition[]>(() => {
@@ -106,55 +197,57 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     }
   }, []);
 
+  // ── Sync from unified inventory API ────────────────────────────────────
   const refreshData = useCallback(async () => {
-    if (!supabaseService.isConfigured()) return;
     try {
-      const [
-        items, stores, reqs, movements, sups
-      ] = await Promise.all([
-        supabaseService.fetchInventoryItems(),
-        supabaseService.fetchInventoryStores(),
-        supabaseService.fetchInventoryRequisitions(),
-        supabaseService.fetchStockMovements(),
-        supabaseService.fetchInventorySuppliers()
+      const [items, stores, issues, ledger] = await Promise.all([
+        fetchUinvItems().catch(() => [] as UinvItem[]),
+        fetchUinvStores().catch(() => [] as UinvStore[]),
+        fetchUinvIssues().catch(() => [] as UinvIssue[]),
+        fetchUinvLedger().catch(() => [] as UinvLedgerEntry[]),
       ]);
-      setInventoryItems(items);
-      localStorage.setItem('hotel_erp_inventory_items_v2', JSON.stringify(items));
-      setInventoryStores(stores);
-      if (stores.length > 0) {
-        localStorage.setItem('hotel_erp_inventory_stores_v1', JSON.stringify(stores));
+
+      const legacyItems = items.map(uinvItemToLegacy);
+      setInventoryItems(legacyItems);
+      localStorage.setItem('hotel_erp_inventory_items_v2', JSON.stringify(legacyItems));
+
+      const legacyStores = stores.map(uinvStoreToLegacy);
+      if (legacyStores.length > 0) {
+        setInventoryStores(legacyStores);
+        localStorage.setItem('hotel_erp_inventory_stores_v1', JSON.stringify(legacyStores));
       }
-      if (reqs.length > 0) {
-        setInventoryRequisitions(reqs);
-        persistRequisitions(reqs);
+
+      const legacyReqs = issues.map(uinvIssueToLegacy);
+      if (legacyReqs.length > 0) {
+        setInventoryRequisitions(legacyReqs);
+        persistRequisitions(legacyReqs);
       }
-      if (movements.length > 0) {
-        setStockMovements(movements);
-        persistStockMovements(movements);
-      }
-      if (sups.length > 0) {
-        setSuppliers(sups);
-        persistSuppliers(sups);
+
+      const legacyMovements = ledger.map(uinvLedgerToLegacy);
+      if (legacyMovements.length > 0) {
+        setStockMovements(legacyMovements);
+        persistStockMovements(legacyMovements);
       }
     } catch (error) {
-      console.error('Failed to fetch inventory Supabase state:', error);
+      console.error('Failed to sync from unified inventory:', error);
     }
-  }, [persistRequisitions, persistStockMovements, persistSuppliers]);
+  }, [persistRequisitions, persistStockMovements]);
 
   React.useEffect(() => {
     refreshData();
   }, [refreshData]);
 
+  // ── Stock movements (local cache; ledger is authoritative server-side) ─
   const recordStockMovement = useCallback((movementData: Omit<StockMovement, 'id'>) => {
     const newMovement: StockMovement = { ...movementData, id: `M-${Date.now()}-${Math.floor(Math.random() * 1000)}` };
     setStockMovements(prev => {
       const updated = [...prev, newMovement];
       persistStockMovements(updated);
-      if (supabaseService.isConfigured()) supabaseService.upsertStockMovement(newMovement).catch(console.error);
       return updated;
     });
   }, [persistStockMovements]);
 
+  // ── Items ──────────────────────────────────────────────────────────────
   const addInventoryItem = useCallback((itemData: Omit<InventoryItem, 'id'>) => {
     const newItem: InventoryItem = { ...itemData, id: `I-${Date.now()}` };
     setInventoryItems(prev => {
@@ -162,18 +255,46 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       localStorage.setItem('hotel_erp_inventory_items_v2', JSON.stringify(updated));
       return updated;
     });
-    if (supabaseService.isConfigured()) supabaseService.upsertInventoryItem(newItem).catch(console.error);
+    // Sync to unified inventory
+    createUinvItem({
+      item_code: newItem.code,
+      item_name: newItem.name,
+      category: newItem.category,
+      subcategory: newItem.subcategory,
+      unit_of_measure: newItem.unit,
+      brand: newItem.brand,
+      min_stock: newItem.minStock,
+      max_stock: newItem.maxStock,
+      reorder_point: newItem.reorderLevel,
+      last_cost: newItem.lastCost,
+      avg_cost: newItem.avgCost,
+      standard_cost: newItem.avgCost,
+      is_active: true,
+    }).catch(console.error);
     logAudit(`Added inventory item: ${newItem.name}`);
   }, [logAudit]);
 
   const updateInventoryItem = useCallback((id: string, updates: Partial<InventoryItem>) => {
     setInventoryItems(prev => {
       const updated = prev.map(item => item.id === id ? { ...item, ...updates } : item);
-      const target = updated.find(item => item.id === id);
-      if (target && supabaseService.isConfigured()) supabaseService.upsertInventoryItem(target).catch(console.error);
       localStorage.setItem('hotel_erp_inventory_items_v2', JSON.stringify(updated));
       return updated;
     });
+    // Sync to unified inventory
+    const patch: Partial<UinvItem> = {};
+    if (updates.code !== undefined) patch.item_code = updates.code;
+    if (updates.name !== undefined) patch.item_name = updates.name;
+    if (updates.category !== undefined) patch.category = updates.category;
+    if (updates.subcategory !== undefined) patch.subcategory = updates.subcategory;
+    if (updates.unit !== undefined) patch.unit_of_measure = updates.unit;
+    if (updates.minStock !== undefined) patch.min_stock = updates.minStock;
+    if (updates.maxStock !== undefined) patch.max_stock = updates.maxStock;
+    if (updates.reorderLevel !== undefined) patch.reorder_point = updates.reorderLevel;
+    if (updates.lastCost !== undefined) patch.last_cost = updates.lastCost;
+    if (updates.avgCost !== undefined) { patch.avg_cost = updates.avgCost; patch.standard_cost = updates.avgCost; }
+    if (Object.keys(patch).length > 0) {
+      updateUinvItem(id, patch).catch(console.error);
+    }
     if (Object.keys(updates).length > 0) logAudit(`Updated inventory item ${id}`);
   }, [logAudit]);
 
@@ -183,10 +304,11 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       localStorage.setItem('hotel_erp_inventory_items_v2', JSON.stringify(updated));
       return updated;
     });
-    if (supabaseService.isConfigured()) supabaseService.deleteInventoryItem(id).catch(console.error);
+    deleteUinvItem(id).catch(console.error);
     logAudit(`Deleted inventory item ${id}`);
   }, [logAudit]);
 
+  // ── Stores ─────────────────────────────────────────────────────────────
   const addInventoryStore = useCallback((storeData: Omit<Store, 'id'>) => {
     const newStore = { ...storeData, id: `ST-${Date.now()}` };
     setInventoryStores(prev => {
@@ -196,7 +318,12 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       }
       return updated;
     });
-    if (supabaseService.isConfigured()) supabaseService.upsertInventoryStore(newStore).catch(console.error);
+    createUinvStore({
+      store_name: newStore.name,
+      store_type: newStore.type,
+      manager: newStore.manager,
+      is_active: true,
+    } as any).catch(console.error);
   }, []);
 
   const updateInventoryStore = useCallback((id: string, updates: Partial<Store>) => {
@@ -205,10 +332,15 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       if (typeof window !== 'undefined') {
         localStorage.setItem('hotel_erp_inventory_stores_v1', JSON.stringify(updated));
       }
-      const target = updated.find(s => s.id === id);
-      if (target && supabaseService.isConfigured()) supabaseService.upsertInventoryStore(target).catch(console.error);
       return updated;
     });
+    const patch: Partial<UinvStore> = {};
+    if (updates.name !== undefined) patch.store_name = updates.name;
+    if (updates.type !== undefined) patch.store_type = updates.type;
+    if (updates.manager !== undefined) patch.manager = updates.manager;
+    if (Object.keys(patch).length > 0) {
+      updateUinvStore(id, patch).catch(console.error);
+    }
   }, []);
 
   const deleteInventoryStore = useCallback((id: string) => {
@@ -219,9 +351,10 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       }
       return updated;
     });
-    if (supabaseService.isConfigured()) supabaseService.deleteInventoryStore(id).catch(console.error);
+    deleteUinvStore(id).catch(console.error);
   }, []);
 
+  // ── Suppliers (not in unified inventory; local only) ───────────────────
   const addSupplier = useCallback((supplierData: Omit<Supplier, 'id'>) => {
     const newSupplier: Supplier = { ...supplierData, id: `SUP-${Date.now()}` };
     setSuppliers(prev => {
@@ -229,15 +362,12 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       persistSuppliers(updated);
       return updated;
     });
-    if (supabaseService.isConfigured()) supabaseService.upsertInventorySupplier(newSupplier).catch(console.error);
     logAudit(`Added supplier: ${newSupplier.name}`);
   }, [logAudit, persistSuppliers]);
 
   const updateSupplier = useCallback((id: string, updates: Partial<Supplier>) => {
     setSuppliers(prev => {
       const updated = prev.map(s => s.id === id ? { ...s, ...updates } : s);
-      const target = updated.find(s => s.id === id);
-      if (target && supabaseService.isConfigured()) supabaseService.upsertInventorySupplier(target).catch(console.error);
       persistSuppliers(updated);
       return updated;
     });
@@ -250,10 +380,10 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       persistSuppliers(updated);
       return updated;
     });
-    if (supabaseService.isConfigured()) supabaseService.deleteInventorySupplier(id).catch(console.error);
     logAudit(`Deleted supplier ${id}`);
   }, [logAudit, persistSuppliers]);
 
+  // ── Requisitions (unified issues) ──────────────────────────────────────
   const addInventoryRequisition = useCallback((reqData: Omit<Requisition, 'id' | 'number'>) => {
     const reqId = `REQ-${Date.now()}`;
     setInventoryRequisitions(prev => {
@@ -262,16 +392,25 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       const newReq: Requisition = { ...reqData, id: reqId, number: `REQ-${String(counter).padStart(4, '0')}` };
       const updated = [...prev, newReq];
       persistRequisitions(updated);
-      if (supabaseService.isConfigured()) supabaseService.upsertInventoryRequisition(newReq).catch(console.error);
+      // Sync to unified issues
+      createUinvIssue({
+        issue_number: newReq.number,
+        department: newReq.department,
+        requester: newReq.requestedBy,
+        source: 'Requisition',
+        lines: newReq.items.map(i => ({
+          itemId: i.itemId,
+          itemName: i.name,
+          requestedQty: i.requestedQty,
+          unit: i.unit,
+          unitCost: i.cost || 0,
+        })),
+      } as any).catch(console.error);
       return updated;
     });
   }, [persistRequisitions]);
 
   const updateInventoryRequisitionStatus = useCallback((id: string, status: RequisitionStatus, itemsWithIssuedQty?: { itemId: string, issuedQty: number }[]) => {
-    // Snapshot the requisition before async state updates
-    const reqSnapshot = inventoryRequisitions.find(r => r.id === id);
-
-    // Update requisition status first
     setInventoryRequisitions(prev => {
       const updated = prev.map(req => {
         if (req.id !== id) return req;
@@ -286,35 +425,11 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         return updatedReq;
       });
       persistRequisitions(updated);
-      // Sync updated requisition to Supabase
-      const target = updated.find(r => r.id === id);
-      if (target && supabaseService.isConfigured()) supabaseService.upsertInventoryRequisition(target).catch(console.error);
       return updated;
     });
 
-    // When issuing, decrement stock and record movements
+    // When issuing, record stock movements locally
     if (status === 'Issued' && itemsWithIssuedQty && itemsWithIssuedQty.length > 0) {
-      setInventoryItems(prevItems => {
-        const updatedItems = prevItems.map(invItem => {
-          const issuedQty = itemsWithIssuedQty.find(i => i.itemId === invItem.id || i.itemId === invItem.code)?.issuedQty;
-          if (issuedQty !== undefined && issuedQty > 0) {
-            return { ...invItem, currentStock: Math.max(0, invItem.currentStock - issuedQty) };
-          }
-          return invItem;
-        });
-        localStorage.setItem('hotel_erp_inventory_items_v2', JSON.stringify(updatedItems));
-
-        // Sync affected items to Supabase
-        if (supabaseService.isConfigured()) {
-          itemsWithIssuedQty.forEach(({ itemId }) => {
-            const item = updatedItems.find(i => i.id === itemId || i.code === itemId);
-            if (item) supabaseService.upsertInventoryItem(item).catch(console.error);
-          });
-        }
-        return updatedItems;
-      });
-
-      // Record stock movements using a snapshot lookup
       itemsWithIssuedQty.forEach(({ itemId, issuedQty }) => {
         if (issuedQty > 0) {
           const item = inventoryItems.find(i => i.id === itemId || i.code === itemId);
@@ -333,94 +448,9 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           }
         }
       });
-
       logAudit(`Issued requisition ${id} for ${itemsWithIssuedQty.length} items`);
     }
-
-    // When receiving, add stock to destination store and record transfer
-    if (status === 'Received' && reqSnapshot) {
-      const dept = reqSnapshot.department;
-      // Map department name to destination store
-      const destStore = inventoryStores.find(s =>
-        s.name.toLowerCase() === dept.toLowerCase() ||
-        dept.toLowerCase().includes(s.name.toLowerCase().split(' ')[0]) ||
-        s.name.toLowerCase().includes(dept.toLowerCase().split(' ')[0])
-      ) || inventoryStores.find(s =>
-        (dept.toLowerCase().includes('gift') && s.id === 'ST-GIFT') ||
-        (dept.toLowerCase().includes('office') && s.id === 'ST-OFC') ||
-        (dept.toLowerCase().includes('bar') && s.id === 'ST-BAR') ||
-        (dept.toLowerCase().includes('restaurant') && s.id === 'ST-REST') ||
-        (dept.toLowerCase().includes('housekeeping') && s.id === 'ST-HK') ||
-        (dept.toLowerCase().includes('engineering') && s.id === 'ST-ENG')
-      );
-
-      if (destStore) {
-        setInventoryItems(prevItems => {
-          let updatedItems = [...prevItems];
-
-          reqSnapshot.items.forEach(reqItem => {
-            const issuedQty = reqItem.issuedQty ?? reqItem.requestedQty;
-            if (issuedQty <= 0) return;
-
-            const sourceItem = prevItems.find(i => i.id === reqItem.itemId || i.code === reqItem.itemId);
-            if (!sourceItem) return;
-
-            // Look for existing item at destination with same name
-            const destItemIndex = updatedItems.findIndex(i =>
-              i.storeId === destStore.id &&
-              i.name.toLowerCase() === sourceItem.name.toLowerCase()
-            );
-
-            if (destItemIndex >= 0) {
-              // Increment existing destination item stock
-              updatedItems[destItemIndex] = {
-                ...updatedItems[destItemIndex],
-                currentStock: updatedItems[destItemIndex].currentStock + issuedQty
-              };
-            } else {
-              // Create new item record at destination
-              const newItem: InventoryItem = {
-                ...sourceItem,
-                id: `${destStore.id}-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
-                code: sourceItem.code,
-                currentStock: issuedQty,
-                location: destStore.name,
-                storeId: destStore.id
-              };
-              updatedItems = [...updatedItems, newItem];
-            }
-
-            // Record transfer movement
-            recordStockMovement({
-              date: new Date().toISOString(),
-              itemId: sourceItem.id,
-              itemName: sourceItem.name,
-              type: 'Transfer',
-              quantity: issuedQty,
-              cost: sourceItem.avgCost,
-              reference: id,
-              user: 'System',
-              storeFrom: sourceItem.location,
-              storeTo: destStore.name
-            });
-          });
-
-          localStorage.setItem('hotel_erp_inventory_items_v2', JSON.stringify(updatedItems));
-
-          // Sync new/updated items to Supabase
-          if (supabaseService.isConfigured()) {
-            updatedItems.forEach(item => {
-              supabaseService.upsertInventoryItem(item).catch(console.error);
-            });
-          }
-
-          return updatedItems;
-        });
-
-        logAudit(`Received requisition ${id} at ${destStore.name}`);
-      }
-    }
-  }, [inventoryItems, inventoryRequisitions, inventoryStores, recordStockMovement, logAudit, persistRequisitions]);
+  }, [inventoryItems, recordStockMovement, logAudit, persistRequisitions]);
 
   const value = {
     inventoryItems, inventoryStores, inventoryRequisitions, stockMovements, suppliers,

@@ -41,7 +41,7 @@ export interface SystemContextType {
   deleteSystemUser: (id: string) => void;
   
   globalHotelSettings: GlobalHotelSettings;
-  updateGlobalHotelSettings: (settings: Partial<GlobalHotelSettings>) => void;
+  updateGlobalHotelSettings: (settings: Partial<GlobalHotelSettings>) => Promise<boolean>;
   roomTypeMetadata: RoomTypeMetadata[];
   updateRoomTypeMetadata: (type: RoomTypeMetadata['type'], updates: Partial<RoomTypeMetadata>) => void;
   
@@ -80,7 +80,7 @@ export interface SystemContextType {
   executeAdminChangeDirectly: (change: Omit<PendingAdminChange, 'id' | 'submittedAt' | 'status'>) => void;
   approveAdminChange: (id: string) => void;
   declineAdminChange: (id: string) => void;
-  submitGlobalSettingsChange: (title: string, description: string, changeType: AdminChangeType, settings: Partial<GlobalHotelSettings>) => void;
+  submitGlobalSettingsChange: (title: string, description: string, changeType: AdminChangeType, settings: Partial<GlobalHotelSettings>) => Promise<boolean>;
 
   // Settings version tracking (Step 2.5)
   settingsVersion: number | null;
@@ -111,6 +111,16 @@ export interface OrganizationInfo {
 }
 
 const SystemContext = createContext<SystemContextType | undefined>(undefined);
+
+// /api/settings returns the raw snake_case global_settings row; convert to the
+// camelCase GlobalHotelSettings shape before merging into state.
+function snakeToCamelSettings(obj: Record<string, any>): Record<string, any> {
+  const result: Record<string, any> = {};
+  for (const [key, value] of Object.entries(obj)) {
+    result[key.replace(/_([a-z])/g, (_, letter) => letter.toUpperCase())] = value;
+  }
+  return result;
+}
 
 export const useSystem = () => {
   const context = useContext(SystemContext);
@@ -199,7 +209,7 @@ export const SystemProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
   const addNotification = useCallback((message: string, type: Notification['type'], department: Notification['department']) => {
     const newNotif: Notification = {
-      id: `N-${Date.now()}`,
+      id: `N-${Date.now()}-${Math.floor(Math.random() * 10000)}`,
       time: new Date().toISOString(),
       message,
       type,
@@ -221,11 +231,51 @@ export const SystemProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
   const markNotificationRead = useCallback((id: string) => {
     setNotifications(prev => prev.map(n => n.id === id ? { ...n, read: true } : n));
+    // Persist for server-originated rows (local N-* ids 404 harmlessly).
+    fetch(`/api/notifications/${encodeURIComponent(id)}/read`, {
+      method: 'PATCH', credentials: 'include',
+    }).catch(() => {});
   }, []);
 
   const clearNotification = useCallback((id: string) => {
     setNotifications(prev => prev.filter(n => n.id !== id));
+    fetch(`/api/notifications/${encodeURIComponent(id)}`, {
+      method: 'DELETE', credentials: 'include',
+    }).catch(() => {});
   }, []);
+
+  // DB-backed notifications: server writers (transport messages, driver
+  // assignment, HR events) insert into the notifications table; merge them
+  // with session-local notifications (N-* ids) on each poll.
+  const fetchNotifications = useCallback(async () => {
+    try {
+      const r = await fetch('/api/notifications', { credentials: 'include' });
+      if (!r.ok) return;
+      const data = await r.json();
+      const rows: any[] = Array.isArray(data?.notifications) ? data.notifications : [];
+      const serverNotifs: Notification[] = rows.map(row => ({
+        id: String(row.id),
+        time: row.created_at,
+        message: row.message,
+        type: row.type,
+        department: row.department,
+        read: !!row.read,
+      }));
+      const serverIds = new Set(serverNotifs.map(n => n.id));
+      setNotifications(prev => [
+        ...serverNotifs,
+        ...prev.filter(n => !serverIds.has(n.id)),
+      ]);
+    } catch {
+      // notifications are best-effort
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchNotifications();
+    const interval = setInterval(fetchNotifications, 60_000);
+    return () => clearInterval(interval);
+  }, [fetchNotifications]);
 
   const refreshData = useCallback(async () => {
     let active = true;
@@ -253,21 +303,22 @@ export const SystemProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           setSettingsChecksum(newChecksum);
 
           if (dbSettings) {
+            const camelSettings = snakeToCamelSettings(dbSettings);
             // Validate fee components match between frontend and backend
-            if (dbSettings.feeComponents && globalHotelSettings.feeComponents) {
+            if (camelSettings.feeComponents && globalHotelSettings.feeComponents) {
               const validation = validateFeeComponentsMatch(
                 globalHotelSettings.feeComponents,
-                dbSettings.feeComponents
+                camelSettings.feeComponents
               );
               if (!validation.valid) {
                 console.warn('Fee components mismatch detected between frontend and backend:', validation.mismatches);
                 // Auto-sync to backend to prevent discrepancies
-                setGlobalHotelSettings(prev => ({ ...prev, ...dbSettings }));
+                setGlobalHotelSettings(prev => ({ ...prev, ...camelSettings }));
               } else {
-                setGlobalHotelSettings(prev => ({ ...prev, ...dbSettings }));
+                setGlobalHotelSettings(prev => ({ ...prev, ...camelSettings }));
               }
             } else {
-              setGlobalHotelSettings(prev => ({ ...prev, ...dbSettings }));
+              setGlobalHotelSettings(prev => ({ ...prev, ...camelSettings }));
             }
           }
         }
@@ -421,14 +472,20 @@ export const SystemProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     supabaseService.deleteSystemUser(id).catch(console.error);
   }, []);
 
-  const updateGlobalHotelSettings = useCallback((settings: Partial<GlobalHotelSettings>) => {
-    setGlobalHotelSettings(prev => {
-      const next = { ...prev, ...settings };
-      // Sync to Supabase in the background
-      supabaseService.updateGlobalSettings(next).catch(console.error);
-      return next;
-    });
-  }, []);
+  const updateGlobalHotelSettings = useCallback(async (settings: Partial<GlobalHotelSettings>): Promise<boolean> => {
+    const prev = globalHotelSettings;
+    const next = { ...prev, ...settings };
+    setGlobalHotelSettings(next);
+    try {
+      const ok = await supabaseService.updateGlobalSettings(next);
+      if (!ok) setGlobalHotelSettings(prev);
+      return ok;
+    } catch (e) {
+      console.error('Error updating global settings:', e);
+      setGlobalHotelSettings(prev);
+      return false;
+    }
+  }, [globalHotelSettings]);
 
   // Load pending admin changes from DB on mount
   useEffect(() => {
@@ -606,10 +663,11 @@ export const SystemProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     });
   }, [addStructuredAuditLog, userProfile]);
 
-  const submitGlobalSettingsChange = useCallback((title: string, description: string, changeType: AdminChangeType, settings: Partial<GlobalHotelSettings>) => {
-    // Immediately apply the settings to global state
-    updateGlobalHotelSettings(settings);
-    
+  const submitGlobalSettingsChange = useCallback(async (title: string, description: string, changeType: AdminChangeType, settings: Partial<GlobalHotelSettings>): Promise<boolean> => {
+    // Apply the settings to global state and persist; resolves false when the
+    // write fails (state is reverted by updateGlobalHotelSettings).
+    const ok = await updateGlobalHotelSettings(settings);
+
     // Also submit to pending changes for audit trail
     submitAdminChange({
       title,
@@ -618,6 +676,7 @@ export const SystemProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       submittedBy: userProfile.name || 'System Admin',
       payload: { operation: 'updateGlobalHotelSettings', args: [settings] }
     });
+    return ok;
   }, [submitAdminChange, userProfile, updateGlobalHotelSettings]);
 
   const updateRoomTypeMetadata = useCallback((type: RoomTypeMetadata['type'], updates: Partial<RoomTypeMetadata>) => {
@@ -631,7 +690,7 @@ export const SystemProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   // Sync theme to DOM and localStorage
   useEffect(() => {
     if (typeof document !== 'undefined' && typeof window !== 'undefined') {
-      const isBookingRoute = window.location.pathname.includes('booking');
+      const isBookingRoute = window.location.pathname.includes('booking') || window.location.pathname.includes('public-portal');
       if (theme === 'dark' && !isBookingRoute) {
         document.documentElement.classList.add('dark');
       } else {

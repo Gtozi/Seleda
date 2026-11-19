@@ -78,7 +78,7 @@ const StatCard = ({
   // Resolve tone: explicit tone wins, else map from legacy variant, else default accent.
   const resolvedTone: KpiTone = tone ?? (variant ? VARIANT_TO_TONE[variant] : 'accent');
   const toneStyles = kpiTone[resolvedTone];
-  const hasChange = typeof change === 'number';
+  const hasChange = typeof change === 'number' && change !== 0;
   const isUp = hasChange && (change as number) >= 0;
 
   const Component = onClick ? 'button' : 'div';

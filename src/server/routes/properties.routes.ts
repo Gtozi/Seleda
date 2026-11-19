@@ -35,6 +35,20 @@ router.patch('/:id', authenticate, requirePermission('settings:update'), async (
   const allowed = ['property_name', 'property_code', 'property_type', 'currency_code', 'organization_id', 'is_active', 'contact_email', 'contact_phone', 'star_rating', 'timezone'];
   const updates: Record<string, any> = {};
   for (const f of allowed) { if (req.body[f] !== undefined) updates[f] = req.body[f]; }
+  // Public-profile fields live in the metadata JSONB — merge so other keys are never clobbered.
+  if (req.body.metadata && typeof req.body.metadata === 'object' && !Array.isArray(req.body.metadata)) {
+    const PUBLIC_KEYS = ['description', 'imageUrl', 'amenities', 'facilities', 'website'];
+    const patch: Record<string, any> = {};
+    for (const k of PUBLIC_KEYS) if (req.body.metadata[k] !== undefined) patch[k] = req.body.metadata[k];
+    const { data: existing } = await supabaseAdmin.from('properties').select('metadata').eq('id', id).single();
+    updates.metadata = { ...(existing?.metadata || {}), ...patch };
+  }
+  if (req.body.address && typeof req.body.address === 'object' && !Array.isArray(req.body.address)) {
+    const { data: existing } = await supabaseAdmin.from('properties').select('address').eq('id', id).single();
+    updates.address = { ...(existing?.address || {}), ...req.body.address };
+  }
+  if (!Object.keys(updates).length) return res.status(400).json({ error: 'Nothing to update' });
+  updates.updated_at = new Date().toISOString();
   const { data, error } = await supabaseAdmin.from('properties').update(updates).eq('id', id).select('*').single();
   if (error) return res.status(500).json({ error: error.message });
   res.json({ property: data });

@@ -6,6 +6,9 @@
 import React from 'react';
 import { Home, AlertTriangle, FileCheck, Plus, Edit2, Trash2 } from 'lucide-react';
 import { Room } from '../../types/erp';
+import StatCard from '../../FrontOffice/StatCard';
+import { SectionCard } from '../../FrontOffice/ui';
+import { button } from '../../FrontOffice/brandTheme';
 
 interface RoomsCategoryProps {
   rooms: Room[];
@@ -29,25 +32,10 @@ export default function RoomsCategory({
   return (
     <div className="space-y-6">
       {/* Internal Dashboard metrics */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        {[
-          { label: 'Registered Rooms', count: rooms.length, desc: 'Database Records', icon: Home, accent: 'text-indigo-500' },
-          { label: 'Out of Order Holds', count: rooms.filter(r => r.status === 'Out of Order').length, desc: 'Maintenance Holds', icon: AlertTriangle, accent: 'text-rose-500' },
-          { label: 'Clean Vacant Ready', count: rooms.filter(r => r.status === 'Vacant Clean').length, desc: 'Housekeeping Confirmed', icon: FileCheck, accent: 'text-emerald-500' },
-        ].map((s, i) => (
-          <div key={i} className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-5 rounded-3xl flex items-center justify-between shadow-xs">
-            <div className="flex items-center gap-4">
-              <div className="w-10 h-10 bg-slate-50 dark:bg-slate-850 flex items-center justify-center rounded-xl">
-                <s.icon size={20} className={s.accent} />
-              </div>
-              <div>
-                <span className="text-[10px] font-mono font-black text-slate-400 uppercase tracking-widest">{s.label}</span>
-                <h4 className="text-xl font-black text-slate-900 dark:text-white leading-none mt-1">{s.count}</h4>
-              </div>
-            </div>
-            <span className="text-[8px] font-bold text-slate-400 bg-slate-100 dark:bg-slate-800 px-2 py-1 rounded-sm uppercase font-mono">{s.desc}</span>
-          </div>
-        ))}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+        <StatCard title="Registered Rooms" value={rooms.length} icon={Home} tone="accent" />
+        <StatCard title="Out of Order Holds" value={rooms.filter(r => r.status === 'Out of Order').length} icon={AlertTriangle} tone="danger" />
+        <StatCard title="Clean Vacant Ready" value={rooms.filter(r => r.status === 'Vacant Clean').length} icon={FileCheck} tone="success" />
       </div>
 
       {/* Properties List */}

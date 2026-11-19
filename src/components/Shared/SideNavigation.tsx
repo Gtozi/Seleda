@@ -18,6 +18,9 @@ export interface SubNavItem {
   label: string;
   modId?: string;
   icon?: LucideIcon;
+  /** Optional section header. Items with the same non-empty section are
+   * grouped under that header; items with no section render at the top. */
+  section?: string;
 }
 
 interface SideNavigationProps {
@@ -41,6 +44,43 @@ interface SideNavigationProps {
    * and stays visually consistent with the portal content area.
    */
   accentClass?: string;
+}
+
+/** Render a single sub-nav item as an <li>. Extracted so the section-grouping
+ * logic above can call it without duplicating markup. */
+function renderSubItem(
+  subItem: SubNavItem,
+  activeSubItem: string,
+  onSubItemClick: (id: string) => void,
+  collapsed: boolean,
+): React.ReactNode {
+  const isActive = activeSubItem === subItem.id;
+  const Icon = subItem.icon;
+  return (
+    <li key={subItem.id}>
+      <button
+        onClick={() => onSubItemClick(subItem.id)}
+        className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all duration-200 ${
+          isActive
+            ? 'bg-indigo-600 text-white shadow-md shadow-indigo-500/20'
+            : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
+        }`}
+        title={collapsed ? subItem.label : undefined}
+      >
+        {Icon ? (
+          <Icon size={18} className="flex-shrink-0" />
+        ) : !collapsed ? (
+          <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${isActive ? 'bg-white' : 'bg-slate-400 dark:bg-slate-600'}`} />
+        ) : null}
+        {!collapsed && (
+          <span className="font-medium text-sm truncate flex-1 text-left">{subItem.label}</span>
+        )}
+        {collapsed && !Icon && (
+          <span className="font-medium text-sm truncate flex-1 text-left">{subItem.label.charAt(0)}</span>
+        )}
+      </button>
+    </li>
+  );
 }
 
 export function SideNavigation({
@@ -88,35 +128,36 @@ export function SideNavigation({
           {subItems.length === 0 && !collapsed && (
             <li className="px-3 py-2 text-xs text-slate-400 italic">No modules available</li>
           )}
-          {subItems.map((subItem) => {
-            const isActive = activeSubItem === subItem.id;
-            const Icon = subItem.icon;
-            return (
-              <li key={subItem.id}>
-                <button
-                  onClick={() => onSubItemClick(subItem.id)}
-                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all duration-200 ${
-                    isActive
-                      ? 'bg-indigo-600 text-white shadow-md shadow-indigo-500/20'
-                      : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
-                  }`}
-                  title={collapsed ? subItem.label : undefined}
-                >
-                  {Icon ? (
-                    <Icon size={18} className="flex-shrink-0" />
-                  ) : !collapsed ? (
-                    <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${isActive ? 'bg-white' : 'bg-slate-400 dark:bg-slate-600'}`} />
-                  ) : null}
-                  {!collapsed && (
-                    <span className="font-medium text-sm truncate flex-1 text-left">{subItem.label}</span>
-                  )}
-                  {collapsed && !Icon && (
-                    <span className="font-medium text-sm truncate flex-1 text-left">{subItem.label.charAt(0)}</span>
-                  )}
-                </button>
-              </li>
-            );
-          })}
+          {(() => {
+            // Group items by section. Items without a section render first,
+            // ungrouped; items with a section render under a header.
+            const hasSections = subItems.some((s) => s.section);
+            if (!hasSections) {
+              return subItems.map((subItem) => renderSubItem(subItem, activeSubItem, onSubItemClick, collapsed));
+            }
+            const seen = new Set<string>();
+            const blocks: React.ReactNode[] = [];
+            // Ungrouped items first
+            const ungrouped = subItems.filter((s) => !s.section);
+            ungrouped.forEach((subItem) => blocks.push(renderSubItem(subItem, activeSubItem, onSubItemClick, collapsed)));
+            // Then each section in order of first appearance
+            for (const subItem of subItems) {
+              if (!subItem.section || seen.has(subItem.section)) continue;
+              seen.add(subItem.section);
+              const sectionItems = subItems.filter((s) => s.section === subItem.section);
+              if (!collapsed) {
+                blocks.push(
+                  <li key={`section-${subItem.section}`} className="pt-4 pb-1 px-3">
+                    <span className="text-[10px] font-mono font-bold uppercase tracking-widest text-slate-400 dark:text-slate-500">
+                      {subItem.section}
+                    </span>
+                  </li>
+                );
+              }
+              sectionItems.forEach((s) => blocks.push(renderSubItem(s, activeSubItem, onSubItemClick, collapsed)));
+            }
+            return blocks;
+          })()}
         </ul>
       </nav>
 

@@ -1,418 +1,816 @@
-import React, { useState } from 'react';
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Building Maintenance — Engineering Portal
+ * (/erp/maintenance/building-maintenance).
+ *
+ * DB-integrated: fetches and persists via /api/eng-portal/building-maintenance
+ * (building_maintenance_tasks table).
+ * UI aligned with WorkOrderManagement — PageHeader, SectionCard, StatCard, Badge,
+ * brandTheme tokens, list rows, detail/create modal, loading/error/retry.
+ * Multi-property scoping via useERP(). ERP notifications on create/update/delete.
+ *
+ * Lifecycle: Scheduled → In Progress → Completed (+ On Hold / Cancelled side-branches).
+ * Areas: Guest Rooms, Public Areas, Roof, Exterior, Parking, Landscaping,
+ *        Water Systems, Electrical Systems, Mechanical Systems.
+ */
+
+import React, { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import {
   Building2, Home, Car, Trees, Droplets, Zap, Wrench,
-  Search, Filter, Plus, MapPin, Calendar, AlertTriangle,
-  CheckCircle2, Clock, User, ChevronRight, FileText
+  Plus, Search, ArrowRight, Loader2, ServerCrash, MoreVertical,
+  Eye, Trash2, X, MapPin, Calendar, User, AlertTriangle,
+  CheckCircle2, Clock, FileText,
 } from 'lucide-react';
+import StatCard from '../FrontOffice/StatCard';
+import { PageHeader, SectionCard, Badge } from '../FrontOffice/ui';
+import { button, layout, statusTone, type StatusTone } from '../FrontOffice/brandTheme';
+import { ModalSystem } from '../Shared/ModalSystem';
+import { useERP } from '../../context/ERPContext';
+import {
+  fetchBuildingTasks, createBuildingTask, updateBuildingTask, deleteBuildingTask,
+  type BuildingTask, type BuildingArea, type BuildingTaskStatus, type BuildingTaskPriority,
+} from '../../services/engineeringService';
 
-interface BuildingTask {
-  id: string;
-  number: string;
-  area: 'Guest Rooms' | 'Public Areas' | 'Roof' | 'Exterior' | 'Parking' | 'Landscaping' | 'Water Systems' | 'Electrical Systems' | 'Mechanical Systems';
-  location: string;
-  taskType: string;
-  description: string;
-  priority: 'Emergency' | 'High' | 'Normal' | 'Low';
-  status: 'Scheduled' | 'In Progress' | 'Completed' | 'On Hold' | 'Cancelled';
-  assignedTo?: string;
-  scheduledDate: string;
-  estimatedCost?: number;
-  actualCost?: number;
-  completionDate?: string;
-  notes?: string;
+// ── Static registries ────────────────────────────────────────────────────
+const AREA_OPTIONS: BuildingArea[] = [
+  'Guest Rooms', 'Public Areas', 'Roof', 'Exterior', 'Parking',
+  'Landscaping', 'Water Systems', 'Electrical Systems', 'Mechanical Systems',
+];
+
+const STATUS_OPTIONS: BuildingTaskStatus[] = ['Scheduled', 'In Progress', 'Completed', 'On Hold', 'Cancelled'];
+const PRIORITY_OPTIONS: BuildingTaskPriority[] = ['Emergency', 'High', 'Normal', 'Low'];
+
+const AREA_ICON: Record<string, React.ComponentType<{ className?: string; size?: number }>> = {
+  'Guest Rooms': Home,
+  'Public Areas': Building2,
+  'Roof': Building2,
+  'Exterior': Building2,
+  'Parking': Car,
+  'Landscaping': Trees,
+  'Water Systems': Droplets,
+  'Electrical Systems': Zap,
+  'Mechanical Systems': Wrench,
+};
+
+const STATUS_TONE: Record<BuildingTaskStatus, StatusTone> = {
+  'Scheduled': 'neutral',
+  'In Progress': 'warning',
+  'Completed': 'success',
+  'On Hold': 'warning',
+  'Cancelled': 'danger',
+};
+
+const PRIORITY_TONE: Record<BuildingTaskPriority, StatusTone> = {
+  Emergency: 'danger',
+  High: 'warning',
+  Normal: 'info',
+  Low: 'neutral',
+};
+
+const ASSIGNEE_OPTIONS = [
+  'Painting Team A',
+  'Painting Team B',
+  'Flooring Specialist',
+  'External Contractor',
+  'Cleaning Services',
+  'Electrical Team',
+  'Plumbing Team',
+  'HVAC Team',
+  'Carpentry Team',
+  'General Maintenance Team',
+  'Landscaping Team',
+] as const;
+
+// ── Field helper ─────────────────────────────────────────────────────────
+const inputClass =
+  'w-full px-3 py-2 text-sm border border-gray-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-gray-900 dark:text-white outline-none focus:ring-1 focus:ring-[var(--color-accent-operations)]';
+
+function Field({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <label className="block">
+      <span className="block text-xs font-bold text-gray-500 uppercase tracking-wide mb-1.5">{label}</span>
+      {children}
+    </label>
+  );
 }
 
+function fmtDate(s: string | null): string {
+  if (!s) return '—';
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? s : d.toLocaleDateString([], { year: 'numeric', month: 'short', day: 'numeric' });
+}
+
+function fmtCost(n: number | null | undefined): string {
+  if (n === null || n === undefined) return '—';
+  return `$${Number(n).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
+}
+
+// ── Component ────────────────────────────────────────────────────────────
 const BuildingMaintenance: React.FC = () => {
-  const [tasks, setTasks] = useState<BuildingTask[]>([
-    {
-      id: 'BM-1001',
-      number: 'BM-2026-001',
-      area: 'Guest Rooms',
-      location: 'Room 205-210',
-      taskType: 'Painting',
-      description: 'Repaint guest rooms 205-210 as part of quarterly refresh cycle.',
-      priority: 'Normal',
-      status: 'In Progress',
-      assignedTo: 'Painting Team A',
-      scheduledDate: '2026-07-25',
-      estimatedCost: 2500,
-    },
-    {
-      id: 'BM-1002',
-      number: 'BM-2026-002',
-      area: 'Public Areas',
-      location: 'Lobby Floor',
-      taskType: 'Flooring',
-      description: 'Replace damaged marble tiles in main lobby entrance area.',
-      priority: 'High',
-      status: 'Scheduled',
-      assignedTo: 'Flooring Specialist',
-      scheduledDate: '2026-08-01',
-      estimatedCost: 1800,
-    },
-    {
-      id: 'BM-1003',
-      number: 'BM-2026-003',
-      area: 'Roof',
-      location: 'Rooftop Main',
-      taskType: 'Waterproofing',
-      description: 'Apply waterproof coating to roof membrane. Annual maintenance.',
-      priority: 'Normal',
-      status: 'Scheduled',
-      assignedTo: 'External Contractor',
-      scheduledDate: '2026-08-15',
-      estimatedCost: 3500,
-    },
-    {
-      id: 'BM-1004',
-      number: 'BM-2026-004',
-      area: 'Exterior',
-      location: 'Building Facade',
-      taskType: 'Cleaning',
-      description: 'Pressure wash and clean building exterior facade.',
-      priority: 'Low',
-      status: 'Completed',
-      assignedTo: 'Cleaning Services',
-      scheduledDate: '2026-07-20',
-      estimatedCost: 800,
-      actualCost: 750,
-      completionDate: '2026-07-22',
-      notes: 'Completed successfully. No issues found.',
-    },
-    {
-      id: 'BM-1005',
-      number: 'BM-2026-005',
-      area: 'Parking',
-      location: 'Main Parking Lot',
-      taskType: 'Lighting',
-      description: 'Replace damaged LED light poles in parking lot sections B and C.',
-      priority: 'High',
-      status: 'In Progress',
-      assignedTo: 'Electrical Team',
-      scheduledDate: '2026-07-28',
-      estimatedCost: 1200,
-    },
-    {
-      id: 'BM-1006',
-      number: 'BM-2026-006',
-      area: 'Landscaping',
-      location: 'Garden Areas',
-      taskType: 'Irrigation',
-      description: 'Repair broken sprinkler heads in main garden area.',
-      priority: 'Normal',
-      status: 'Completed',
-      assignedTo: 'Landscaping Team',
-      scheduledDate: '2026-07-18',
-      estimatedCost: 400,
-      actualCost: 380,
-      completionDate: '2026-07-19',
-    },
-    {
-      id: 'BM-1007',
-      number: 'BM-2026-007',
-      area: 'Water Systems',
-      location: 'Main Water Tank',
-      taskType: 'Inspection',
-      description: 'Annual water tank inspection and cleaning.',
-      priority: 'High',
-      status: 'Scheduled',
-      assignedTo: 'Plumbing Team',
-      scheduledDate: '2026-08-05',
-      estimatedCost: 600,
-    },
-    {
-      id: 'BM-1008',
-      number: 'BM-2026-008',
-      area: 'Electrical Systems',
-      location: 'Distribution Panels',
-      taskType: 'Maintenance',
-      description: 'Quarterly electrical panel inspection and thermal imaging.',
-      priority: 'Normal',
-      status: 'Scheduled',
-      assignedTo: 'Electrical Team',
-      scheduledDate: '2026-08-10',
-      estimatedCost: 500,
-    },
-  ]);
+  const { currentPropertyId, addNotification } = useERP();
 
-  const [activeArea, setActiveArea] = useState<string>('All');
-  const [activeStatus, setActiveStatus] = useState<string>('All');
+  const [tasks, setTasks] = useState<BuildingTask[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [actingOn, setActingOn] = useState<string | null>(null);
 
-  const areas = ['All', 'Guest Rooms', 'Public Areas', 'Roof', 'Exterior', 'Parking', 'Landscaping', 'Water Systems', 'Electrical Systems', 'Mechanical Systems'];
-  const statuses = ['All', 'Scheduled', 'In Progress', 'Completed', 'On Hold', 'Cancelled'];
+  const [areaFilter, setAreaFilter] = useState<'All' | BuildingArea>('All');
+  const [statusFilter, setStatusFilter] = useState<'All' | BuildingTaskStatus>('All');
+  const [search, setSearch] = useState('');
+  const [menuOpen, setMenuOpen] = useState<string | null>(null);
 
-  const getAreaIcon = (area: string) => {
-    switch (area) {
-      case 'Guest Rooms': return Home;
-      case 'Public Areas': return Building2;
-      case 'Roof': return Building2;
-      case 'Exterior': return Building2;
-      case 'Parking': return Car;
-      case 'Landscaping': return Trees;
-      case 'Water Systems': return Droplets;
-      case 'Electrical Systems': return Zap;
-      case 'Mechanical Systems': return Wrench;
-      default: return Building2;
-    }
-  };
+  const [showCreate, setShowCreate] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
 
-  const getPriorityColor = (priority: string) => {
-    switch (priority) {
-      case 'Emergency': return 'bg-rose-500 text-white';
-      case 'High': return 'bg-amber-500 text-white';
-      case 'Normal': return 'bg-blue-500 text-white';
-      case 'Low': return 'bg-slate-500 text-white';
-      default: return 'bg-slate-100 text-slate-500';
-    }
-  };
-
-  const getStatusBadge = (status: string) => {
-    switch (status) {
-      case 'Scheduled': return 'bg-slate-100 text-slate-600 border-slate-200';
-      case 'In Progress': return 'bg-amber-50 text-amber-700 border-amber-100';
-      case 'Completed': return 'bg-emerald-50 text-emerald-700 border-emerald-100';
-      case 'On Hold': return 'bg-orange-50 text-orange-700 border-orange-100';
-      case 'Cancelled': return 'bg-rose-50 text-rose-700 border-rose-100';
-      default: return 'bg-slate-50 text-slate-500 border-slate-100';
-    }
-  };
-
-  const filteredTasks = tasks.filter(task => {
-    if (activeArea !== 'All' && task.area !== activeArea) return false;
-    if (activeStatus !== 'All' && task.status !== activeStatus) return false;
-    return true;
+  const [form, setForm] = useState<{
+    area: BuildingArea;
+    location: string;
+    taskType: string;
+    description: string;
+    priority: BuildingTaskPriority;
+    assignedTo: string;
+    scheduledDate: string;
+    estimatedCost: string;
+    notes: string;
+  }>({
+    area: 'Guest Rooms',
+    location: '',
+    taskType: '',
+    description: '',
+    priority: 'Normal',
+    assignedTo: '',
+    scheduledDate: new Date().toISOString().split('T')[0],
+    estimatedCost: '',
+    notes: '',
   });
 
+  const [detailId, setDetailId] = useState<string | null>(null);
+  const detailTask = tasks.find(t => t.id === detailId) || null;
+
+  // ── Load ──────────────────────────────────────────────────────────────
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const data = await fetchBuildingTasks({ propertyId: currentPropertyId || undefined });
+      setTasks(data);
+    } catch (e: any) {
+      setError(e?.message || 'Failed to load building maintenance tasks');
+    } finally {
+      setLoading(false);
+    }
+  }, [currentPropertyId]);
+
+  useEffect(() => { load(); }, [load]);
+
+  // ── Derived lists ─────────────────────────────────────────────────────
+  const filtered = useMemo(
+    () =>
+      tasks.filter(t => {
+        const matchesArea = areaFilter === 'All' || t.area === areaFilter;
+        const matchesStatus = statusFilter === 'All' || t.status === statusFilter;
+        const q = search.trim().toLowerCase();
+        const matchesSearch =
+          !q ||
+          (t.bm_number || '').toLowerCase().includes(q) ||
+          (t.description || '').toLowerCase().includes(q) ||
+          (t.location || '').toLowerCase().includes(q) ||
+          (t.task_type || '').toLowerCase().includes(q) ||
+          (t.assigned_to || '').toLowerCase().includes(q);
+        return matchesArea && matchesStatus && matchesSearch;
+      }),
+    [tasks, areaFilter, statusFilter, search]
+  );
+
+  const counts = {
+    scheduled: tasks.filter(t => t.status === 'Scheduled').length,
+    inProgress: tasks.filter(t => t.status === 'In Progress').length,
+    completed: tasks.filter(t => t.status === 'Completed').length,
+    highPriority: tasks.filter(t => t.priority === 'High' || t.priority === 'Emergency').length,
+  };
+
+  const costSummary = useMemo(() => {
+    const estimated = tasks.reduce((sum, t) => sum + (Number(t.estimated_cost) || 0), 0);
+    const actual = tasks.reduce((sum, t) => sum + (Number(t.actual_cost) || 0), 0);
+    return { estimated, actual, remaining: estimated - actual };
+  }, [tasks]);
+
+  // ── Actions ───────────────────────────────────────────────────────────
+  const submitCreate = async () => {
+    if (!form.taskType.trim() || !form.description.trim()) return;
+    setSubmitting(true);
+    try {
+      await createBuildingTask({
+        area: form.area,
+        location: form.location.trim() || undefined,
+        taskType: form.taskType.trim(),
+        description: form.description.trim(),
+        priority: form.priority,
+        assignedTo: form.assignedTo || undefined,
+        scheduledDate: form.scheduledDate,
+        estimatedCost: form.estimatedCost ? parseFloat(form.estimatedCost) : undefined,
+        notes: form.notes.trim() || undefined,
+        propertyId: currentPropertyId || undefined,
+      });
+      addNotification(`Building task "${form.taskType.trim()}" created.`, 'task', 'Maintenance');
+      setShowCreate(false);
+      setForm({
+        area: 'Guest Rooms', location: '', taskType: '', description: '',
+        priority: 'Normal', assignedTo: '',
+        scheduledDate: new Date().toISOString().split('T')[0],
+        estimatedCost: '', notes: '',
+      });
+      load();
+    } catch (e: any) {
+      addNotification(e?.message || 'Failed to create building task', 'warning', 'Maintenance');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const changeStatus = async (id: string, status: BuildingTaskStatus) => {
+    setActingOn(id);
+    setMenuOpen(null);
+    try {
+      await updateBuildingTask(id, { status });
+      setTasks(prev => prev.map(t => (t.id === id ? {
+        ...t,
+        status,
+        completion_date: status === 'Completed' ? new Date().toISOString().split('T')[0] : t.completion_date,
+      } : t)));
+      addNotification(`Building task → ${status}.`, 'task', 'Maintenance');
+    } catch (e: any) {
+      addNotification(e?.message || `Failed to update status to ${status}`, 'warning', 'Maintenance');
+    } finally {
+      setActingOn(null);
+    }
+  };
+
+  const removeTask = async (id: string) => {
+    setActingOn(id);
+    setMenuOpen(null);
+    try {
+      await deleteBuildingTask(id);
+      setTasks(prev => prev.filter(t => t.id !== id));
+      addNotification(`Building task deleted.`, 'task', 'Maintenance');
+      setDetailId(null);
+    } catch (e: any) {
+      addNotification(e?.message || 'Failed to delete task', 'warning', 'Maintenance');
+    } finally {
+      setActingOn(null);
+    }
+  };
+
+  const saveDetail = async (patch: any) => {
+    if (!detailTask) return;
+    setActingOn(detailTask.id);
+    try {
+      await updateBuildingTask(detailTask.id, patch);
+      setTasks(prev => prev.map(t => (t.id === detailTask.id ? { ...t, ...patch } : t)));
+      addNotification(`Building task "${detailTask.bm_number}" updated.`, 'task', 'Maintenance');
+    } catch (e: any) {
+      addNotification(e?.message || 'Failed to update task', 'warning', 'Maintenance');
+    } finally {
+      setActingOn(null);
+    }
+  };
+
+  // ── Render ────────────────────────────────────────────────────────────
+  const areaFilters: ('All' | BuildingArea)[] = ['All', ...AREA_OPTIONS];
+  const statusFilters: ('All' | BuildingTaskStatus)[] = ['All', ...STATUS_OPTIONS];
+
+  // Status transition actions per current status
+  const NEXT_ACTIONS: Record<BuildingTaskStatus, BuildingTaskStatus[]> = {
+    'Scheduled': ['In Progress', 'On Hold', 'Cancelled'],
+    'In Progress': ['Completed', 'On Hold', 'Cancelled'],
+    'On Hold': ['Scheduled', 'In Progress', 'Cancelled'],
+    'Completed': [],
+    'Cancelled': [],
+  };
+  const ACTION_LABELS: Record<BuildingTaskStatus, string> = {
+    'Scheduled': 'Schedule',
+    'In Progress': 'Start Work',
+    'Completed': 'Mark Completed',
+    'On Hold': 'Put On Hold',
+    'Cancelled': 'Cancel',
+  };
+
   return (
-    <div className="space-y-6">
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div>
-          <h2 className="text-xl font-sans font-black text-slate-900 dark:text-white leading-tight">Building Maintenance</h2>
-          <p className="text-xs text-slate-400 font-medium tracking-tight">Guest rooms, public areas, exterior, and infrastructure maintenance</p>
-        </div>
-        <div className="flex items-center gap-2">
-          <button className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white font-bold py-2.5 px-4 rounded-2xl flex items-center gap-2 text-xs hover:bg-slate-50 transition shadow-sm">
-            <Filter size={16} />
-            Filter
-          </button>
-          <button className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2.5 px-4 rounded-2xl flex items-center gap-2 text-xs transition shadow-md shadow-indigo-200 dark:shadow-none">
-            <Plus size={16} />
-            New Maintenance Task
-          </button>
-        </div>
-      </div>
-
-      {/* Area Filter */}
-      <div className="flex bg-white dark:bg-slate-900 p-1.5 border border-slate-200 dark:border-slate-800 rounded-2xl overflow-x-auto no-scrollbar gap-1.5">
-        {areas.map((area) => {
-          const Icon = getAreaIcon(area);
-          return (
-            <button
-              key={area}
-              onClick={() => setActiveArea(area)}
-              className={`px-3 py-1.5 rounded-xl text-xs font-black transition-all whitespace-nowrap uppercase tracking-tighter flex items-center gap-1.5 ${
-                activeArea === area
-                  ? 'bg-slate-950 dark:bg-white text-white dark:text-slate-950 shadow-sm'
-                  : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-200'
-              }`}
-            >
-              <Icon size={12} />
-              {area}
+    <div className={`${layout.sectionStack} animate-fade-in`}>
+      <PageHeader
+        title="Building Maintenance"
+        subtitle="Guest rooms, public areas, exterior, and infrastructure maintenance."
+        icon={Building2}
+        actions={
+          <div className="flex items-center gap-2">
+            <button onClick={load} disabled={loading} className={button.secondary + ' disabled:opacity-50'}>
+              {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <ArrowRight className="w-4 h-4" />}
+              Refresh
             </button>
-          );
-        })}
+            <button onClick={() => setShowCreate(true)} className={button.primary}>
+              <Plus className="w-4 h-4" /> New Task
+            </button>
+          </div>
+        }
+      />
+
+      {/* KPIs */}
+      <div className={layout.kpiGrid}>
+        <StatCard title="Scheduled" value={counts.scheduled} icon={Calendar} tone="info" />
+        <StatCard title="In Progress" value={counts.inProgress} icon={Wrench} tone="warning" />
+        <StatCard title="Completed" value={counts.completed} icon={CheckCircle2} tone="success" />
+        <StatCard title="High Priority" value={counts.highPriority} icon={AlertTriangle} tone="danger" />
       </div>
 
-      {/* Status Filter */}
-      <div className="flex bg-white dark:bg-slate-900 p-1.5 border border-slate-200 dark:border-slate-800 rounded-2xl overflow-x-auto no-scrollbar gap-1.5">
-        {statuses.map((status) => (
-          <button
-            key={status}
-            onClick={() => setActiveStatus(status)}
-            className={`px-4 py-1.5 rounded-xl text-xs font-black transition-all whitespace-nowrap uppercase tracking-tighter ${
-              activeStatus === status
-                ? 'bg-slate-950 dark:bg-white text-white dark:text-slate-950 shadow-sm'
-                : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-200'
-            }`}
-          >
-            {status}
-          </button>
-        ))}
-      </div>
+      {error && (
+        <div className="px-4 py-3 rounded-xl bg-red-50 dark:bg-red-900/20 text-sm text-red-700 dark:text-red-300 border border-red-200 dark:border-red-800 flex items-center gap-2">
+          <ServerCrash className="w-4 h-4 shrink-0" /> {error}
+          <button onClick={load} className={button.ghost + ' ml-auto'}>Retry</button>
+        </div>
+      )}
 
-      {/* Summary Stats */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 p-4 rounded-3xl shadow-3xs">
-          <div className="flex items-center gap-2 mb-2">
-            <div className="p-2 rounded-xl bg-blue-50 dark:bg-blue-500/10 text-blue-500">
-              <Calendar size={14} />
-            </div>
-            <span className="text-xl font-black text-slate-900 dark:text-white">{tasks.filter(t => t.status === 'Scheduled').length}</span>
-          </div>
-          <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Scheduled</span>
-        </div>
-        <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 p-4 rounded-3xl shadow-3xs">
-          <div className="flex items-center gap-2 mb-2">
-            <div className="p-2 rounded-xl bg-amber-50 dark:bg-amber-500/10 text-amber-500">
-              <Wrench size={14} />
-            </div>
-            <span className="text-xl font-black text-slate-900 dark:text-white">{tasks.filter(t => t.status === 'In Progress').length}</span>
-          </div>
-          <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">In Progress</span>
-        </div>
-        <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 p-4 rounded-3xl shadow-3xs">
-          <div className="flex items-center gap-2 mb-2">
-            <div className="p-2 rounded-xl bg-emerald-50 dark:bg-emerald-500/10 text-emerald-500">
-              <CheckCircle2 size={14} />
-            </div>
-            <span className="text-xl font-black text-slate-900 dark:text-white">{tasks.filter(t => t.status === 'Completed').length}</span>
-          </div>
-          <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Completed</span>
-        </div>
-        <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 p-4 rounded-3xl shadow-3xs">
-          <div className="flex items-center gap-2 mb-2">
-            <div className="p-2 rounded-xl bg-rose-50 dark:bg-rose-500/10 text-rose-500">
-              <AlertTriangle size={14} />
-            </div>
-            <span className="text-xl font-black text-slate-900 dark:text-white">{tasks.filter(t => t.priority === 'High' || t.priority === 'Emergency').length}</span>
-          </div>
-          <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">High Priority</span>
-        </div>
-      </div>
-
-      {/* Tasks List */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        <div className="lg:col-span-8 space-y-4">
-          {filteredTasks.map((task) => {
-            const AreaIcon = getAreaIcon(task.area);
+      {/* Filters section */}
+      <SectionCard
+        title="Building Tasks"
+        subtitle="Maintenance tasks by area and status"
+        icon={Building2}
+        pad="md"
+      >
+        {/* Area filter */}
+        <div className="flex bg-slate-100 dark:bg-slate-900/40 p-1 rounded-xl gap-1 flex-wrap mb-3">
+          {areaFilters.map(f => {
+            const Icon = f === 'All' ? Building2 : AREA_ICON[f] ?? Building2;
             return (
-              <div
-                key={task.id}
-                className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-3xl p-5 shadow-3xs group hover:border-indigo-300 transition-all cursor-pointer relative overflow-hidden"
+              <button
+                key={f}
+                onClick={() => setAreaFilter(f)}
+                className={[
+                  'px-3 py-1.5 rounded-lg text-xs font-medium transition whitespace-nowrap flex items-center gap-1.5',
+                  areaFilter === f
+                    ? 'bg-white dark:bg-slate-700 text-gray-900 dark:text-white shadow-sm'
+                    : 'text-gray-500 hover:text-gray-700',
+                ].join(' ')}
               >
-                {/* Priority Indicator Line */}
-                <div className={`absolute top-0 left-0 w-1.5 h-full ${getPriorityColor(task.priority).split(' ')[0]}`} />
-
-                <div className="flex flex-col md:flex-row justify-between gap-4 ml-2">
-                  <div className="space-y-3 flex-1">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="text-[10px] font-mono font-black text-slate-400 group-hover:text-indigo-500 transition-colors uppercase tracking-widest">{task.number}</span>
-                      <span className={`px-2 py-0.5 rounded-full border text-[8px] font-black uppercase tracking-tight ${getStatusBadge(task.status)}`}>
-                        {task.status}
-                      </span>
-                      <span className={`px-2 py-0.5 rounded-full text-[8px] font-black uppercase tracking-tight ${getPriorityColor(task.priority)}`}>
-                        {task.priority}
-                      </span>
-                      <span className="px-2 py-0.5 bg-indigo-50 dark:bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 rounded-full text-[8px] font-black uppercase tracking-tight">
-                        {task.area}
-                      </span>
-                    </div>
-
-                    <div>
-                      <h4 className="text-sm font-sans font-extrabold text-slate-900 dark:text-white leading-tight">{task.description}</h4>
-                      <div className="flex flex-wrap items-center gap-3 mt-1.5">
-                        <div className="flex items-center gap-1 text-[10px] font-bold text-slate-500">
-                          <MapPin size={10} className="text-indigo-500" />
-                          {task.location}
-                        </div>
-                        <div className="flex items-center gap-1 text-[10px] font-bold text-slate-500">
-                          <AreaIcon size={10} className="text-amber-500" />
-                          {task.taskType}
-                        </div>
-                      </div>
-                    </div>
-
-                    {task.notes && (
-                      <div className="p-3 bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-100 dark:border-emerald-500/20 rounded-2xl">
-                        <div className="flex items-center gap-2 mb-1">
-                          <FileText size={12} className="text-emerald-500" />
-                          <span className="text-[9px] font-black text-emerald-600 uppercase tracking-widest">Notes</span>
-                        </div>
-                        <p className="text-[10px] font-bold text-slate-700 dark:text-slate-300">{task.notes}</p>
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="flex flex-row md:flex-col justify-between items-end md:items-end gap-2 border-t md:border-t-0 md:border-l border-slate-100 dark:border-slate-800 md:pl-6 pt-3 md:pt-0">
-                    <div className="space-y-2">
-                      {task.assignedTo && (
-                        <div className="flex items-center gap-2">
-                          <div className="w-6 h-6 rounded-full bg-slate-100 dark:bg-slate-800 flex items-center justify-center text-slate-400">
-                            <User size={12} />
-                          </div>
-                          <span className="text-[10px] font-bold text-slate-700 dark:text-slate-300">{task.assignedTo}</span>
-                        </div>
-                      )}
-                      <div>
-                        <span className="text-[9px] font-black text-slate-400 uppercase block tracking-tighter leading-none">Scheduled</span>
-                        <span className="text-[10px] font-bold text-slate-700 dark:text-slate-300 block">{task.scheduledDate}</span>
-                      </div>
-                      {task.estimatedCost && (
-                        <div>
-                          <span className="text-[9px] font-black text-slate-400 uppercase block tracking-tighter leading-none">Est. Cost</span>
-                          <span className="text-[10px] font-bold text-slate-700 dark:text-slate-300">${task.estimatedCost}</span>
-                        </div>
-                      )}
-                    </div>
-
-                    <button className="p-2 rounded-xl bg-slate-50 dark:bg-slate-800 text-slate-400 hover:bg-indigo-50 hover:text-indigo-500 transition">
-                      <ChevronRight size={16} />
-                    </button>
-                  </div>
-                </div>
-              </div>
+                <Icon className="w-3 h-3" />
+                {f}
+              </button>
             );
           })}
         </div>
 
-        {/* Sidebar */}
-        <div className="lg:col-span-4 space-y-6">
-          <div className="bg-slate-900 text-white p-6 rounded-3xl space-y-6">
-            <div>
-              <h3 className="text-sm font-sans font-extrabold leading-tight">Area Breakdown</h3>
-              <p className="text-[10px] text-slate-400 uppercase font-bold tracking-widest mt-0.5">Maintenance by location</p>
-            </div>
-
-            <div className="space-y-4">
-              {areas.slice(1).map((area, i) => {
-                const count = tasks.filter(t => t.area === area).length;
-                const Icon = getAreaIcon(area);
-                return (
-                  <div key={i} className="flex justify-between items-center border-b border-white/5 pb-2">
-                    <div className="flex items-center gap-2">
-                      <Icon size={12} className="text-slate-400" />
-                      <span className="text-[10px] font-bold">{area}</span>
-                    </div>
-                    <span className="text-[10px] font-black">{count}</span>
-                  </div>
-                );
-              })}
-            </div>
+        {/* Status filter + search */}
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <div className="flex bg-slate-100 dark:bg-slate-900/40 p-1 rounded-xl gap-1 flex-wrap">
+            {statusFilters.map(f => (
+              <button
+                key={f}
+                onClick={() => setStatusFilter(f)}
+                className={[
+                  'px-3 py-1.5 rounded-lg text-xs font-medium transition whitespace-nowrap',
+                  statusFilter === f
+                    ? 'bg-white dark:bg-slate-700 text-gray-900 dark:text-white shadow-sm'
+                    : 'text-gray-500 hover:text-gray-700',
+                ].join(' ')}
+              >
+                {f}
+              </button>
+            ))}
           </div>
-
-          <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 p-6 rounded-3xl space-y-4">
-            <div>
-              <h3 className="text-sm font-sans font-extrabold text-slate-900 dark:text-white">Cost Summary</h3>
-              <p className="text-[10px] text-slate-400 uppercase font-black tracking-widest mt-0.5">Budget tracking</p>
-            </div>
-
-            <div className="space-y-3">
-              <div className="flex justify-between items-center">
-                <span className="text-[10px] font-bold text-slate-700 dark:text-slate-300">Estimated Total</span>
-                <span className="text-[10px] font-black text-slate-900 dark:text-white">${tasks.reduce((acc, t) => acc + (t.estimatedCost || 0), 0).toLocaleString()}</span>
-              </div>
-              <div className="flex justify-between items-center">
-                <span className="text-[10px] font-bold text-slate-700 dark:text-slate-300">Actual Spent</span>
-                <span className="text-[10px] font-black text-emerald-600">${tasks.reduce((acc, t) => acc + (t.actualCost || 0), 0).toLocaleString()}</span>
-              </div>
-              <div className="flex justify-between items-center">
-                <span className="text-[10px] font-bold text-slate-700 dark:text-slate-300">Remaining Budget</span>
-                <span className="text-[10px] font-black text-amber-600">${(tasks.reduce((acc, t) => acc + (t.estimatedCost || 0), 0) - tasks.reduce((acc, t) => acc + (t.actualCost || 0), 0)).toLocaleString()}</span>
-              </div>
-            </div>
+          <div className="relative w-full max-w-xs">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+            <input
+              placeholder="Search number, description, location…"
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              className="w-full pl-9 pr-3 py-2 text-sm border border-gray-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-gray-900 dark:text-white outline-none focus:ring-1 focus:ring-[var(--color-accent-operations)]"
+            />
           </div>
         </div>
-      </div>
+      </SectionCard>
+
+      {/* Task list */}
+      <SectionCard pad="none" bodyClassName="divide-y divide-gray-100 dark:divide-slate-700">
+        {loading && (
+          <div className="p-8 flex items-center justify-center gap-2 text-sm text-gray-500">
+            <Loader2 className="w-5 h-5 animate-spin" /> Loading tasks…
+          </div>
+        )}
+
+        {!loading && !error && filtered.length === 0 && (
+          <div className="p-8 text-center text-sm text-gray-500">
+            {tasks.length === 0 ? 'No building maintenance tasks created yet.' : 'No tasks match the filters.'}
+          </div>
+        )}
+
+        {!loading && !error && filtered.map(t => {
+          const tone = STATUS_TONE[t.status] ?? 'neutral';
+          const priorityTone = PRIORITY_TONE[t.priority] ?? 'neutral';
+          const AreaIcon = AREA_ICON[t.area] ?? Building2;
+          const isMenuOpen = menuOpen === t.id;
+          const actions = NEXT_ACTIONS[t.status] || [];
+
+          return (
+            <div key={t.id} className="p-4 flex flex-col md:flex-row md:items-center gap-4">
+              {/* Identity */}
+              <div className="flex items-center gap-3 md:w-64 shrink-0">
+                <div className={`p-2 rounded-xl ${statusTone[tone].soft}`}>
+                  <AreaIcon className={`w-4 h-4 ${statusTone[tone].text}`} />
+                </div>
+                <div className="min-w-0">
+                  <h4 className="text-sm font-bold text-gray-900 dark:text-white truncate">{t.task_type}</h4>
+                  <p className="text-xs text-gray-500 font-mono truncate">
+                    {t.bm_number} · {t.area}
+                  </p>
+                </div>
+              </div>
+
+              {/* Body */}
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium text-gray-700 dark:text-gray-200 line-clamp-2">{t.description}</p>
+                <div className="flex flex-wrap items-center gap-2 mt-1.5 text-xs text-gray-500">
+                  {t.location && (
+                    <span className="inline-flex items-center gap-1">
+                      <MapPin className="w-3.5 h-3.5" /> {t.location}
+                    </span>
+                  )}
+                  {t.assigned_to && (
+                    <>
+                      <span>·</span>
+                      <span className="inline-flex items-center gap-1">
+                        <User className="w-3.5 h-3.5" /> {t.assigned_to}
+                      </span>
+                    </>
+                  )}
+                  <span>·</span>
+                  <span className="inline-flex items-center gap-1">
+                    <Calendar className="w-3.5 h-3.5" /> {fmtDate(t.scheduled_date)}
+                  </span>
+                  {Number(t.estimated_cost) > 0 && (
+                    <>
+                      <span>·</span>
+                      <span>Est. {fmtCost(t.estimated_cost)}</span>
+                    </>
+                  )}
+                </div>
+              </div>
+
+              {/* Status + priority */}
+              <div className="md:w-48 shrink-0">
+                <div className="flex items-center justify-between text-xs">
+                  <Badge tone={tone}>{t.status}</Badge>
+                  <Badge tone={priorityTone} variant="solid">{t.priority}</Badge>
+                </div>
+              </div>
+
+              {/* Actions */}
+              <div className="md:w-36 shrink-0 flex justify-end items-center gap-1.5">
+                <button
+                  onClick={() => setDetailId(t.id)}
+                  className={button.ghost}
+                  title="View details"
+                >
+                  <Eye className="w-4 h-4" />
+                </button>
+                {actions.length > 0 && (
+                  <div className="relative">
+                    <button
+                      onClick={() => setMenuOpen(isMenuOpen ? null : t.id)}
+                      disabled={actingOn === t.id}
+                      className={button.ghost + ' disabled:opacity-50'}
+                    >
+                      {actingOn === t.id ? <Loader2 className="w-4 h-4 animate-spin" /> : <MoreVertical className="w-4 h-4" />}
+                    </button>
+                    {isMenuOpen && (
+                      <div className="absolute right-0 top-full mt-2 w-52 bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl shadow-xl z-20 overflow-hidden">
+                        {actions.map(a => (
+                          <button
+                            key={a}
+                            onClick={() => changeStatus(t.id, a)}
+                            className="w-full text-left px-3 py-2 text-xs font-medium text-gray-700 dark:text-gray-200 hover:bg-slate-100 dark:hover:bg-slate-700 transition"
+                          >
+                            {ACTION_LABELS[a]}
+                          </button>
+                        ))}
+                        <button
+                          onClick={() => removeTask(t.id)}
+                          className="w-full text-left px-3 py-2 text-xs font-medium text-[var(--color-danger)] hover:bg-red-50 dark:hover:bg-red-900/20 transition border-t border-gray-100 dark:border-slate-700"
+                        >
+                          <Trash2 className="w-3.5 h-3.5 inline mr-1" /> Delete
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </SectionCard>
+
+      {/* ── Cost summary sidebar-style card ─────────────────────────────── */}
+      <SectionCard
+        title="Cost Summary"
+        subtitle="Budget tracking across all building maintenance tasks"
+        icon={FileText}
+        pad="md"
+      >
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <div className="bg-slate-50 dark:bg-slate-900/40 rounded-xl p-4">
+            <p className="text-[10px] font-bold text-gray-500 uppercase tracking-wide">Estimated Total</p>
+            <p className="text-xl font-bold text-gray-900 dark:text-white mt-1">{fmtCost(costSummary.estimated)}</p>
+          </div>
+          <div className="bg-slate-50 dark:bg-slate-900/40 rounded-xl p-4">
+            <p className="text-[10px] font-bold text-gray-500 uppercase tracking-wide">Actual Spent</p>
+            <p className="text-xl font-bold text-[var(--color-success)] mt-1">{fmtCost(costSummary.actual)}</p>
+          </div>
+          <div className="bg-slate-50 dark:bg-slate-900/40 rounded-xl p-4">
+            <p className="text-[10px] font-bold text-gray-500 uppercase tracking-wide">Remaining Budget</p>
+            <p className="text-xl font-bold text-[var(--color-warning)] mt-1">{fmtCost(costSummary.remaining)}</p>
+          </div>
+        </div>
+      </SectionCard>
+
+      {/* ── Create modal ─────────────────────────────────────────────── */}
+      <ModalSystem
+        isOpen={showCreate}
+        onClose={() => (submitting ? undefined : setShowCreate(false))}
+        title="New Building Maintenance Task"
+        subtitle="Schedule a building maintenance task."
+        variant="form"
+        size="lg"
+        loading={submitting}
+        confirmLabel={submitting ? 'Submitting…' : 'Create Task'}
+        cancelLabel="Cancel"
+        confirmColor="indigo"
+        onConfirm={submitCreate}
+        showFooter
+      >
+        <div className="space-y-5">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <Field label="Area">
+              <select
+                value={form.area}
+                onChange={e => setForm(f => ({ ...f, area: e.target.value as BuildingArea }))}
+                className={inputClass}
+              >
+                {AREA_OPTIONS.map(a => <option key={a} value={a}>{a}</option>)}
+              </select>
+            </Field>
+            <Field label="Task Type">
+              <input
+                value={form.taskType}
+                onChange={e => setForm(f => ({ ...f, taskType: e.target.value }))}
+                placeholder="e.g. Painting, Flooring, Inspection"
+                className={inputClass}
+              />
+            </Field>
+            <Field label="Location">
+              <input
+                value={form.location}
+                onChange={e => setForm(f => ({ ...f, location: e.target.value }))}
+                placeholder="e.g. Room 205-210, Lobby Floor"
+                className={inputClass}
+              />
+            </Field>
+            <Field label="Priority">
+              <select
+                value={form.priority}
+                onChange={e => setForm(f => ({ ...f, priority: e.target.value as BuildingTaskPriority }))}
+                className={inputClass}
+              >
+                {PRIORITY_OPTIONS.map(p => <option key={p} value={p}>{p}</option>)}
+              </select>
+            </Field>
+            <Field label="Assigned To (optional)">
+              <select
+                value={form.assignedTo}
+                onChange={e => setForm(f => ({ ...f, assignedTo: e.target.value }))}
+                className={inputClass}
+              >
+                <option value="">— Unassigned —</option>
+                {ASSIGNEE_OPTIONS.map(a => <option key={a} value={a}>{a}</option>)}
+              </select>
+            </Field>
+            <Field label="Scheduled Date">
+              <input
+                type="date"
+                value={form.scheduledDate}
+                onChange={e => setForm(f => ({ ...f, scheduledDate: e.target.value }))}
+                className={inputClass}
+              />
+            </Field>
+            <Field label="Estimated Cost (optional)">
+              <input
+                type="number"
+                step="0.01"
+                value={form.estimatedCost}
+                onChange={e => setForm(f => ({ ...f, estimatedCost: e.target.value }))}
+                placeholder="0.00"
+                className={inputClass}
+              />
+            </Field>
+          </div>
+          <Field label="Description">
+            <textarea
+              value={form.description}
+              onChange={e => setForm(f => ({ ...f, description: e.target.value }))}
+              placeholder="Describe the maintenance task…"
+              rows={3}
+              className={inputClass}
+            />
+          </Field>
+          <Field label="Notes (optional)">
+            <textarea
+              value={form.notes}
+              onChange={e => setForm(f => ({ ...f, notes: e.target.value }))}
+              placeholder="Additional notes…"
+              rows={2}
+              className={inputClass}
+            />
+          </Field>
+        </div>
+      </ModalSystem>
+
+      {/* ── Detail modal ─────────────────────────────────────────────── */}
+      <ModalSystem
+        isOpen={!!detailId}
+        onClose={() => setDetailId(null)}
+        title={detailTask?.task_type || 'Building Task'}
+        subtitle={detailTask?.bm_number}
+        variant="info"
+        size="lg"
+        showFooter={false}
+      >
+        {detailTask && (
+          <div className="space-y-5">
+            {/* Status + priority + area */}
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge tone={STATUS_TONE[detailTask.status]}>{detailTask.status}</Badge>
+              <Badge tone={PRIORITY_TONE[detailTask.priority]} variant="solid">{detailTask.priority}</Badge>
+              <Badge tone="info">{detailTask.area}</Badge>
+            </div>
+
+            {/* Description */}
+            {detailTask.description && (
+              <div>
+                <p className="text-xs font-bold text-gray-500 uppercase tracking-wide mb-1">Description</p>
+                <p className="text-sm text-gray-700 dark:text-gray-200">{detailTask.description}</p>
+              </div>
+            )}
+
+            {/* Notes */}
+            {detailTask.notes && (
+              <div>
+                <p className="text-xs font-bold text-gray-500 uppercase tracking-wide mb-1">Notes</p>
+                <p className="text-sm text-gray-700 dark:text-gray-200 bg-slate-50 dark:bg-slate-900/40 rounded-xl p-3 whitespace-pre-wrap">{detailTask.notes}</p>
+              </div>
+            )}
+
+            {/* Metadata grid */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <div className="bg-slate-50 dark:bg-slate-900/40 rounded-xl p-3">
+                <p className="text-[10px] font-bold text-gray-500 uppercase tracking-wide">Location</p>
+                <p className="text-sm font-bold text-gray-900 dark:text-white">{detailTask.location || '—'}</p>
+              </div>
+              <div className="bg-slate-50 dark:bg-slate-900/40 rounded-xl p-3">
+                <p className="text-[10px] font-bold text-gray-500 uppercase tracking-wide">Assigned To</p>
+                <p className="text-sm font-bold text-gray-900 dark:text-white">{detailTask.assigned_to || '—'}</p>
+              </div>
+              <div className="bg-slate-50 dark:bg-slate-900/40 rounded-xl p-3">
+                <p className="text-[10px] font-bold text-gray-500 uppercase tracking-wide">Scheduled</p>
+                <p className="text-sm font-bold text-gray-900 dark:text-white">{fmtDate(detailTask.scheduled_date)}</p>
+              </div>
+              <div className="bg-slate-50 dark:bg-slate-900/40 rounded-xl p-3">
+                <p className="text-[10px] font-bold text-gray-500 uppercase tracking-wide">Completed</p>
+                <p className="text-sm font-bold text-gray-900 dark:text-white">{fmtDate(detailTask.completion_date)}</p>
+              </div>
+              <div className="bg-slate-50 dark:bg-slate-900/40 rounded-xl p-3">
+                <p className="text-[10px] font-bold text-gray-500 uppercase tracking-wide">Estimated Cost</p>
+                <p className="text-sm font-bold text-gray-900 dark:text-white">{fmtCost(detailTask.estimated_cost)}</p>
+              </div>
+              <div className="bg-slate-50 dark:bg-slate-900/40 rounded-xl p-3">
+                <p className="text-[10px] font-bold text-gray-500 uppercase tracking-wide">Actual Cost</p>
+                <p className="text-sm font-bold text-gray-900 dark:text-white">{fmtCost(detailTask.actual_cost)}</p>
+              </div>
+              <div className="bg-slate-50 dark:bg-slate-900/40 rounded-xl p-3">
+                <p className="text-[10px] font-bold text-gray-500 uppercase tracking-wide">Created</p>
+                <p className="text-sm font-bold text-gray-900 dark:text-white">{fmtDate(detailTask.created_at)}</p>
+              </div>
+              <div className="bg-slate-50 dark:bg-slate-900/40 rounded-xl p-3">
+                <p className="text-[10px] font-bold text-gray-500 uppercase tracking-wide">Updated</p>
+                <p className="text-sm font-bold text-gray-900 dark:text-white">{fmtDate(detailTask.updated_at)}</p>
+              </div>
+            </div>
+
+            {/* Editable fields */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-gray-100 dark:border-slate-700">
+              <Field label="Status">
+                <select
+                  value={detailTask.status}
+                  onChange={e => saveDetail({ status: e.target.value })}
+                  className={inputClass}
+                  disabled={actingOn === detailTask.id}
+                >
+                  {STATUS_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}
+                </select>
+              </Field>
+              <Field label="Priority">
+                <select
+                  value={detailTask.priority}
+                  onChange={e => saveDetail({ priority: e.target.value })}
+                  className={inputClass}
+                  disabled={actingOn === detailTask.id}
+                >
+                  {PRIORITY_OPTIONS.map(p => <option key={p} value={p}>{p}</option>)}
+                </select>
+              </Field>
+              <Field label="Assigned To">
+                <select
+                  value={detailTask.assigned_to || ''}
+                  onChange={e => saveDetail({ assignedTo: e.target.value || null })}
+                  className={inputClass}
+                  disabled={actingOn === detailTask.id}
+                >
+                  <option value="">— Unassigned —</option>
+                  {ASSIGNEE_OPTIONS.map(a => <option key={a} value={a}>{a}</option>)}
+                </select>
+              </Field>
+              <Field label="Scheduled Date">
+                <input
+                  type="date"
+                  defaultValue={detailTask.scheduled_date}
+                  onBlur={e => saveDetail({ scheduledDate: e.target.value })}
+                  className={inputClass}
+                  disabled={actingOn === detailTask.id}
+                />
+              </Field>
+              <Field label="Estimated Cost">
+                <input
+                  type="number"
+                  step="0.01"
+                  defaultValue={detailTask.estimated_cost || 0}
+                  onBlur={e => saveDetail({ estimatedCost: parseFloat(e.target.value) || 0 })}
+                  className={inputClass}
+                  disabled={actingOn === detailTask.id}
+                />
+              </Field>
+              <Field label="Actual Cost">
+                <input
+                  type="number"
+                  step="0.01"
+                  defaultValue={detailTask.actual_cost || 0}
+                  onBlur={e => saveDetail({ actualCost: parseFloat(e.target.value) || 0 })}
+                  className={inputClass}
+                  disabled={actingOn === detailTask.id}
+                />
+              </Field>
+              <Field label="Completion Date">
+                <input
+                  type="date"
+                  defaultValue={detailTask.completion_date || ''}
+                  onBlur={e => saveDetail({ completionDate: e.target.value || null })}
+                  className={inputClass}
+                  disabled={actingOn === detailTask.id}
+                />
+              </Field>
+              <div className="sm:col-span-2">
+                <Field label="Notes">
+                  <textarea
+                    defaultValue={detailTask.notes || ''}
+                    onBlur={e => saveDetail({ notes: e.target.value })}
+                    rows={2}
+                    className={inputClass}
+                    disabled={actingOn === detailTask.id}
+                  />
+                </Field>
+              </div>
+            </div>
+
+            {/* Action buttons */}
+            <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-gray-100 dark:border-slate-700">
+              {(NEXT_ACTIONS[detailTask.status] || []).map(a => (
+                <button
+                  key={a}
+                  onClick={() => { changeStatus(detailTask.id, a); setDetailId(null); }}
+                  disabled={actingOn === detailTask.id}
+                  className={button.primary + ' disabled:opacity-50'}
+                >
+                  {ACTION_LABELS[a]}
+                </button>
+              ))}
+              <button
+                onClick={() => { removeTask(detailTask.id); }}
+                disabled={actingOn === detailTask.id}
+                className={button.ghost + ' text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 ml-auto disabled:opacity-50'}
+              >
+                <Trash2 className="w-4 h-4 inline mr-1" /> Delete
+              </button>
+            </div>
+          </div>
+        )}
+      </ModalSystem>
     </div>
   );
 };

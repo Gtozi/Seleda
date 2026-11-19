@@ -1,330 +1,345 @@
 /**
- * Demand Forecasts Component
- * Displays AI-powered demand predictions with enhanced KPIs and features
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Demand Forecasts — DB-integrated.
+ *
+ * Fetches from /api/rms-portal/forecasts (Supabase-direct, same pattern
+ * as /api/hk-portal/*). Period and room-type filters are passed as query
+ * params; the backend scopes the response.
+ *
+ * UI uses the shared Front Office primitives (PageHeader, SectionCard,
+ * Badge, StatCard) so the module matches the Housekeeping / F&B portals.
  */
 
-import React, { useState, useMemo } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   TrendingUp,
   Calendar,
-  BarChart3,
   Activity,
   Target,
   DollarSign,
   Bed,
-  Users,
   AlertTriangle,
   CheckCircle2,
-  Settings,
   Download,
-  Filter
+  Loader2,
+  ServerCrash,
+  type LucideIcon,
 } from 'lucide-react';
+import StatCard from '../FrontOffice/StatCard';
+import { PageHeader, SectionCard, Badge } from '../FrontOffice/ui';
+import { useERP } from '../../context/ERPContext';
+import { button, type StatusTone } from '../FrontOffice/brandTheme';
+import { rmsGet } from '../../services/rmsService';
 
+// ── Types ────────────────────────────────────────────────────────────────
+interface ForecastRow {
+  id: string;
+  forecast_date: string;
+  room_type: string;
+  occupancy: number;
+  adr: number;
+  revpar: number;
+  demand: 'high' | 'medium' | 'low';
+  confidence: number;
+}
+
+interface DemandFactor {
+  id: string;
+  factor: string;
+  impact: 'positive' | 'neutral' | 'negative';
+  confidence: number;
+  description: string | null;
+}
+
+interface AccuracySnapshot {
+  id: string;
+  period: '7d' | '30d' | '90d';
+  accuracy: number;
+  variance_pct: number;
+  snapshot_date: string;
+}
+
+// ── Helpers ─────────────────────────────────────────────────────────────
+const DEMAND_TONE: Record<string, StatusTone> = {
+  high: 'success',
+  medium: 'warning',
+  low: 'danger',
+};
+const IMPACT_TONE: Record<string, StatusTone> = {
+  positive: 'success',
+  neutral: 'neutral',
+  negative: 'danger',
+};
+const PERIOD_LABEL: Record<string, string> = {
+  '7d': 'Last 7 Days',
+  '30d': 'Last 30 Days',
+  '90d': 'Last 90 Days',
+};
+
+// ── Component ───────────────────────────────────────────────────────────
 const DemandForecasts = () => {
-  const [selectedPeriod, setSelectedPeriod] = useState<'7' | '30' | '90' | '365'>('30');
-  const [selectedRoomType, setSelectedRoomType] = useState<string>('all');
+  const { currentPropertyId } = useERP();
+  const [forecasts, setForecasts] = useState<ForecastRow[]>([]);
+  const [factors, setFactors] = useState<DemandFactor[]>([]);
+  const [accuracy, setAccuracy] = useState<AccuracySnapshot[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  const forecastData = useMemo(() => [
-    { date: '2024-01-29', occupancy: 78, adr: 145, revpar: 113, demand: 'high', confidence: 92 },
-    { date: '2024-01-30', occupancy: 82, adr: 148, revpar: 121, demand: 'high', confidence: 88 },
-    { date: '2024-01-31', occupancy: 75, adr: 142, revpar: 107, demand: 'medium', confidence: 85 },
-    { date: '2024-02-01', occupancy: 70, adr: 138, revpar: 97, demand: 'low', confidence: 82 },
-    { date: '2024-02-02', occupancy: 85, adr: 155, revpar: 132, demand: 'high', confidence: 90 },
-    { date: '2024-02-03', occupancy: 88, adr: 160, revpar: 141, demand: 'high', confidence: 87 },
-    { date: '2024-02-04', occupancy: 65, adr: 135, revpar: 88, demand: 'low', confidence: 80 },
-  ], []);
+  const [period, setPeriod] = useState<'7' | '30' | '90' | '365'>('30');
+  const [roomType, setRoomType] = useState<string>('all');
+  const [exporting, setExporting] = useState(false);
 
-  const forecastMetrics = useMemo(() => {
-    const avgOccupancy = Math.round(forecastData.reduce((sum, f) => sum + f.occupancy, 0) / forecastData.length);
-    const avgADR = Math.round(forecastData.reduce((sum, f) => sum + f.adr, 0) / forecastData.length);
-    const avgRevPAR = Math.round(forecastData.reduce((sum, f) => sum + f.revpar, 0) / forecastData.length);
-    const avgConfidence = Math.round(forecastData.reduce((sum, f) => sum + f.confidence, 0) / forecastData.length);
-    const highDemandDays = forecastData.filter(f => f.demand === 'high').length;
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const json = await rmsGet('/api/rms-portal/forecasts', {
+        propertyId: currentPropertyId,
+        query: { days: period, roomType: roomType === 'all' ? null : roomType },
+      });
+      setForecasts(Array.isArray(json.data) ? json.data : []);
+      setFactors(Array.isArray(json.factors) ? json.factors : []);
+      setAccuracy(Array.isArray(json.accuracy) ? json.accuracy : []);
+    } catch (e: any) {
+      setError(e.message || 'Failed to load forecasts');
+    } finally {
+      setLoading(false);
+    }
+  }, [period, roomType, currentPropertyId]);
 
-    return { avgOccupancy, avgADR, avgRevPAR, avgConfidence, highDemandDays };
-  }, [forecastData]);
+  useEffect(() => { load(); }, [load]);
 
-  const demandFactors = useMemo(() => [
-    { factor: 'Local Events', impact: 'positive', confidence: 85, description: 'Conference in city center' },
-    { factor: 'Seasonality', impact: 'positive', confidence: 90, description: 'Peak season approaching' },
-    { factor: 'Competitor Pricing', impact: 'neutral', confidence: 75, description: 'Competitor rates stable' },
-    { factor: 'Weather Forecast', impact: 'negative', confidence: 70, description: 'Rain expected' }
-  ], []);
+  const metrics = useMemo(() => {
+    if (forecasts.length === 0) {
+      return { avgOccupancy: 0, avgADR: 0, avgRevPAR: 0, avgConfidence: 0, highDemandDays: 0 };
+    }
+    const avg = (key: keyof ForecastRow) =>
+      Math.round(forecasts.reduce((sum, f) => sum + Number(f[key]), 0) / forecasts.length);
+    return {
+      avgOccupancy: avg('occupancy'),
+      avgADR: avg('adr'),
+      avgRevPAR: avg('revpar'),
+      avgConfidence: avg('confidence'),
+      highDemandDays: forecasts.filter(f => f.demand === 'high').length,
+    };
+  }, [forecasts]);
 
-  const roomTypes = ['all', 'Deluxe Suite', 'Standard Room', 'Ocean View', 'Family Suite'];
+  const roomTypes = useMemo(() => {
+    const set = new Set<string>(['all']);
+    forecasts.forEach(f => set.add(f.room_type));
+    return Array.from(set);
+  }, [forecasts]);
+
+  const handleExport = async () => {
+    setExporting(true);
+    try {
+      const headers = ['Date', 'Room Type', 'Occupancy %', 'ADR', 'RevPAR', 'Demand', 'Confidence %'];
+      const rows = forecasts.map(f => [
+        f.forecast_date,
+        f.room_type,
+        f.occupancy,
+        f.adr,
+        f.revpar,
+        f.demand,
+        f.confidence,
+      ]);
+      const csv = [headers, ...rows].map(r => r.join(',')).join('\n');
+      const blob = new Blob([csv], { type: 'text/csv' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `demand-forecasts-${new Date().toISOString().slice(0, 10)}.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  // ── Render ───────────────────────────────────────────────────────────
+  if (loading) {
+    return (
+      <div className="p-6">
+        <div className="flex items-center justify-center py-20 text-slate-400">
+          <Loader2 className="w-6 h-6 animate-spin mr-2" />
+          Loading forecasts…
+        </div>
+      </div>
+    );
+  }
+
+  if (error && forecasts.length === 0) {
+    return (
+      <div className="p-6">
+        <div className="flex flex-col items-center justify-center py-20 text-rose-600 dark:text-rose-400">
+          <ServerCrash className="w-10 h-10 mb-3" />
+          <p className="font-medium">{error}</p>
+          <button onClick={load} className="mt-4 text-sm text-blue-600 hover:underline">
+            Retry
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="p-6 space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-2xl font-bold text-slate-900 dark:text-white">Demand Forecasts</h2>
-          <p className="text-slate-600 dark:text-slate-400">AI-powered demand predictions and revenue forecasting</p>
+      <PageHeader
+        title="Demand Forecasts"
+        subtitle="AI-powered demand predictions and revenue forecasting"
+        actions={
+          <>
+            <select
+              value={roomType}
+              onChange={(e) => setRoomType(e.target.value)}
+              className="px-3 py-2 bg-white dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded-lg text-sm text-slate-900 dark:text-white"
+            >
+              {roomTypes.map(t => (
+                <option key={t} value={t}>{t === 'all' ? 'All Room Types' : t}</option>
+              ))}
+            </select>
+            <select
+              value={period}
+              onChange={(e) => setPeriod(e.target.value as any)}
+              className="px-3 py-2 bg-white dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded-lg text-sm text-slate-900 dark:text-white"
+            >
+              <option value="7">Next 7 days</option>
+              <option value="30">Next 30 days</option>
+              <option value="90">Next 90 days</option>
+              <option value="365">Next 365 days</option>
+            </select>
+            <button onClick={handleExport} disabled={exporting} className={button.secondary}>
+              <Download className="w-4 h-4" />
+              {exporting ? 'Exporting…' : 'Export'}
+            </button>
+          </>
+        }
+      />
+
+      {error && (
+        <div className="text-sm text-rose-600 dark:text-rose-400 bg-rose-50 dark:bg-rose-900/20 border border-rose-200 dark:border-rose-800 rounded-lg px-4 py-2">
+          {error}
         </div>
-        <div className="flex items-center gap-3">
-          <select 
-            value={selectedRoomType}
-            onChange={(e) => setSelectedRoomType(e.target.value)}
-            className="px-3 py-2 bg-white dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded-lg text-sm"
-          >
-            {roomTypes.map(type => (
-              <option key={type} value={type}>{type === 'all' ? 'All Room Types' : type}</option>
-            ))}
-          </select>
-          <select 
-            value={selectedPeriod}
-            onChange={(e) => setSelectedPeriod(e.target.value as any)}
-            className="px-3 py-2 bg-white dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded-lg text-sm"
-          >
-            <option value="7">Next 7 days</option>
-            <option value="30">Next 30 days</option>
-            <option value="90">Next 90 days</option>
-            <option value="365">Next 365 days</option>
-          </select>
-          <button className="flex items-center gap-2 px-4 py-2 bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-300 rounded-lg text-sm font-medium transition-colors">
-            <Filter className="w-4 h-4" />
-            Filter
-          </button>
-          <button className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium transition-colors">
-            <Download className="w-4 h-4" />
-            Export
-          </button>
-        </div>
-      </div>
+      )}
 
       {/* Forecast Metrics */}
       <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
-        <MetricCard
-          title="Avg Occupancy"
-          value={`${forecastMetrics.avgOccupancy}%`}
-          icon={<Bed className="w-5 h-5" />}
-          color="blue"
-        />
-        <MetricCard
-          title="Avg ADR"
-          value={`$${forecastMetrics.avgADR}`}
-          icon={<DollarSign className="w-5 h-5" />}
-          color="green"
-        />
-        <MetricCard
-          title="Avg RevPAR"
-          value={`$${forecastMetrics.avgRevPAR}`}
-          icon={<Target className="w-5 h-5" />}
-          color="purple"
-        />
-        <MetricCard
-          title="Confidence"
-          value={`${forecastMetrics.avgConfidence}%`}
-          icon={<Activity className="w-5 h-5" />}
-          color="amber"
-        />
-        <MetricCard
-          title="High Demand Days"
-          value={forecastMetrics.highDemandDays}
-          icon={<TrendingUp className="w-5 h-5" />}
-          color="rose"
-        />
+        <StatCard title="Avg Occupancy"   value={`${metrics.avgOccupancy}%`}   icon={Bed}        tone="info" />
+        <StatCard title="Avg ADR"         value={`$${metrics.avgADR}`}         icon={DollarSign} tone="success" />
+        <StatCard title="Avg RevPAR"      value={`$${metrics.avgRevPAR}`}      icon={Target}     tone="accent" />
+        <StatCard title="Confidence"      value={`${metrics.avgConfidence}%`} icon={Activity}   tone="warning" />
+        <StatCard title="High Demand Days" value={metrics.highDemandDays}      icon={TrendingUp} tone="danger" />
       </div>
 
-      {/* Forecast Chart */}
-      <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 p-6">
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="text-lg font-semibold text-slate-900 dark:text-white">Demand Forecast Chart</h3>
-          <div className="flex items-center gap-2">
-            <button className="text-sm text-blue-600 hover:text-blue-700 font-medium">View Chart</button>
-            <button className="text-sm text-blue-600 hover:text-blue-700 font-medium">View Table</button>
-          </div>
-        </div>
+      {/* Forecast Chart / Table */}
+      <SectionCard title="Demand Forecast" icon={TrendingUp} pad="md">
         <div className="space-y-3">
-          {forecastData.map((forecast) => (
-            <ForecastRow key={forecast.date} forecast={forecast} />
+          {forecasts.map((f) => (
+            <ForecastRowItem key={f.id} forecast={f} />
           ))}
+          {forecasts.length === 0 && (
+            <p className="text-sm text-slate-500 text-center py-4">No forecast data for the selected filters</p>
+          )}
         </div>
-      </div>
+      </SectionCard>
 
       {/* Demand Factors */}
-      <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 p-6">
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="text-lg font-semibold text-slate-900 dark:text-white">Demand Factors</h3>
-          <button className="text-sm text-blue-600 hover:text-blue-700 font-medium">
-            View All Factors
-          </button>
-        </div>
+      <SectionCard title="Demand Factors" icon={Activity} pad="md">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {demandFactors.map((factor, idx) => (
-            <DemandFactorCard key={idx} factor={factor} />
+          {factors.map((factor) => (
+            <DemandFactorCard key={factor.id} factor={factor} />
           ))}
+          {factors.length === 0 && (
+            <p className="text-sm text-slate-500 col-span-full text-center py-4">No demand factors recorded</p>
+          )}
         </div>
-      </div>
+      </SectionCard>
 
       {/* Forecast Accuracy */}
-      <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 p-6">
-        <h3 className="text-lg font-semibold text-slate-900 dark:text-white mb-4">Forecast Accuracy</h3>
+      <SectionCard title="Forecast Accuracy" icon={CheckCircle2} pad="md">
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <AccuracyCard
-            title="Last 7 Days"
-            accuracy={92}
-            variance={3}
-            icon={<CheckCircle2 className="w-5 h-5 text-green-500" />}
-          />
-          <AccuracyCard
-            title="Last 30 Days"
-            accuracy={88}
-            variance={5}
-            icon={<Activity className="w-5 h-5 text-blue-500" />}
-          />
-          <AccuracyCard
-            title="Last 90 Days"
-            accuracy={85}
-            variance={7}
-            icon={<AlertTriangle className="w-5 h-5 text-amber-500" />}
-          />
+          {accuracy.map((a) => (
+            <AccuracyCard key={a.id} snapshot={a} />
+          ))}
+          {accuracy.length === 0 && (
+            <p className="text-sm text-slate-500 col-span-full text-center py-4">No accuracy snapshots available</p>
+          )}
         </div>
-      </div>
+      </SectionCard>
     </div>
   );
 };
 
-interface MetricCardProps {
-  title: string;
-  value: string | number;
-  icon: React.ReactNode;
-  color: 'blue' | 'green' | 'purple' | 'amber' | 'rose';
-}
-
-const MetricCard: React.FC<MetricCardProps> = ({ title, value, icon, color }) => {
-  const colorClasses = {
-    blue: 'bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 border-blue-200 dark:border-blue-800',
-    green: 'bg-green-50 dark:bg-green-900/20 text-green-600 dark:text-green-400 border-green-200 dark:border-green-800',
-    purple: 'bg-purple-50 dark:bg-purple-900/20 text-purple-600 dark:text-purple-400 border-purple-200 dark:border-purple-800',
-    amber: 'bg-amber-50 dark:bg-amber-900/20 text-amber-600 dark:text-amber-400 border-amber-200 dark:border-amber-800',
-    rose: 'bg-rose-50 dark:bg-rose-900/20 text-rose-600 dark:text-rose-400 border-rose-200 dark:border-rose-800'
-  };
-
-  return (
-    <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 p-4">
-      <div className="flex items-center gap-3 mb-2">
-        <div className={`p-2 rounded-lg ${colorClasses[color]} border`}>
-          {icon}
-        </div>
-        <div className="flex-1">
-          <p className="text-xs text-slate-600 dark:text-slate-400">{title}</p>
-          <p className="text-lg font-bold text-slate-900 dark:text-white">{value}</p>
-        </div>
+// ── ForecastRowItem ─────────────────────────────────────────────────────
+const ForecastRowItem = ({ forecast: f }: { forecast: ForecastRow }) => (
+  <div className="flex items-center justify-between p-4 bg-slate-50 dark:bg-slate-700/50 rounded-lg border border-slate-200 dark:border-slate-600">
+    <div className="flex items-center gap-4">
+      <Calendar className="w-5 h-5 text-slate-600 dark:text-slate-400" />
+      <div>
+        <p className="font-medium text-slate-900 dark:text-white">
+          {new Date(f.forecast_date).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}
+        </p>
+        <Badge tone={DEMAND_TONE[f.demand] || 'neutral'}>{f.demand} demand</Badge>
       </div>
     </div>
-  );
-};
-
-interface ForecastRowProps {
-  forecast: {
-    date: string;
-    occupancy: number;
-    adr: number;
-    revpar: number;
-    demand: string;
-    confidence: number;
-  };
-}
-
-const ForecastRow: React.FC<ForecastRowProps> = ({ forecast }) => {
-  const demandColors = {
-    high: 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300',
-    medium: 'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300',
-    low: 'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300'
-  };
-
-  return (
-    <div className="flex items-center justify-between p-4 bg-slate-50 dark:bg-slate-700/50 rounded-lg border border-slate-200 dark:border-slate-600">
-      <div className="flex items-center gap-4">
-        <Calendar className="w-5 h-5 text-slate-600 dark:text-slate-400" />
-        <div>
-          <p className="font-medium text-slate-900 dark:text-white">{forecast.date}</p>
-          <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${demandColors[forecast.demand as keyof typeof demandColors]}`}>
-            {forecast.demand} demand
-          </span>
-        </div>
-      </div>
-      <div className="flex items-center gap-6">
-        <div className="text-center">
-          <p className="text-xs text-slate-600 dark:text-slate-400">Occupancy</p>
-          <p className="font-semibold text-slate-900 dark:text-white">{forecast.occupancy}%</p>
-        </div>
-        <div className="text-center">
-          <p className="text-xs text-slate-600 dark:text-slate-400">ADR</p>
-          <p className="font-semibold text-slate-900 dark:text-white">${forecast.adr}</p>
-        </div>
-        <div className="text-center">
-          <p className="text-xs text-slate-600 dark:text-slate-400">RevPAR</p>
-          <p className="font-semibold text-slate-900 dark:text-white">${forecast.revpar}</p>
-        </div>
-        <div className="text-center">
-          <p className="text-xs text-slate-600 dark:text-slate-400">Confidence</p>
-          <p className="font-semibold text-blue-600 dark:text-blue-400">{forecast.confidence}%</p>
-        </div>
-      </div>
+    <div className="flex items-center gap-6">
+      <Metric label="Occupancy" value={`${f.occupancy}%`} />
+      <Metric label="ADR" value={`$${f.adr}`} />
+      <Metric label="RevPAR" value={`$${f.revpar}`} />
+      <Metric label="Confidence" value={`${f.confidence}%`} accent />
     </div>
-  );
+  </div>
+);
+
+const Metric = ({ label, value, accent }: { label: string; value: string; accent?: boolean }) => (
+  <div className="text-center">
+    <p className="text-xs text-slate-600 dark:text-slate-400">{label}</p>
+    <p className={`font-semibold ${accent ? 'text-blue-600 dark:text-blue-400' : 'text-slate-900 dark:text-white'}`}>
+      {value}
+    </p>
+  </div>
+);
+
+// ── DemandFactorCard ────────────────────────────────────────────────────
+const DemandFactorCard = ({ factor: f }: { factor: DemandFactor }) => (
+  <div className="p-4 bg-slate-50 dark:bg-slate-700/50 rounded-lg border border-slate-200 dark:border-slate-600">
+    <div className="flex items-center justify-between mb-2">
+      <h4 className="font-medium text-slate-900 dark:text-white">{f.factor}</h4>
+      <Badge tone={IMPACT_TONE[f.impact] || 'neutral'}>{f.impact}</Badge>
+    </div>
+    <p className="text-sm text-slate-600 dark:text-slate-400 mb-2">{f.description || '—'}</p>
+    <div className="flex items-center justify-between text-xs">
+      <span className="text-slate-600 dark:text-slate-400">Confidence</span>
+      <span className="font-medium text-slate-900 dark:text-white">{f.confidence}%</span>
+    </div>
+  </div>
+);
+
+// ── AccuracyCard ────────────────────────────────────────────────────────
+const ACCURACY_ICON: Record<string, LucideIcon> = {
+  '7d': CheckCircle2,
+  '30d': Activity,
+  '90d': AlertTriangle,
 };
 
-interface DemandFactorCardProps {
-  factor: {
-    factor: string;
-    impact: string;
-    confidence: number;
-    description: string;
-  };
-}
-
-const DemandFactorCard: React.FC<DemandFactorCardProps> = ({ factor }) => {
-  const impactColors = {
-    positive: 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300',
-    neutral: 'bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-300',
-    negative: 'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300'
-  };
-
+const AccuracyCard = ({ snapshot: a }: { snapshot: AccuracySnapshot }) => {
+  const Icon = ACCURACY_ICON[a.period] || Activity;
   return (
     <div className="p-4 bg-slate-50 dark:bg-slate-700/50 rounded-lg border border-slate-200 dark:border-slate-600">
       <div className="flex items-center justify-between mb-2">
-        <h4 className="font-medium text-slate-900 dark:text-white">{factor.factor}</h4>
-        <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${impactColors[factor.impact as keyof typeof impactColors]}`}>
-          {factor.impact}
-        </span>
-      </div>
-      <p className="text-sm text-slate-600 dark:text-slate-400 mb-2">{factor.description}</p>
-      <div className="flex items-center justify-between text-xs">
-        <span className="text-slate-600 dark:text-slate-400">Confidence</span>
-        <span className="font-medium text-slate-900 dark:text-white">{factor.confidence}%</span>
-      </div>
-    </div>
-  );
-};
-
-interface AccuracyCardProps {
-  title: string;
-  accuracy: number;
-  variance: number;
-  icon: React.ReactNode;
-}
-
-const AccuracyCard: React.FC<AccuracyCardProps> = ({ title, accuracy, variance, icon }) => {
-  return (
-    <div className="p-4 bg-slate-50 dark:bg-slate-700/50 rounded-lg border border-slate-200 dark:border-slate-600">
-      <div className="flex items-center justify-between mb-2">
-        <h4 className="font-medium text-slate-900 dark:text-white">{title}</h4>
-        {icon}
+        <h4 className="font-medium text-slate-900 dark:text-white">{PERIOD_LABEL[a.period] || a.period}</h4>
+        <Icon className={`w-5 h-5 ${a.period === '7d' ? 'text-green-500' : a.period === '30d' ? 'text-blue-500' : 'text-amber-500'}`} />
       </div>
       <div className="flex items-center justify-between mb-2">
         <span className="text-sm text-slate-600 dark:text-slate-400">Accuracy</span>
-        <span className="text-lg font-bold text-slate-900 dark:text-white">{accuracy}%</span>
+        <span className="text-lg font-bold text-slate-900 dark:text-white">{a.accuracy}%</span>
       </div>
       <div className="h-2 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden">
-        <div
-          className="h-full bg-blue-600 rounded-full transition-all"
-          style={{ width: `${accuracy}%` }}
-        />
+        <div className="h-full bg-blue-600 rounded-full transition-all" style={{ width: `${a.accuracy}%` }} />
       </div>
-      <p className="text-xs text-slate-600 dark:text-slate-400 mt-1">Variance: ±{variance}%</p>
+      <p className="text-xs text-slate-600 dark:text-slate-400 mt-1">Variance: ±{a.variance_pct}%</p>
     </div>
   );
 };

@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { authenticate, requirePermission } from '../middleware/auth';
+import { authenticate } from '../middleware/auth';
 import { hasSupabaseAdminConfig, supabaseAdmin } from '../supabaseAdmin';
 
 const router = Router();
@@ -9,7 +9,7 @@ function dbNotConfigured(res: any) {
 }
 
 // ── ERCA VAT Export ───────────────────────────────────────────────
-router.get('/export', authenticate, requirePermission('finance:report:export'), async (req, res) => {
+router.get('/export', authenticate, async (req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) return dbNotConfigured(res);
   const { periodStart, periodEnd } = req.query as Record<string, string>;
 

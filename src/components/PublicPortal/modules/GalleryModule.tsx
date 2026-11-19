@@ -1,58 +1,76 @@
 /**
  * Gallery Module
- * Display photos of rooms, restaurants, spa, facilities, and 360° tours
+ * Photos come from the room-type and property setup in the ERP.
  */
 
-import { Image, Video, Play } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { X, ChevronLeft, ChevronRight } from 'lucide-react';
+import { EmptyState, ErrorState, ModuleHeader, Reveal, usePublicData, HERO } from '../shared';
+
+interface Photo { url: string; caption: string; category: string }
 
 const GalleryModule: React.FC = () => {
-  const galleryCategories = [
-    { id: 'rooms', name: 'Rooms', images: ['https://images.unsplash.com/photo-1631049307264-da0ec9d70304', 'https://images.unsplash.com/photo-1611892440504-42a792e24d32'] },
-    { id: 'restaurants', name: 'Restaurants', images: ['https://images.unsplash.com/photo-1517248135467-4c7edcad34c4', 'https://images.unsplash.com/photo-1555396273-367ea4eb4db5'] },
-    { id: 'spa', name: 'Spa', images: ['https://images.unsplash.com/photo-1544161515-4ab6ce6db874', 'https://images.unsplash.com/photo-1600334089648-b0d9d3028eb2'] },
-    { id: 'facilities', name: 'Facilities', images: ['https://images.unsplash.com/photo-1566073771259-6a8506099945', 'https://images.unsplash.com/photo-1582719508461-905c673771fd'] }
-  ];
+  const { data: photos, loading, error, retry } = usePublicData<Photo[]>('/api/public/gallery', j => j.images || [], []);
+  const [filter, setFilter] = useState('All');
+  const [open, setOpen] = useState<number | null>(null);
+
+  const categories = ['All', ...Array.from(new Set(photos.map(p => p.category)))];
+  const shown = filter === 'All' ? photos : photos.filter(p => p.category === filter);
+
+  useEffect(() => {
+    if (open == null) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(null);
+      if (e.key === 'ArrowRight') setOpen(i => (i == null ? i : (i + 1) % shown.length));
+      if (e.key === 'ArrowLeft') setOpen(i => (i == null ? i : (i - 1 + shown.length) % shown.length));
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [open, shown.length]);
 
   return (
-    <div className="space-y-6">
-      <div className="bg-gradient-to-r from-violet-600 to-purple-600 rounded-xl p-8 text-white">
-        <h1 className="text-3xl font-bold mb-2">Photo Gallery</h1>
-        <p className="text-lg opacity-90">Explore our properties through stunning imagery</p>
-      </div>
+    <div className="[&>*+*]:mt-8">
+      <ModuleHeader image={photos[0]?.url || HERO.gallery} title="Photo Gallery" subtitle="A look at our rooms and properties" gradient="from-violet-700 to-purple-900" />
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        {galleryCategories.map((category) => (
-          <div key={category.id} className="bg-white dark:bg-slate-800 rounded-xl p-6 shadow-lg">
-            <div className="flex items-center gap-3 mb-4 text-violet-600">
-              <Image size={24} />
-              <h3 className="text-xl font-bold text-slate-900 dark:text-white">{category.name}</h3>
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              {category.images.map((image, idx) => (
-                <img key={idx} src={image} alt={category.name} className="w-full h-32 object-cover rounded-lg" />
-              ))}
-            </div>
-          </div>
-        ))}
-      </div>
-
-      <div className="bg-white dark:bg-slate-800 rounded-xl p-6 shadow-lg">
-        <div className="flex items-center gap-3 mb-4 text-violet-600">
-          <Video size={24} />
-          <h3 className="text-xl font-bold text-slate-900 dark:text-white">360° Virtual Tours</h3>
-        </div>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          {[1, 2, 3].map((idx) => (
-            <div key={idx} className="relative aspect-video bg-slate-200 dark:bg-slate-700 rounded-lg overflow-hidden">
-              <div className="absolute inset-0 flex items-center justify-center">
-                <button className="bg-white/90 backdrop-blur-sm p-3 rounded-full hover:bg-white transition-colors">
-                  <Play size={24} className="text-violet-600" />
-                </button>
-              </div>
-            </div>
+      {categories.length > 2 && (
+        <div className="flex flex-wrap gap-2">
+          {categories.map(c => (
+            <button key={c} onClick={() => setFilter(c)} className={`px-5 py-2 rounded-full text-sm font-medium transition-colors ${filter === c ? 'bg-stone-900 text-white' : 'bg-white border border-stone-200 text-stone-600 hover:border-stone-400'}`}>{c}</button>
           ))}
         </div>
-      </div>
+      )}
+
+      {error && <ErrorState message={error} onRetry={retry} />}
+      {loading ? (
+        <div className="columns-2 md:columns-3 gap-4 space-y-4" aria-busy="true">
+          {[40, 56, 48, 64, 44, 52].map((h, i) => <div key={i} className="rounded-2xl bg-stone-200 animate-pulse" style={{ height: h * 4 }} />)}
+        </div>
+      ) : shown.length === 0 && !error ? (
+        <EmptyState title="Photos will appear here soon." />
+      ) : (
+        <div className="columns-2 md:columns-3 gap-4 [&>*]:mb-4">
+          {shown.map((p, i) => (
+            <Reveal key={`${p.url}-${i}`} delay={Math.min(i, 8) * 0.04}>
+              <button onClick={() => setOpen(i)} className="group relative block w-full overflow-hidden rounded-2xl focus-visible:ring-4 ring-amber-300 outline-none">
+                <img src={p.url} alt={p.caption} loading="lazy" className="w-full object-cover group-hover:scale-105 transition-transform duration-500" />
+                <span className="absolute inset-x-0 bottom-0 p-3 bg-gradient-to-t from-black/70 to-transparent text-white text-sm font-medium opacity-0 group-hover:opacity-100 transition-opacity text-left">{p.caption}</span>
+              </button>
+            </Reveal>
+          ))}
+        </div>
+      )}
+
+      {open != null && shown[open] && (
+        <div className="fixed inset-0 z-[70] bg-black/90 flex items-center justify-center p-4" onClick={() => setOpen(null)} role="dialog" aria-modal="true" aria-label="Photo viewer">
+          <button aria-label="Close" onClick={() => setOpen(null)} className="absolute top-4 right-4 p-3 rounded-full bg-white/10 hover:bg-white/20 text-white"><X size={22} /></button>
+          {shown.length > 1 && <button aria-label="Previous" onClick={e => { e.stopPropagation(); setOpen((open - 1 + shown.length) % shown.length); }} className="absolute left-4 p-3 rounded-full bg-white/10 hover:bg-white/20 text-white"><ChevronLeft size={24} /></button>}
+          <figure onClick={e => e.stopPropagation()} className="max-w-5xl max-h-full">
+            <img src={shown[open].url} alt={shown[open].caption} className="max-h-[80vh] mx-auto rounded-xl object-contain" />
+            <figcaption className="text-center text-white/80 mt-3">{shown[open].caption}</figcaption>
+          </figure>
+          {shown.length > 1 && <button aria-label="Next" onClick={e => { e.stopPropagation(); setOpen((open + 1) % shown.length); }} className="absolute right-4 p-3 rounded-full bg-white/10 hover:bg-white/20 text-white"><ChevronRight size={24} /></button>}
+        </div>
+      )}
     </div>
   );
 };

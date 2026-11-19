@@ -26,6 +26,9 @@ declare global {
  */
 export const authenticate = async (req: Request, res: Response, next: NextFunction) => {
   try {
+    // Skip the session lookup when an upstream middleware already resolved
+    // the user (e.g. router-level authenticate on portal routers).
+    if (req.user) return next();
     const user = await getRequestUser(req);
     if (!user) {
       await clearAuditContext();

@@ -5,86 +5,7 @@
  * manages operational approvals, oversees service quality, and enables hotel leadership to make timely operational decisions
  */
 
-import React, { useState, useEffect } from 'react';
-import {
-  LayoutDashboard,
-  Inbox,
-  AlertTriangle,
-  Users,
-  ArrowRightLeft,
-  LogOut,
-  StickyNote,
-  RefreshCw,
-  Bell,
-  Calendar,
-  Clock,
-  User,
-  Bed,
-  Utensils,
-  Wrench,
-  Shield,
-  CheckCircle2,
-  XCircle,
-  AlertCircle,
-  Filter,
-  Search,
-  Plus,
-  MoreVertical,
-  ChevronRight,
-  ArrowUp,
-  ArrowDown,
-  MessageSquare,
-  FileText,
-  Settings,
-  LogIn,
-  Star,
-  MapPin,
-  Phone,
-  Mail,
-  Building2,
-  TrendingUp,
-  Activity,
-  ShoppingCart,
-  DollarSign,
-  Grid3x3,
-  FileBarChart,
-  Download,
-  MailOpen,
-  Archive,
-  CalendarDays,
-  CircleDot,
-  TrendingDown,
-  BarChart3,
-  PiggyBank,
-  Percent,
-  Save,
-  Eye,
-  Briefcase,
-  ClipboardList,
-  Target,
-  Award,
-  Heart,
-  Radio,
-  Megaphone,
-  Flame,
-  LifeBuoy,
-  CheckSquare,
-  ListChecks,
-  FileCheck,
-  Zap,
-  Layers,
-  Network,
-  Globe,
-  Navigation,
-  Command,
-  Ticket,
-  Car,
-  Plane,
-  Train,
-  type LucideIcon
-} from 'lucide-react';
-import { useERP } from '../../context/ERPContext';
-import { SideNavigation, type SubNavItem } from '../Shared/SideNavigation';
+import React, { useState } from 'react';
 
 // Import all modules
 import ExecutiveOperationsDashboard from './modules/ExecutiveOperationsDashboard';
@@ -108,6 +29,7 @@ import SOPComplianceMonitoring from './modules/SOPComplianceMonitoring';
 import ExecutiveChecklists from './modules/ExecutiveChecklists';
 import DailyFlashReports from './modules/DailyFlashReports';
 import Reports from './modules/Reports';
+import DepartmentRequisitionForm from '../Inventory/DepartmentRequisitionForm';
 import Configuration from './modules/Configuration';
 
 type OperationsView = 
@@ -131,6 +53,7 @@ type OperationsView =
   | 'sop-compliance'
   | 'executive-checklists'
   | 'flash-reports'
+  | 'requisitions'
   | 'reports'
   | 'configuration';
 
@@ -139,59 +62,16 @@ interface HotelOperationsPortalProps {
   forcedView?: OperationsView;
   activeTab?: OperationsView;
   onTabChange?: (tab: OperationsView) => void;
-  hideNav?: boolean;
 }
 
 const HotelOperationsPortal: React.FC<HotelOperationsPortalProps> = ({
   embedded = false,
   forcedView,
-  activeTab,
-  onTabChange,
-  hideNav = false
+  activeTab
 }) => {
-  const { currentUser, addNotification } = useERP();
   // Phase 4: prefer activeTab (URL-driven) over forcedView, fall back to default
-  const [internalActiveView, setInternalActiveView] = useState<OperationsView>(forcedView || 'executive-dashboard');
+  const [internalActiveView] = useState<OperationsView>(forcedView || 'executive-dashboard');
   const activeView = activeTab ?? internalActiveView;
-  const setActiveView = (view: OperationsView) => {
-    if (onTabChange) onTabChange(view);
-    else setInternalActiveView(view);
-  };
-  const [collapsed, setCollapsed] = useState(false);
-  const [showNotifications, setShowNotifications] = useState(false);
-  const [notifications, setNotifications] = useState<any[]>([]);
-  const [unreadCount, setUnreadCount] = useState(0);
-
-  // Navigation items for all modules
-  const navigationItems: SubNavItem[] = [
-    { id: 'executive-dashboard', label: 'Executive Dashboard', icon: LayoutDashboard },
-    { id: 'command-center', label: 'Operations Command Center', icon: Command },
-    { id: 'daily-briefing', label: 'Daily Briefing', icon: FileText },
-    { id: 'morning-meeting', label: 'Morning Meeting', icon: Users },
-    { id: 'approvals', label: 'Manager Approvals', icon: CheckCircle2 },
-    { id: 'cross-department-tasks', label: 'Cross-Department Tasks', icon: ArrowRightLeft },
-    { id: 'duty-manager', label: 'Duty Manager Workspace', icon: Briefcase },
-    { id: 'calendar', label: 'Operational Calendar', icon: Calendar },
-    { id: 'vip-management', label: 'VIP Guest Management', icon: Star },
-    { id: 'guest-recovery', label: 'Guest Recovery', icon: Heart },
-    { id: 'service-quality', label: 'Service Quality', icon: Award },
-    { id: 'room-operations', label: 'Room Operations', icon: Bed },
-    { id: 'occupancy-forecast', label: 'Occupancy & Forecast', icon: TrendingUp },
-    { id: 'event-coordination', label: 'Event & Group Coordination', icon: Ticket },
-    { id: 'emergency', label: 'Emergency Coordination', icon: Flame },
-    { id: 'communication', label: 'Communication Center', icon: Megaphone },
-    { id: 'escalations', label: 'Escalation Center', icon: AlertTriangle },
-    { id: 'sop-compliance', label: 'SOP & Compliance', icon: ListChecks },
-    { id: 'executive-checklists', label: 'Executive Checklists', icon: CheckSquare },
-    { id: 'flash-reports', label: 'Daily Flash Reports', icon: FileBarChart },
-    { id: 'reports', label: 'Reports', icon: FileCheck },
-    { id: 'configuration', label: 'Configuration', icon: Settings },
-  ];
-
-  // Handle view changes
-  const handleViewChange = (viewId: string) => {
-    setActiveView(viewId as OperationsView);
-  };
 
   // Render active module
   const renderActiveModule = () => {
@@ -236,6 +116,8 @@ const HotelOperationsPortal: React.FC<HotelOperationsPortalProps> = ({
         return <ExecutiveChecklists />;
       case 'flash-reports':
         return <DailyFlashReports />;
+      case 'requisitions':
+        return <DepartmentRequisitionForm department="Operations" />;
       case 'reports':
         return <Reports />;
       case 'configuration':
@@ -256,35 +138,7 @@ const HotelOperationsPortal: React.FC<HotelOperationsPortalProps> = ({
 
   return (
     <div className="flex h-screen bg-slate-50 dark:bg-slate-950">
-      {/* Side Navigation */}
-      {!hideNav && (
-        <SideNavigation
-          activeDept="operations"
-          activeDeptLabel="Hotel Operations Portal"
-          currentUser={currentUser || null}
-          collapsed={collapsed}
-          onToggleCollapse={() => setCollapsed(!collapsed)}
-          subItems={navigationItems}
-          activeSubItem={activeView}
-          onSubItemClick={handleViewChange}
-          notifications={notifications}
-          unreadNotifCount={unreadCount}
-          onToggleNotifications={() => setShowNotifications(!showNotifications)}
-          showNotifications={showNotifications}
-          onMarkNotificationRead={(id) => {
-            setNotifications(prev => 
-              prev.map(n => n.id === id ? { ...n, read: true } : n)
-            );
-            setUnreadCount(prev => Math.max(0, prev - 1));
-          }}
-          onClearNotification={(id) => {
-            setNotifications(prev => prev.filter(n => n.id !== id));
-            setUnreadCount(prev => Math.max(0, prev - 1));
-          }}
-        />
-      )}
-
-      {/* Main Content Area */}
+      {/* Main Content Area — side nav is rendered globally by App.tsx */}
       <main className="flex-1 overflow-hidden">
         <div className="h-full overflow-y-auto">
           {renderActiveModule()}

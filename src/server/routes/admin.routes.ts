@@ -9,8 +9,11 @@ import { enrichUserWithDerivedPermissions, fetchPasswordPolicy, writeAuditEvent,
 import { getGlobalSettings, invalidateGlobalSettingsCache } from '../services/settingsService';
 import { processApiIntegrationsOnRead, processApiIntegrationsOnWrite } from '../services/sessionService';
 import { userApiSchema, roleApiSchema } from '../../schemas/userSchema';
+import { processBackupJob, startBackupWorker } from '../services/backupService';
 
 const router = Router();
+
+startBackupWorker();
 
 // ── Users ──────────────────────────────────────────────────────
 
@@ -501,21 +504,47 @@ router.delete('/department-permission-categories', authenticate, requirePermissi
 
 // ── Organizations ──────────────────────────────────────────────
 
+const pick = (...vals: any[]) => vals.find(v => v !== undefined);
+const nul = (v: any) => (v === '' ? null : v);
+
+const orgUpdates = (b: any) => {
+  const u: any = {};
+  const map: Record<string, any> = {
+    org_name: pick(b.orgName, b.name), org_code: pick(b.orgCode, b.code), description: b.description,
+    contact_email: pick(b.contactEmail, b.email), contact_phone: pick(b.contactPhone, b.phone),
+    billing_address: pick(b.billingAddress, typeof b.address === 'object' ? b.address : undefined),
+    is_active: pick(b.isActive, b.is_active), logo_url: pick(b.logoUrl, b.logo_url),
+  };
+  for (const [k, v] of Object.entries(map)) if (v !== undefined) u[k] = k === 'is_active' || k === 'billing_address' ? v : nul(v);
+  return u;
+};
+
+const propertyUpdates = (b: any) => {
+  const u: any = {};
+  const map: Record<string, any> = {
+    organization_id: pick(b.organizationId, b.orgId, b.organization_id), property_name: pick(b.propertyName, b.name),
+    property_code: pick(b.propertyCode, b.code), property_type: pick(b.propertyType, b.property_type),
+    star_rating: b.starRating ?? b.star_rating, address: typeof b.address === 'object' ? b.address : undefined,
+    timezone: b.timezone, currency_code: pick(b.currencyCode, b.currency), contact_email: pick(b.contactEmail, b.email),
+    contact_phone: pick(b.contactPhone, b.phone), is_active: pick(b.isActive, b.is_active),
+    location_lat: b.locationLat, location_lng: b.locationLng,
+  };
+  for (const [k, v] of Object.entries(map)) if (v !== undefined) u[k] = k === 'is_active' || k === 'address' ? v : nul(v);
+  return u;
+};
+
 router.get('/organizations', authenticate, async (req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  const { data, error } = await supabaseAdmin.from('organizations').select('*').order('name');
+  const { data, error } = await supabaseAdmin.from('organizations').select('*').order('org_name');
   if (error) return res.status(500).json({ error: error.message });
   return res.json({ organizations: data || [] });
 });
 
 router.post('/organizations', authenticate, requirePermission('settings:manage'), async (req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  const { name, legalName, taxId, address, phone, email } = req.body;
-  if (!name) return res.status(400).json({ error: 'name is required' });
-  const { data, error } = await supabaseAdmin.from('organizations').insert({
-    name, legal_name: legalName || null, tax_id: taxId || null,
-    address: address || null, phone: phone || null, email: email || null,
-  }).select().single();
+  const u = orgUpdates(req.body);
+  if (!u.org_name || !u.org_code) return res.status(400).json({ error: 'name and code are required' });
+  const { data, error } = await supabaseAdmin.from('organizations').insert(u).select().single();
   if (error) return res.status(500).json({ error: error.message });
   await writeAuditEvent({ req, user: req.user!, action: 'org.created', entityType: 'Organization', entityId: data.id, module: 'admin' });
   return res.json({ organization: data });
@@ -523,14 +552,7 @@ router.post('/organizations', authenticate, requirePermission('settings:manage')
 
 router.patch('/organizations/:id', authenticate, requirePermission('settings:manage'), async (req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  const { name, legalName, taxId, address, phone, email } = req.body;
-  const updates: any = {};
-  if (name !== undefined) updates.name = name;
-  if (legalName !== undefined) updates.legal_name = legalName;
-  if (taxId !== undefined) updates.tax_id = taxId;
-  if (address !== undefined) updates.address = address;
-  if (phone !== undefined) updates.phone = phone;
-  if (email !== undefined) updates.email = email;
+  const updates = { ...orgUpdates(req.body), updated_at: new Date().toISOString() };
   const { data, error } = await supabaseAdmin.from('organizations').update(updates).eq('id', req.params.id).select().single();
   if (error) return res.status(500).json({ error: error.message });
   await writeAuditEvent({ req, user: req.user!, action: 'org.updated', entityType: 'Organization', entityId: req.params.id, module: 'admin' });
@@ -541,21 +563,16 @@ router.patch('/organizations/:id', authenticate, requirePermission('settings:man
 
 router.get('/properties', authenticate, async (req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  const { data, error } = await supabaseAdmin.from('properties').select('*, organizations(*)').order('name');
+  const { data, error } = await supabaseAdmin.from('properties').select('*, organizations(*)').order('property_name');
   if (error) return res.status(500).json({ error: error.message });
   return res.json({ properties: data || [] });
 });
 
 router.post('/properties', authenticate, requirePermission('settings:manage'), async (req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  const { orgId, name, code, address, phone, email, currency, fiscalYearStart, isActive } = req.body;
-  if (!name) return res.status(400).json({ error: 'name is required' });
-  const { data, error } = await supabaseAdmin.from('properties').insert({
-    org_id: orgId || null, name, code: code || null,
-    address: address || null, phone: phone || null, email: email || null,
-    currency: currency || 'ETB', fiscal_year_start: fiscalYearStart || null,
-    is_active: isActive ?? true,
-  }).select().single();
+  const u = propertyUpdates(req.body);
+  if (!u.property_name || !u.property_code || !u.organization_id) return res.status(400).json({ error: 'organization, name and code are required' });
+  const { data, error } = await supabaseAdmin.from('properties').insert(u).select().single();
   if (error) return res.status(500).json({ error: error.message });
   await writeAuditEvent({ req, user: req.user!, action: 'property.created', entityType: 'Property', entityId: data.id, module: 'admin' });
   return res.json({ property: data });
@@ -563,30 +580,86 @@ router.post('/properties', authenticate, requirePermission('settings:manage'), a
 
 router.patch('/properties/:id', authenticate, requirePermission('settings:manage'), async (req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  const { orgId, name, code, address, phone, email, currency, fiscalYearStart, isActive } = req.body;
-  const updates: any = {};
-  if (orgId !== undefined) updates.org_id = orgId;
-  if (name !== undefined) updates.name = name;
-  if (code !== undefined) updates.code = code;
-  if (address !== undefined) updates.address = address;
-  if (phone !== undefined) updates.phone = phone;
-  if (email !== undefined) updates.email = email;
-  if (currency !== undefined) updates.currency = currency;
-  if (fiscalYearStart !== undefined) updates.fiscal_year_start = fiscalYearStart;
-  if (isActive !== undefined) updates.is_active = isActive;
+  const updates = { ...propertyUpdates(req.body), updated_at: new Date().toISOString() };
   const { data, error } = await supabaseAdmin.from('properties').update(updates).eq('id', req.params.id).select().single();
   if (error) return res.status(500).json({ error: error.message });
   await writeAuditEvent({ req, user: req.user!, action: 'property.updated', entityType: 'Property', entityId: req.params.id, module: 'admin' });
   return res.json({ property: data });
 });
 
+// Live per-property footprint across every portal (row counts scoped by property_id).
+const PORTAL_FOOTPRINT: { portal: string; metric: string; table: string }[] = [
+  { portal: 'Front Office', metric: 'Rooms', table: 'rooms' },
+  { portal: 'Front Office', metric: 'Room Types', table: 'room_types' },
+  { portal: 'Front Office', metric: 'Reservations', table: 'reservations' },
+  { portal: 'Front Office', metric: 'Guests', table: 'guests' },
+  { portal: 'Front Office', metric: 'Guest Requests', table: 'guest_requests' },
+  { portal: 'Front Office', metric: 'Rate Plans', table: 'rate_plans' },
+  { portal: 'Front Office', metric: 'Packages', table: 'packages' },
+  { portal: 'Housekeeping', metric: 'Tasks', table: 'housekeeping_task_mgmt' },
+  { portal: 'Housekeeping', metric: 'Linen Stock', table: 'hk_linen_stock' },
+  { portal: 'Housekeeping', metric: 'Setup Areas', table: 'hk_property_setup' },
+  { portal: 'Food & Beverage', metric: 'Outlets', table: 'outlets' },
+  { portal: 'Food & Beverage', metric: 'Menu Items', table: 'menu_items' },
+  { portal: 'Food & Beverage', metric: 'Tables', table: 'fb_tables' },
+  { portal: 'Food & Beverage', metric: 'Staff', table: 'fb_staff' },
+  { portal: 'Food & Beverage', metric: 'Table Reservations', table: 'fb_table_reservations' },
+  { portal: 'Spa', metric: 'Treatment Rooms', table: 'spa_rooms' },
+  { portal: 'Spa', metric: 'Appointments', table: 'spa_appointments' },
+  { portal: 'Engineering', metric: 'Technicians', table: 'eng_technicians' },
+  { portal: 'Engineering', metric: 'Room Issues', table: 'eng_room_issues' },
+  { portal: 'Engineering', metric: 'Generators', table: 'eng_generators' },
+  { portal: 'Banquet', metric: 'Events', table: 'banquet_events' },
+  { portal: 'Finance', metric: 'Folios', table: 'folios' },
+  { portal: 'Finance', metric: 'Journal Entries', table: 'journal_entries' },
+  { portal: 'HR', metric: 'Employees', table: 'employees' },
+  { portal: 'Inventory', metric: 'Inventory Items', table: 'inventory_items' },
+];
+
+const propertyFootprint = (propertyId: string) => Promise.all(PORTAL_FOOTPRINT.map(async m => {
+  const { count, error } = await supabaseAdmin!.from(m.table).select('*', { count: 'exact', head: true }).eq('property_id', propertyId);
+  return { ...m, count: error ? null : (count ?? 0) };
+}));
+
+router.get('/properties/:id/footprint', authenticate, async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
+  return res.json({ footprint: await propertyFootprint(req.params.id) });
+});
+
+router.get('/tenant-overview', authenticate, async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
+  const [orgs, props] = await Promise.all([
+    supabaseAdmin.from('organizations').select('*').order('org_name'),
+    supabaseAdmin.from('properties').select('*').order('property_name'),
+  ]);
+  if (orgs.error) return res.status(500).json({ error: orgs.error.message });
+  if (props.error) return res.status(500).json({ error: props.error.message });
+  const footprints = await Promise.all((props.data || []).map(async p => [p.id, await propertyFootprint(p.id)] as const));
+  return res.json({ organizations: orgs.data || [], properties: props.data || [], footprints: Object.fromEntries(footprints) });
+});
+
 // ── Scheduler ──────────────────────────────────────────────────
 
 router.get('/scheduler/jobs', authenticate, async (req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  const { data, error } = await supabaseAdmin.from('scheduled_jobs').select('*').order('name');
-  if (error) return res.status(500).json({ error: error.message });
-  return res.json({ jobs: data || [] });
+  const since24h = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+  const [jobsRes, runs24h, failed24h] = await Promise.all([
+    supabaseAdmin.from('scheduled_jobs').select('*').order('name'),
+    supabaseAdmin.from('job_runs').select('*', { count: 'exact', head: true }).gte('created_at', since24h),
+    supabaseAdmin.from('job_runs').select('*', { count: 'exact', head: true }).eq('status', 'failed').gte('created_at', since24h),
+  ]);
+  if (jobsRes.error) return res.status(500).json({ error: jobsRes.error.message });
+  const jobs = jobsRes.data || [];
+  return res.json({
+    jobs,
+    stats: {
+      total: jobs.length,
+      active: jobs.filter(j => j.enabled).length,
+      disabled: jobs.filter(j => !j.enabled).length,
+      runs24h: runs24h.count || 0,
+      failed24h: failed24h.count || 0,
+    },
+  });
 });
 
 router.patch('/scheduler/jobs/:id', authenticate, requirePermission('settings:manage'), async (req, res) => {
@@ -728,20 +801,64 @@ router.get('/health/error-logs', authenticate, async (req, res) => {
   return res.json({ logs: data || [] });
 });
 
+// ── DB stats: live census of every relation exposed by PostgREST ──
+const DB_STATS_TTL_MS = 10 * 60_000;
+const DB_RELATIONS_TTL_MS = 5 * 60_000;
+const DB_STATS_DEADLINE_MS = 90_000;
+const DB_STATS_CONCURRENCY = 12;
+let dbStatsCache: { at: number; payload: any } | null = null;
+let dbRelationsCache: { at: number; names: string[] } | null = null;
+
+async function listPublicRelations(): Promise<string[]> {
+  const now = Date.now();
+  if (dbRelationsCache && now - dbRelationsCache.at < DB_RELATIONS_TTL_MS) return dbRelationsCache.names;
+  const supabaseUrl = (process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || '').replace(/\/$/, '');
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+  const specRes = await fetch(`${supabaseUrl}/rest/v1/`, {
+    headers: { apikey: serviceKey, Authorization: `Bearer ${serviceKey}` },
+  });
+  if (!specRes.ok) throw new Error(`Schema spec request failed (${specRes.status})`);
+  const spec = await specRes.json();
+  const names = Object.keys(spec.paths || {})
+    .filter(p => !p.startsWith('/rpc/'))
+    .map(p => decodeURIComponent(p.slice(1)))
+    .filter(Boolean);
+  dbRelationsCache = { at: Date.now(), names };
+  return names;
+}
+
 router.get('/health/db-stats', authenticate, async (req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  const { data: tableSizes, error: tsError } = await supabaseAdmin.rpc('get_table_sizes');
-  if (tsError) {
-    // Fallback: just count key tables
-    const tables = ['reservations', 'rooms', 'folios', 'folio_lines', 'guests', 'system_users', 'audit_events'];
-    const counts: any = {};
-    for (const t of tables) {
-      const { count } = await supabaseAdmin.from(t).select('*', { count: 'exact', head: true });
-      counts[t] = count || 0;
-    }
-    return res.json({ tableCounts: counts });
+  if (dbStatsCache && Date.now() - dbStatsCache.at < DB_STATS_TTL_MS) {
+    return res.json(dbStatsCache.payload);
   }
-  return res.json({ tableSizes: tableSizes || [] });
+  try {
+    const relations = await listPublicRelations();
+    const counts: Record<string, number> = {};
+    const deadline = Date.now() + DB_STATS_DEADLINE_MS;
+    let cursor = 0;
+    await Promise.all(Array.from({ length: DB_STATS_CONCURRENCY }, async () => {
+      while (cursor < relations.length && Date.now() < deadline) {
+        const name = relations[cursor++];
+        try {
+          const { count, error } = await supabaseAdmin!.from(name).select('*', { count: 'exact', head: true });
+          if (!error) counts[name] = count || 0;
+        } catch { /* relation not countable via PostgREST — skip */ }
+      }
+    }));
+    const counted = Object.keys(counts).length;
+    const payload = {
+      tableCounts: counts,
+      totalTables: relations.length,
+      countedTables: counted,
+      partial: counted < relations.length,
+      generatedAt: new Date().toISOString(),
+    };
+    dbStatsCache = { at: Date.now(), payload };
+    return res.json(payload);
+  } catch (err: any) {
+    return res.status(500).json({ error: err?.message || 'Failed to load database stats' });
+  }
 });
 
 router.get('/health/job-failures', authenticate, async (req, res) => {
@@ -1239,8 +1356,9 @@ router.post('/backups/create', authenticate, requirePermission('settings:manage'
   const { data, error } = await supabaseAdmin.rpc('create_backup_job', {
     p_backup_type: backupType,
     p_storage_location: storageLocation || 'supabase',
-    p_initiated_by: req.user?.id || null,
-    p_metadata: metadata || {}
+    // backup_jobs.initiated_by references auth.users(id) — system_users ids are not auth UUIDs
+    p_initiated_by: null,
+    p_metadata: { ...(metadata || {}), requestedBy: req.user?.id || null, requestedByName: (req.user as any)?.name || null }
   });
   if (error) return res.status(500).json({ error: error.message });
   
@@ -1253,14 +1371,84 @@ router.post('/backups/create', authenticate, requirePermission('settings:manage'
     module: 'admin',
     details: { backupType, storageLocation } 
   });
+  // Kick off the async backup worker immediately (also scanned every 60s for stuck jobs)
+  processBackupJob(data).catch(e => console.error('[BackupWorker] immediate run failed:', e?.message));
   return res.json({ success: true, backupId: data });
+});
+
+router.get('/backups/:id/download', authenticate, async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
+  const { data: job, error: jobErr } = await supabaseAdmin
+    .from('backup_jobs').select('id, status, storage_path').eq('id', req.params.id).maybeSingle();
+  if (jobErr) return res.status(500).json({ error: jobErr.message });
+  if (!job) return res.status(404).json({ error: 'Backup job not found' });
+  if (job.status !== 'completed' || !job.storage_path) {
+    return res.status(400).json({ error: 'Backup is not completed or has no stored artifact' });
+  }
+  const manifestPath = job.storage_path.endsWith('/') ? job.storage_path + 'manifest.json' : job.storage_path + '/manifest.json';
+  const { data: signed, error: signErr } = await supabaseAdmin.storage
+    .from('backups').createSignedUrl(manifestPath, 3600);
+  if (signErr || !signed) return res.status(500).json({ error: signErr?.message || 'Failed to create download URL' });
+  return res.json({ url: signed.signedUrl, path: manifestPath, expiresIn: 3600 });
 });
 
 router.get('/backups/statistics', authenticate, async (req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  const { data, error } = await supabaseAdmin.rpc('get_backup_statistics');
+  // get_backup_statistics RPC has a broken return type; aggregate live rows instead
+  const { data, error } = await supabaseAdmin
+    .from('backup_jobs')
+    .select('status, backup_size_bytes, initiated_at')
+    .order('initiated_at', { ascending: false })
+    .limit(5000);
   if (error) return res.status(500).json({ error: error.message });
-  return res.json({ statistics: data });
+  const rows = data || [];
+  const completed = rows.filter(r => r.status === 'completed');
+  const sizes = completed.map(r => Number(r.backup_size_bytes) || 0);
+  const totalSize = sizes.reduce((a, b) => a + b, 0);
+  const statistics = {
+    total_backups: rows.length,
+    successful_backups: completed.length,
+    failed_backups: rows.filter(r => r.status === 'failed').length,
+    active_backups: rows.filter(r => r.status === 'running' || r.status === 'pending').length,
+    total_size_bytes: totalSize,
+    avg_backup_size_bytes: completed.length ? Math.round(totalSize / completed.length) : 0,
+    last_backup_time: rows[0]?.initiated_at || null,
+    last_backup_status: rows[0]?.status || null,
+  };
+  return res.json({ statistics });
+});
+
+router.get('/backups/restorations', authenticate, async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
+  const { data, error } = await supabaseAdmin
+    .from('backup_restorations')
+    .select('*, backup_jobs(backup_type, initiated_at)')
+    .order('initiated_at', { ascending: false })
+    .limit(50);
+  if (error) return res.status(500).json({ error: error.message });
+  return res.json({ restorations: data || [] });
+});
+
+router.post('/backups/:id/restore', authenticate, requirePermission('settings:manage'), async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
+  const { data: job, error: jobErr } = await supabaseAdmin
+    .from('backup_jobs').select('id, status, backup_type').eq('id', req.params.id).maybeSingle();
+  if (jobErr) return res.status(500).json({ error: jobErr.message });
+  if (!job) return res.status(404).json({ error: 'Backup job not found' });
+  if (job.status !== 'completed') return res.status(400).json({ error: 'Only completed backups can be restored' });
+  const { data, error } = await supabaseAdmin.from('backup_restorations').insert({
+    backup_job_id: job.id,
+    status: 'pending',
+    initiated_by: null,
+    metadata: { requestedBy: req.user?.id || null, backupType: job.backup_type, ...(req.body?.metadata || {}) },
+  }).select().single();
+  if (error) return res.status(500).json({ error: error.message });
+  await writeAuditEvent({
+    req, user: req.user!, action: 'backup.restore_requested',
+    entityType: 'BackupRestoration', entityId: data.id, module: 'admin',
+    details: { backupJobId: job.id, backupType: job.backup_type },
+  });
+  return res.json({ success: true, restoration: data });
 });
 
 router.get('/backup-schedules', authenticate, async (req, res) => {
@@ -1283,7 +1471,8 @@ router.post('/backup-schedules', authenticate, requirePermission('settings:manag
     p_cron_schedule: cronSchedule,
     p_retention_days: retentionDays || 30,
     p_storage_location: storageLocation || 'supabase',
-    p_created_by: req.user?.id || null
+    // backup_schedules.created_by references auth.users(id) — system_users ids are not auth UUIDs
+    p_created_by: null
   });
   if (error) return res.status(500).json({ error: error.message });
   
@@ -1335,9 +1524,55 @@ router.post('/backups/cleanup', authenticate, requirePermission('settings:manage
   return res.json({ success: true, deletedCount: data });
 });
 
+// ── Data Exports (live table dumps for admin data management) ──
+
+const EXPORT_DATASETS: Record<string, { table: string; label: string }> = {
+  guests: { table: 'guests', label: 'Guest Profiles' },
+  rooms: { table: 'rooms', label: 'Rooms' },
+  room_types: { table: 'room_types', label: 'Room Types' },
+  reservations: { table: 'reservations', label: 'Reservations' },
+  inventory: { table: 'inventory_items', label: 'Inventory Items' },
+  folios: { table: 'folios', label: 'Folios' },
+  audit_events: { table: 'audit_events', label: 'Audit Events' },
+};
+
+router.get('/exports/summary', authenticate, async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
+  const entries = await Promise.all(Object.entries(EXPORT_DATASETS).map(async ([key, ds]) => {
+    try {
+      const { count, error } = await supabaseAdmin!.from(ds.table).select('*', { count: 'exact', head: true });
+      return [key, { label: ds.label, table: ds.table, count: error ? 0 : (count || 0) }] as const;
+    } catch { return [key, { label: ds.label, table: ds.table, count: 0 }] as const; }
+  }));
+  return res.json({ datasets: Object.fromEntries(entries) });
+});
+
+router.get('/exports/:dataset', authenticate, async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
+  const ds = EXPORT_DATASETS[req.params.dataset];
+  if (!ds) return res.status(404).json({ error: 'Unknown export dataset' });
+  const limit = Math.min(Math.max(parseInt(req.query.limit as string) || 5000, 1), 20000);
+  const { data, error, count } = await supabaseAdmin
+    .from(ds.table)
+    .select('*', { count: 'exact' })
+    .limit(limit);
+  if (error) return res.status(500).json({ error: error.message });
+  const total = count ?? (data || []).length;
+  return res.json({
+    dataset: req.params.dataset,
+    label: ds.label,
+    table: ds.table,
+    rows: data || [],
+    count: total,
+    returned: (data || []).length,
+    truncated: total > (data || []).length,
+    exportedAt: new Date().toISOString(),
+  });
+});
+
 // ── Enhanced Scheduler Engine ─────────────────────────────────────
 
-router.get('/scheduler/jobs', authenticate, async (req, res) => {
+router.get('/scheduler/jobs-enhanced', authenticate, async (req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
   const { data, error } = await supabaseAdmin
     .from('scheduled_jobs_enhanced')
@@ -1382,7 +1617,7 @@ router.post('/scheduler/jobs', authenticate, requirePermission('settings:manage'
   return res.json({ job: data });
 });
 
-router.patch('/scheduler/jobs/:id', authenticate, requirePermission('settings:manage'), async (req, res) => {
+router.patch('/scheduler/jobs-enhanced/:id', authenticate, requirePermission('settings:manage'), async (req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
   const { jobName, jobHandler, scheduleCron, config, enabled, priority, timeoutSeconds, retryPolicy } = req.body;
   const updates: any = {};
@@ -1435,7 +1670,7 @@ router.post('/scheduler/jobs-enhanced/:id/trigger', authenticate, requirePermiss
   return res.json({ success: true, queueId: data });
 });
 
-router.get('/scheduler/jobs/:id/runs', authenticate, async (req, res) => {
+router.get('/scheduler/jobs-enhanced/:id/runs', authenticate, async (req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
   const { data, error } = await supabaseAdmin
     .from('job_runs_enhanced')
@@ -1601,9 +1836,11 @@ router.post('/bookings', authenticate, requirePermission('reservation:create'), 
     return res.status(400).json({ error: 'p_items must be a non-empty array' });
   }
 
-  // create_booking_atomic does not know about voucher fields; strip them and
-  // handle them after the booking is created.
-  const { p_voucher_code, p_voucher_discount, ...rpcPayload } = payload;
+  // create_booking_atomic does not know about voucher or billing-routing
+  // fields; strip them and apply them as a follow-up update once the
+  // reservation(s) exist (billing_mode/corporate_account_id drive folio
+  // hierarchy — see ensureFolio() in reservations.routes.ts).
+  const { p_voucher_code, p_voucher_discount, p_corporate_account_id, p_billing_mode, ...rpcPayload } = payload;
   const operatorId = payload.p_operator_id || null;
 
   const { data: rpcResult, error: rpcError } = await supabaseAdmin.rpc('create_booking_atomic', rpcPayload);
@@ -1621,6 +1858,22 @@ router.post('/bookings', authenticate, requirePermission('reservation:create'), 
   const reservationIds = result.reservationIds || [];
   const groupId = result.groupId || null;
   const firstReservationId = reservationIds[0];
+
+  // Apply billing-routing fields the atomic RPC doesn't accept directly.
+  if (reservationIds.length > 0 && (p_corporate_account_id || p_billing_mode)) {
+    const billingUpdate: Record<string, unknown> = {};
+    if (p_corporate_account_id) billingUpdate.corporate_account_id = p_corporate_account_id;
+    if (p_billing_mode) billingUpdate.billing_mode = p_billing_mode;
+    const { error: billingUpdateError } = await supabaseAdmin
+      .from('reservations')
+      .update(billingUpdate)
+      .in('id', reservationIds);
+    if (billingUpdateError) {
+      console.error('Admin atomic booking: failed to apply billing_mode/corporate_account_id:', billingUpdateError.message);
+      // Non-fatal — the reservation(s) were created successfully; billing_mode
+      // will just fall back to inference from corporate_account_id/booking_group_id.
+    }
+  }
 
   // Apply voucher discount and mark voucher as redeemed.
   if (firstReservationId && p_voucher_code) {

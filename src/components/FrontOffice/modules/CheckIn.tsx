@@ -4,7 +4,7 @@
  */
 
 import { useState, useEffect } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams, useNavigate } from 'react-router-dom';
 import {
   Key,
   UserCheck,
@@ -25,7 +25,8 @@ import {
   X,
   Upload,
   ChevronDown,
-  ChevronRight
+  ChevronRight,
+  Sliders
 } from 'lucide-react';
 import {
   getPendingCheckIns,
@@ -44,6 +45,7 @@ import {
   type CheckInStep
 } from '../../../services/checkInService';
 import { supabase } from '../../../lib/supabase';
+import { GroupCheckInRoutingModal, type RoutingPolicy } from '../../FolioManagement/operations/GroupCheckInRoutingModal';
 
 // Add type for the completeCheckIn return value
 interface CheckInResult {
@@ -68,6 +70,7 @@ const isIdOnFile = (idCardData: any): boolean => {
 
 const CheckIn = () => {
   const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
   const selectedReservationId = searchParams.get('reservationId') || undefined;
   const selectedGroupId = searchParams.get('groupId') || undefined;
   const selectedGroupName = searchParams.get('groupName') || undefined;
@@ -94,8 +97,28 @@ const CheckIn = () => {
   const [groupReservations, setGroupReservations] = useState<any[]>([]);
   const [groupCheckInLoading, setGroupCheckInLoading] = useState(false);
   const [expandedGroupIds, setExpandedGroupIds] = useState<Set<string>>(new Set());
+  // Routing policy modal for group check-in
+  const [routingModalState, setRoutingModalState] = useState<{
+    open: boolean;
+    groupId: string;
+    groupName: string;
+    groupCode?: string;
+    memberCount: number;
+    reservations: any[];
+  } | null>(null);
   // Per-member check-in step status (same steps as individual check-in)
   const [groupMemberSteps, setGroupMemberSteps] = useState<Record<string, CheckInStep>>({});
+  // Tracks which action buttons are currently in-flight so we can show a
+  // spinner / disable the button until the async operation completes.
+  // Key format: `${reservationId}:${actionName}`
+  const [pendingActions, setPendingActions] = useState<Record<string, boolean>>({});
+  const runWithLoading = async (key: string, fn: () => Promise<void>) => {
+    setPendingActions(prev => ({ ...prev, [key]: true }));
+    try { await fn(); } finally {
+      setPendingActions(prev => { const next = { ...prev }; delete next[key]; return next; });
+    }
+  };
+  const isPending = (key: string) => !!pendingActions[key];
 
   // Fetch check-ins from database
   useEffect(() => {
@@ -258,6 +281,7 @@ const CheckIn = () => {
     { id: 'deposit', label: 'Deposit Collection', icon: DollarSign, description: 'Security deposit', required: false },
     { id: 'payment', label: 'Payment Authorization', icon: CreditCard, description: 'Payment method', required: false },
     { id: 'key', label: 'Key Encoding', icon: Key, description: 'Room key card', required: true },
+    { id: 'routing', label: 'Folio Routing', icon: Sliders, description: 'Charge routing policy (group)', required: false },
   ];
 
   // Handler functions
@@ -287,63 +311,88 @@ const CheckIn = () => {
   };
 
   const handleScanDocument = async (reservationId: string) => {
-    await handleStepToggle(reservationId, 'identityVerified');
+    await runWithLoading(`${reservationId}:scan`, () => handleStepToggle(reservationId, 'identityVerified'));
+  };
+
+  // Navigate to the Edit Guest Profile page for the guest attached to a
+  // reservation. Falls back to fetching guest_id from the reservation when the
+  // in-memory check-in record doesn't carry it (e.g. group members).
+  const handleEditGuestProfile = async (reservationId: string, guestId?: string | null) => {
+    await runWithLoading(`${reservationId}:editGuest`, async () => {
+      let resolvedGuestId = guestId;
+      if (!resolvedGuestId) {
+        try {
+          const { data: reservation } = await supabase
+            .from('reservations')
+            .select('guest_id')
+            .eq('id', reservationId)
+            .maybeSingle();
+          resolvedGuestId = reservation?.guest_id || null;
+        } catch {
+          resolvedGuestId = null;
+        }
+      }
+      if (!resolvedGuestId) {
+        alert('No guest profile is linked to this reservation.');
+        return;
+      }
+      navigate(`/erp/frontoffice/guest-profiles?edit=${encodeURIComponent(resolvedGuestId)}&from=check-in`);
+    });
   };
 
   const handleSignRegistration = async (reservationId: string) => {
-    await handleStepToggle(reservationId, 'registrationSigned');
+    await runWithLoading(`${reservationId}:sign`, () => handleStepToggle(reservationId, 'registrationSigned'));
   };
 
   const handleProcessPayment = async (reservationId: string) => {
-    const checkIn = checkIns.find(ci => ci.reservationId === reservationId);
-    if (!checkIn) return;
+    await runWithLoading(`${reservationId}:payment`, async () => {
+      const checkIn = checkIns.find(ci => ci.reservationId === reservationId);
+      if (!checkIn) return;
 
-    // Process deposit if balance exists
-    if (checkIn.balance > 0) {
-      const success = await processDeposit(reservationId, checkIn.balance, 'credit_card');
-      if (success) {
-        await handleStepToggle(reservationId, 'depositCollected');
+      // Process deposit if balance exists
+      if (checkIn.balance > 0) {
+        const success = await processDeposit(reservationId, checkIn.balance, 'credit_card');
+        if (success) {
+          await handleStepToggle(reservationId, 'depositCollected');
+          await handleStepToggle(reservationId, 'paymentAuthorized');
+        }
+      } else {
+        // If no balance, just mark as authorized (optional step)
         await handleStepToggle(reservationId, 'paymentAuthorized');
       }
-    } else {
-      // If no balance, just mark as authorized (optional step)
-      await handleStepToggle(reservationId, 'paymentAuthorized');
-    }
+    });
   };
 
   const handleSkipPayment = async (reservationId: string) => {
-    // Skip payment authorization (optional step)
-    // Just mark as completed without actual payment processing
-    await handleStepToggle(reservationId, 'paymentAuthorized');
+    await runWithLoading(`${reservationId}:skipPayment`, () => handleStepToggle(reservationId, 'paymentAuthorized'));
   };
 
   const handleSkipDeposit = async (reservationId: string) => {
-    // Skip deposit collection (optional step)
-    // Just mark as completed without actual deposit processing
-    await handleStepToggle(reservationId, 'depositCollected');
+    await runWithLoading(`${reservationId}:skipDeposit`, () => handleStepToggle(reservationId, 'depositCollected'));
   };
 
   const handleEncodeKey = async (reservationId: string) => {
-    await handleStepToggle(reservationId, 'keyEncoded');
+    await runWithLoading(`${reservationId}:key`, () => handleStepToggle(reservationId, 'keyEncoded'));
   };
 
   const handleCompleteCheckIn = async (reservationId: string, roomNumber: string) => {
-    const result = await completeCheckIn(reservationId, roomNumber);
-    if (result.success) {
-      setRefreshTrigger(prev => prev + 1);
-      if (result.folioId) {
-        alert(`Check-in completed successfully! Folio created: ${result.folioId}`);
+    await runWithLoading(`${reservationId}:complete`, async () => {
+      const result = await completeCheckIn(reservationId, roomNumber);
+      if (result.success) {
+        setRefreshTrigger(prev => prev + 1);
+        if (result.folioId) {
+          alert(`Check-in completed successfully! Folio created: ${result.folioId}`);
+        } else {
+          alert('Check-in completed successfully!');
+        }
       } else {
-        alert('Check-in completed successfully!');
+        alert('Check-in failed. Please try again.');
       }
-    } else {
-      alert('Check-in failed. Please try again.');
-    }
+    });
   };
 
-  // Group check-in: check in all confirmed reservations for a group
-  // Follows the same process as individual check-in: calls completeCheckIn() which
-  // calls POST /api/reservations/:id/check-in to create folios and post room charges.
+  // Group check-in: opens the routing policy modal first, then checks in
+  // all confirmed reservations for a group with the selected routing policy.
   const handleGroupCheckIn = async (groupId: string, groupName: string) => {
     if (!supabase) return;
     const groupRes = groupReservations.filter(
@@ -353,10 +402,25 @@ const CheckIn = () => {
       alert('No confirmed reservations found for this group.');
       return;
     }
-    const confirmMsg = window.confirm(`Check in all ${groupRes.length} confirmed reservation(s) for group "${groupName}"?\n\nThis will create folios and post room charges for each reservation, same as individual check-in.`);
-    if (!confirmMsg) return;
+    // Open the routing policy modal — actual check-in happens in onConfirm
+    setRoutingModalState({
+      open: true,
+      groupId,
+      groupName,
+      groupCode: groupId,
+      memberCount: groupRes.length,
+      reservations: groupRes,
+    });
+  };
+
+  // Called when the routing modal is confirmed — performs the actual check-in
+  const handleGroupCheckInWithPolicy = async (policy: RoutingPolicy) => {
+    const modalData = routingModalState;
+    if (!modalData) return;
+    setRoutingModalState(null);
     setGroupCheckInLoading(true);
     try {
+      const groupRes = modalData.reservations;
       // Fetch fresh room data for auto-assignment
       const { data: freshRooms } = await supabase
         .from('rooms')
@@ -377,11 +441,9 @@ const CheckIn = () => {
       const errors: string[] = [];
 
       for (const res of groupRes) {
-        // Determine room number: use existing assignment or auto-assign
         let roomNumber = res.room_number;
 
         if (!roomNumber || roomNumber === 'Unassigned') {
-          // Auto-assign: find an available room of the matching type
           const matchType = res.room_type;
           const candidates = (freshRooms || []).filter((r: any) =>
             r.type === matchType &&
@@ -403,9 +465,7 @@ const CheckIn = () => {
           continue;
         }
 
-        // Use the same completeCheckIn function as individual check-in
-        // This calls POST /api/reservations/:id/check-in which creates folios and posts room charges
-        const result = await completeCheckIn(res.id, roomNumber);
+        const result = await completeCheckIn(res.id, roomNumber, policy);
         if (result.success) {
           successCount++;
         } else {
@@ -413,9 +473,8 @@ const CheckIn = () => {
         }
       }
 
-      // Update group booking status
       if (successCount > 0) {
-        await supabase.from('group_bookings').update({ status: 'CheckedIn' }).eq('id', groupId);
+        await supabase.from('group_bookings').update({ status: 'CheckedIn' }).eq('id', modalData.groupId);
       }
 
       setRefreshTrigger(prev => prev + 1);
@@ -423,7 +482,7 @@ const CheckIn = () => {
       if (errors.length > 0) {
         alert(`Group check-in: ${successCount} of ${groupRes.length} succeeded.\n\nFailed:\n${errors.join('\n')}`);
       } else {
-        alert(`Group check-in complete: all ${successCount} reservation(s) checked in. Folios created and room charges posted.`);
+        alert(`Group check-in complete: all ${successCount} reservation(s) checked in with routing policy applied.`);
       }
     } catch (err) {
       console.error('Group check-in failed:', err);
@@ -456,52 +515,37 @@ const CheckIn = () => {
     }
   };
 
-  // Scan document for a group member (opens the same document upload modal)
+  // Scan document for a group member — navigates to the Edit Guest Profile page
   const handleGroupMemberScanDocument = (res: any) => {
-    const checkInReq: CheckInRequest = {
-      id: `CI-${res.id}`,
-      guestName: res.guest_name,
-      reservationId: res.id,
-      roomNumber: res.room_number || 'Unassigned',
-      roomType: res.room_type,
-      checkInTime: '14:00',
-      checkOutTime: '11:00',
-      nights: 1,
-      adults: res.adults || 1,
-      children: res.children || 0,
-      status: 'pending',
-      identityVerified: groupMemberSteps[res.id]?.identityVerified || false,
-      registrationSigned: groupMemberSteps[res.id]?.registrationSigned || false,
-      depositCollected: groupMemberSteps[res.id]?.depositCollected || false,
-      paymentAuthorized: groupMemberSteps[res.id]?.paymentAuthorized || false,
-      keyEncoded: groupMemberSteps[res.id]?.keyEncoded || false,
-      balance: (res.total_amount || 0) - (res.deposit_amount || 0),
-    };
-    handleOpenDocumentModal(checkInReq);
+    handleEditGuestProfile(res.id, res.guest_id);
   };
 
   // Process payment for a group member (same as individual check-in)
   const handleGroupMemberProcessPayment = async (reservationId: string, balance: number) => {
-    if (balance > 0) {
-      const success = await processDeposit(reservationId, balance, 'credit_card');
-      if (success) {
-        await handleGroupMemberStepToggle(reservationId, 'depositCollected');
+    await runWithLoading(`${reservationId}:payment`, async () => {
+      if (balance > 0) {
+        const success = await processDeposit(reservationId, balance, 'credit_card');
+        if (success) {
+          await handleGroupMemberStepToggle(reservationId, 'depositCollected');
+          await handleGroupMemberStepToggle(reservationId, 'paymentAuthorized');
+        }
+      } else {
         await handleGroupMemberStepToggle(reservationId, 'paymentAuthorized');
       }
-    } else {
-      await handleGroupMemberStepToggle(reservationId, 'paymentAuthorized');
-    }
+    });
   };
 
   // Complete check-in for a single group member (same as individual completeCheckIn)
   const handleGroupMemberCompleteCheckIn = async (reservationId: string, roomNumber: string) => {
-    const result = await completeCheckIn(reservationId, roomNumber);
-    if (result.success) {
-      setRefreshTrigger(prev => prev + 1);
-      alert(`Check-in completed successfully for reservation ${reservationId}!${result.folioId ? `\nFolio created: ${result.folioId}` : ''}`);
-    } else {
-      alert('Check-in failed. Please try again.');
-    }
+    await runWithLoading(`${reservationId}:complete`, async () => {
+      const result = await completeCheckIn(reservationId, roomNumber);
+      if (result.success) {
+        setRefreshTrigger(prev => prev + 1);
+        alert(`Check-in completed successfully for reservation ${reservationId}!${result.folioId ? `\nFolio created: ${result.folioId}` : ''}`);
+      } else {
+        alert('Check-in failed. Please try again.');
+      }
+    });
   };
 
   // ── Group-level batch handlers (apply a step to ALL members at once) ──
@@ -1184,64 +1228,82 @@ const CheckIn = () => {
                                 <div className="flex items-center gap-2 flex-wrap">
                                   <button
                                     onClick={() => handleGroupMemberScanDocument(res)}
-                                    className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg transition-colors text-xs ${
+                                    disabled={isPending(`${res.id}:editGuest`)}
+                                    className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg transition-colors text-xs disabled:opacity-60 disabled:cursor-not-allowed ${
                                       steps.identityVerified
                                         ? 'bg-green-600 text-white hover:bg-green-700'
                                         : 'bg-blue-600 text-white hover:bg-blue-700'
                                     }`}
                                   >
-                                    <Scan className="w-3.5 h-3.5" />
+                                    {isPending(`${res.id}:editGuest`)
+                                      ? <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                                      : <Scan className="w-3.5 h-3.5" />}
                                     {steps.identityVerified ? 'Verified' : 'Scan Document'}
                                   </button>
                                   <button
-                                    onClick={() => handleGroupMemberStepToggle(res.id, 'registrationSigned')}
-                                    className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg transition-colors text-xs ${
+                                    onClick={() => runWithLoading(`${res.id}:sign`, () => handleGroupMemberStepToggle(res.id, 'registrationSigned'))}
+                                    disabled={isPending(`${res.id}:sign`)}
+                                    className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg transition-colors text-xs disabled:opacity-60 disabled:cursor-not-allowed ${
                                       steps.registrationSigned
                                         ? 'bg-green-600 text-white hover:bg-green-700'
                                         : 'bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 hover:bg-gray-50 dark:hover:bg-slate-700'
                                     }`}
                                   >
-                                    <Pen className="w-3.5 h-3.5" />
+                                    {isPending(`${res.id}:sign`)
+                                      ? <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                                      : <Pen className="w-3.5 h-3.5" />}
                                     {steps.registrationSigned ? 'Signed' : 'Sign Registration'}
                                   </button>
                                   <button
                                     onClick={() => handleGroupMemberProcessPayment(res.id, balance)}
-                                    className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg transition-colors text-xs ${
+                                    disabled={isPending(`${res.id}:payment`)}
+                                    className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg transition-colors text-xs disabled:opacity-60 disabled:cursor-not-allowed ${
                                       steps.paymentAuthorized
                                         ? 'bg-green-600 text-white hover:bg-green-700'
                                         : 'bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 hover:bg-gray-50 dark:hover:bg-slate-700'
                                     }`}
                                   >
-                                    <CreditCard className="w-3.5 h-3.5" />
+                                    {isPending(`${res.id}:payment`)
+                                      ? <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                                      : <CreditCard className="w-3.5 h-3.5" />}
                                     {steps.paymentAuthorized ? 'Authorized' : 'Process Payment'}
                                   </button>
                                   {!steps.paymentAuthorized && (
                                     <button
-                                      onClick={() => handleGroupMemberStepToggle(res.id, 'paymentAuthorized')}
-                                      className="flex items-center gap-1.5 px-2.5 py-1.5 bg-gray-200 dark:bg-slate-700 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-300 dark:hover:bg-slate-600 transition-colors text-xs"
+                                      onClick={() => runWithLoading(`${res.id}:skipPayment`, () => handleGroupMemberStepToggle(res.id, 'paymentAuthorized'))}
+                                      disabled={isPending(`${res.id}:skipPayment`)}
+                                      className="flex items-center gap-1.5 px-2.5 py-1.5 bg-gray-200 dark:bg-slate-700 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-300 dark:hover:bg-slate-600 transition-colors text-xs disabled:opacity-60 disabled:cursor-not-allowed"
                                     >
-                                      <CreditCard className="w-3.5 h-3.5" />
+                                      {isPending(`${res.id}:skipPayment`)
+                                        ? <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                                        : <CreditCard className="w-3.5 h-3.5" />}
                                       Skip Payment
                                     </button>
                                   )}
                                   {!steps.depositCollected && (
                                     <button
-                                      onClick={() => handleGroupMemberStepToggle(res.id, 'depositCollected')}
-                                      className="flex items-center gap-1.5 px-2.5 py-1.5 bg-gray-200 dark:bg-slate-700 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-300 dark:hover:bg-slate-600 transition-colors text-xs"
+                                      onClick={() => runWithLoading(`${res.id}:skipDeposit`, () => handleGroupMemberStepToggle(res.id, 'depositCollected'))}
+                                      disabled={isPending(`${res.id}:skipDeposit`)}
+                                      className="flex items-center gap-1.5 px-2.5 py-1.5 bg-gray-200 dark:bg-slate-700 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-300 dark:hover:bg-slate-600 transition-colors text-xs disabled:opacity-60 disabled:cursor-not-allowed"
                                     >
-                                      <DollarSign className="w-3.5 h-3.5" />
+                                      {isPending(`${res.id}:skipDeposit`)
+                                        ? <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                                        : <DollarSign className="w-3.5 h-3.5" />}
                                       Skip Deposit
                                     </button>
                                   )}
                                   <button
-                                    onClick={() => handleGroupMemberStepToggle(res.id, 'keyEncoded')}
-                                    className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg transition-colors text-xs ${
+                                    onClick={() => runWithLoading(`${res.id}:key`, () => handleGroupMemberStepToggle(res.id, 'keyEncoded'))}
+                                    disabled={isPending(`${res.id}:key`)}
+                                    className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg transition-colors text-xs disabled:opacity-60 disabled:cursor-not-allowed ${
                                       steps.keyEncoded
                                         ? 'bg-green-600 text-white hover:bg-green-700'
                                         : 'bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 hover:bg-gray-50 dark:hover:bg-slate-700'
                                     }`}
                                   >
-                                    <Key className="w-3.5 h-3.5" />
+                                    {isPending(`${res.id}:key`)
+                                      ? <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                                      : <Key className="w-3.5 h-3.5" />}
                                     {steps.keyEncoded ? 'Encoded' : 'Encode Key'}
                                   </button>
                                 </div>
@@ -1256,9 +1318,12 @@ const CheckIn = () => {
                                   {allRequiredDone && (
                                     <button
                                       onClick={() => handleGroupMemberCompleteCheckIn(res.id, roomNumber === 'Unassigned' ? '' : roomNumber)}
-                                      className="flex items-center gap-1.5 px-3 py-1.5 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors text-xs font-medium"
+                                      disabled={isPending(`${res.id}:complete`)}
+                                      className="flex items-center gap-1.5 px-3 py-1.5 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors text-xs font-medium disabled:opacity-60 disabled:cursor-not-allowed"
                                     >
-                                      <UserCheck className="w-3.5 h-3.5" />
+                                      {isPending(`${res.id}:complete`)
+                                        ? <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                                        : <UserCheck className="w-3.5 h-3.5" />}
                                       Complete Check-In
                                     </button>
                                   )}
@@ -1372,71 +1437,89 @@ const CheckIn = () => {
                 {/* Action Buttons */}
                 <div className="flex items-center justify-between mt-4">
                   <div className="flex items-center gap-2">
-                    <button 
-                      onClick={() => handleOpenDocumentModal(checkIn)}
-                      className={`flex items-center gap-2 px-3 py-2 rounded-lg transition-colors text-sm ${
-                        checkIn.identityVerified 
-                          ? 'bg-green-600 text-white hover:bg-green-700' 
+                    <button
+                      onClick={() => handleEditGuestProfile(checkIn.reservationId, checkIn.guestId)}
+                      disabled={isPending(`${checkIn.reservationId}:editGuest`)}
+                      className={`flex items-center gap-2 px-3 py-2 rounded-lg transition-colors text-sm disabled:opacity-60 disabled:cursor-not-allowed ${
+                        checkIn.identityVerified
+                          ? 'bg-green-600 text-white hover:bg-green-700'
                           : 'bg-blue-600 text-white hover:bg-blue-700'
                       }`}
                     >
-                      <Scan className="w-4 h-4" />
+                      {isPending(`${checkIn.reservationId}:editGuest`)
+                        ? <RefreshCw className="w-4 h-4 animate-spin" />
+                        : <Scan className="w-4 h-4" />}
                       {checkIn.identityVerified ? 'Document Verified' : 'Scan Document'}
                     </button>
-                    <button 
+                    <button
                       onClick={() => handleSignRegistration(checkIn.reservationId)}
-                      className={`flex items-center gap-2 px-3 py-2 rounded-lg transition-colors text-sm ${
-                        checkIn.registrationSigned 
-                          ? 'bg-green-600 text-white hover:bg-green-700' 
+                      disabled={isPending(`${checkIn.reservationId}:sign`)}
+                      className={`flex items-center gap-2 px-3 py-2 rounded-lg transition-colors text-sm disabled:opacity-60 disabled:cursor-not-allowed ${
+                        checkIn.registrationSigned
+                          ? 'bg-green-600 text-white hover:bg-green-700'
                           : 'bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 hover:bg-gray-50 dark:hover:bg-slate-700'
                       }`}
                     >
-                      <Pen className="w-4 h-4" />
+                      {isPending(`${checkIn.reservationId}:sign`)
+                        ? <RefreshCw className="w-4 h-4 animate-spin" />
+                        : <Pen className="w-4 h-4" />}
                       {checkIn.registrationSigned ? 'Registration Signed' : 'Sign Registration'}
                     </button>
-                    <button 
+                    <button
                       onClick={() => handleProcessPayment(checkIn.reservationId)}
-                      className={`flex items-center gap-2 px-3 py-2 rounded-lg transition-colors text-sm ${
-                        checkIn.paymentAuthorized 
-                          ? 'bg-green-600 text-white hover:bg-green-700' 
+                      disabled={isPending(`${checkIn.reservationId}:payment`)}
+                      className={`flex items-center gap-2 px-3 py-2 rounded-lg transition-colors text-sm disabled:opacity-60 disabled:cursor-not-allowed ${
+                        checkIn.paymentAuthorized
+                          ? 'bg-green-600 text-white hover:bg-green-700'
                           : 'bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 hover:bg-gray-50 dark:hover:bg-slate-700'
                       }`}
                     >
-                      <CreditCard className="w-4 h-4" />
+                      {isPending(`${checkIn.reservationId}:payment`)
+                        ? <RefreshCw className="w-4 h-4 animate-spin" />
+                        : <CreditCard className="w-4 h-4" />}
                       {checkIn.paymentAuthorized ? 'Payment Authorized' : 'Process Payment'}
                     </button>
                     {!checkIn.paymentAuthorized && (
-                      <button 
+                      <button
                         onClick={() => handleSkipPayment(checkIn.reservationId)}
-                        className="flex items-center gap-2 px-3 py-2 bg-gray-200 dark:bg-slate-700 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-300 dark:hover:bg-slate-600 transition-colors text-sm"
+                        disabled={isPending(`${checkIn.reservationId}:skipPayment`)}
+                        className="flex items-center gap-2 px-3 py-2 bg-gray-200 dark:bg-slate-700 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-300 dark:hover:bg-slate-600 transition-colors text-sm disabled:opacity-60 disabled:cursor-not-allowed"
                       >
-                        <CreditCard className="w-4 h-4" />
+                        {isPending(`${checkIn.reservationId}:skipPayment`)
+                          ? <RefreshCw className="w-4 h-4 animate-spin" />
+                          : <CreditCard className="w-4 h-4" />}
                         Skip Payment
                       </button>
                     )}
                     {!checkIn.depositCollected && (
-                      <button 
+                      <button
                         onClick={() => handleSkipDeposit(checkIn.reservationId)}
-                        className="flex items-center gap-2 px-3 py-2 bg-gray-200 dark:bg-slate-700 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-300 dark:hover:bg-slate-600 transition-colors text-sm"
+                        disabled={isPending(`${checkIn.reservationId}:skipDeposit`)}
+                        className="flex items-center gap-2 px-3 py-2 bg-gray-200 dark:bg-slate-700 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-300 dark:hover:bg-slate-600 transition-colors text-sm disabled:opacity-60 disabled:cursor-not-allowed"
                       >
-                        <DollarSign className="w-4 h-4" />
+                        {isPending(`${checkIn.reservationId}:skipDeposit`)
+                          ? <RefreshCw className="w-4 h-4 animate-spin" />
+                          : <DollarSign className="w-4 h-4" />}
                         Skip Deposit
                       </button>
                     )}
-                    <button 
+                    <button
                       onClick={() => handleEncodeKey(checkIn.reservationId)}
-                      className={`flex items-center gap-2 px-3 py-2 rounded-lg transition-colors text-sm ${
-                        checkIn.keyEncoded 
-                          ? 'bg-green-600 text-white hover:bg-green-700' 
+                      disabled={isPending(`${checkIn.reservationId}:key`)}
+                      className={`flex items-center gap-2 px-3 py-2 rounded-lg transition-colors text-sm disabled:opacity-60 disabled:cursor-not-allowed ${
+                        checkIn.keyEncoded
+                          ? 'bg-green-600 text-white hover:bg-green-700'
                           : 'bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 hover:bg-gray-50 dark:hover:bg-slate-700'
                       }`}
                     >
-                      <Key className="w-4 h-4" />
+                      {isPending(`${checkIn.reservationId}:key`)
+                        ? <RefreshCw className="w-4 h-4 animate-spin" />
+                        : <Key className="w-4 h-4" />}
                       {checkIn.keyEncoded ? 'Key Encoded' : 'Encode Key'}
                     </button>
                   </div>
                   <div className="flex items-center gap-2">
-                    <button 
+                    <button
                       onClick={() => handlePrintRegistration(checkIn.reservationId)}
                       className="flex items-center gap-2 px-3 py-2 bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-lg hover:bg-gray-50 dark:hover:bg-slate-700 transition-colors text-sm"
                     >
@@ -1444,11 +1527,14 @@ const CheckIn = () => {
                       Print Registration
                     </button>
                     {checkIn.identityVerified && checkIn.registrationSigned && checkIn.keyEncoded && (
-                      <button 
+                      <button
                         onClick={() => handleCompleteCheckIn(checkIn.reservationId, checkIn.roomNumber)}
-                        className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors text-sm"
+                        disabled={isPending(`${checkIn.reservationId}:complete`)}
+                        className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors text-sm disabled:opacity-60 disabled:cursor-not-allowed"
                       >
-                        <UserCheck className="w-4 h-4" />
+                        {isPending(`${checkIn.reservationId}:complete`)
+                          ? <RefreshCw className="w-4 h-4 animate-spin" />
+                          : <UserCheck className="w-4 h-4" />}
                         Complete Check-In
                       </button>
                     )}
@@ -1743,6 +1829,19 @@ const CheckIn = () => {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Group Check-In Routing Policy Modal */}
+      {routingModalState && (
+        <GroupCheckInRoutingModal
+          open={routingModalState.open}
+          groupName={routingModalState.groupName}
+          groupCode={routingModalState.groupCode}
+          memberCount={routingModalState.memberCount}
+          billingMode="group"
+          onCancel={() => setRoutingModalState(null)}
+          onConfirm={handleGroupCheckInWithPolicy}
+        />
       )}
     </div>
   );

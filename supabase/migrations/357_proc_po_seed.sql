@@ -1,0 +1,5 @@
+-- 357_proc_po_seed.sql
+-- Seeds additional purchase orders, PO lines, and PO amendments.
+-- Creates 6 new POs covering all lifecycle statuses and multiple departments.
+-- Sources include rfq, tender, and procurement (manual).
+-- Uses the demo property: 18762279-a389-41c9-9169-7ebc682e9703

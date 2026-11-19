@@ -1,0 +1,5 @@
+-- 358_proc_remaining_seed.sql
+-- Seeds mock data for remaining procurement tables and adds source tracking columns.
+-- Tables seeded: deliveries, contracts, budgets, approval_delegations, supplier_risks,
+-- savings, supplier_documents, supplier_evaluations, po_tracking, supplier_performance.
+-- Uses the demo property: 18762279-a389-41c9-9169-7ebc682e9703

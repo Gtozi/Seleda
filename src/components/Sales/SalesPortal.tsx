@@ -19,10 +19,11 @@ import GiftCardsVouchers from './GiftCardsVouchers';
 import ReputationManagement from './ReputationManagement';
 import GuestFeedback from './GuestFeedback';
 import CustomerSegmentation from './CustomerSegmentation';
-import BusinessIntelligence from './BusinessIntelligence';
 import CommunicationCenter from './CommunicationCenter';
 import SalesReports from './SalesReports';
 import SalesConfiguration from './SalesConfiguration';
+import SalesStaffManagement from './SalesStaffManagement';
+import DepartmentRequisitionForm from '../Inventory/DepartmentRequisitionForm';
 
 const SalesPortal: React.FC<{ activeTab?: string }> = ({ activeTab = 'dashboard' }) => {
   return (
@@ -48,8 +49,9 @@ const SalesPortal: React.FC<{ activeTab?: string }> = ({ activeTab = 'dashboard'
         {activeTab === 'reputation' && <ReputationManagement />}
         {activeTab === 'guest-feedback' && <GuestFeedback />}
         {activeTab === 'segmentation' && <CustomerSegmentation />}
-        {activeTab === 'business-intelligence' && <BusinessIntelligence />}
         {activeTab === 'communication' && <CommunicationCenter />}
+        {activeTab === 'requisitions' && <DepartmentRequisitionForm department="Sales" />}
+        {activeTab === 'staff' && <SalesStaffManagement />}
         {activeTab === 'reports' && <SalesReports />}
         {activeTab === 'configuration' && <SalesConfiguration />}
       </div>

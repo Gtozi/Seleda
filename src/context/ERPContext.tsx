@@ -180,7 +180,7 @@ export interface ERPContextType {
   updatePassword: (old: string, newP: string) => Promise<boolean>;
   syncUserProfile: (profile: { id: string; name: string; email: string; role: string; roleDescription?: string; avatar?: string; lastLogin: string; department?: string; employeeId?: string; mobileNumber?: string; username?: string; status?: string }) => void;
   globalHotelSettings: GlobalHotelSettings;
-  updateGlobalHotelSettings: (settings: Partial<GlobalHotelSettings>) => void;
+  updateGlobalHotelSettings: (settings: Partial<GlobalHotelSettings>) => Promise<boolean>;
   roomTypeMetadata: RoomTypeMetadata[];
   updateRoomTypeMetadata: (type: RoomTypeMetadata['type'], updates: Partial<RoomTypeMetadata>) => void;
   formatTaxesAndFees: (baseAmount: number) => { 
@@ -218,7 +218,7 @@ export interface ERPContextType {
   submitAdminChange: (change: Omit<PendingAdminChange, 'id' | 'submittedAt' | 'status'>) => void;
   approveAdminChange: (id: string) => void;
   declineAdminChange: (id: string) => void;
-  submitGlobalSettingsChange: (title: string, description: string, changeType: AdminChangeType, settings: Partial<GlobalHotelSettings>) => void;
+  submitGlobalSettingsChange: (title: string, description: string, changeType: AdminChangeType, settings: Partial<GlobalHotelSettings>) => Promise<boolean>;
   refreshAllData: () => Promise<void>;
   currentPropertyId: string | null;
   setCurrentPropertyId: (id: string | null) => void;
@@ -471,6 +471,23 @@ const ERPContextWrapper: React.FC<{ children: React.ReactNode }> = ({ children }
       }
     } catch (error) {
       console.error('Error closing folios with invoice generation:', error);
+    }
+    // Persist check-out server-side so reservation.status and rooms.status stay
+    // in sync. Previously this only updated local React state + a fire-and-forget
+    // upsert, which could leave the reservation stuck at 'CheckedIn' in the DB
+    // and the room stuck at 'Occupied Clean' after a page reload.
+    try {
+      const checkoutRes = await fetch(`/api/${id}/check-out`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+      });
+      if (!checkoutRes.ok) {
+        const data = await checkoutRes.json().catch(() => ({}));
+        system.logAudit(`Check-out failed for reservation ${id}: ${data.error || checkoutRes.statusText}`);
+      }
+    } catch (error) {
+      system.logAudit(`Check-out network error for reservation ${id}: ${String(error)}`);
     }
     reservation.updateReservationStatus(id, 'CheckedOut');
     if (res?.roomNumber) {

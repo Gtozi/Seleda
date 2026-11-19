@@ -1,404 +1,835 @@
-import React, { useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import type { LucideIcon } from 'lucide-react';
 import {
-  ShieldCheck, Search, Filter, Plus, Calendar, Clock, CheckCircle2,
-  AlertTriangle, FileText, MapPin, User, ChevronRight, Flame,
-  Droplets, Zap, Thermometer, Building2, Factory
+  ShieldCheck,
+  Search,
+  Plus,
+  Calendar,
+  Clock,
+  CheckCircle2,
+  AlertTriangle,
+  FileText,
+  MapPin,
+  User,
+  ChevronRight,
+  Flame,
+  Droplets,
+  Zap,
+  Thermometer,
+  Building2,
+  Factory,
+  Loader2,
+  ServerCrash,
+  MoreVertical,
+  Package,
+  Trash2,
+  ArrowRight,
 } from 'lucide-react';
+import StatCard from '../FrontOffice/StatCard';
+import { PageHeader, SectionCard, Badge } from '../FrontOffice/ui';
+import { button, layout, statusTone, type StatusTone } from '../FrontOffice/brandTheme';
+import { ModalSystem } from '../Shared/ModalSystem';
+import { useERP } from '../../context/ERPContext';
+import {
+  fetchInspections,
+  createInspection,
+  updateInspection,
+  convertInspectionToWO,
+  deleteInspection,
+  type Inspection,
+  type InspectionStatus,
+  type InspectionType,
+  type InspectionCategory,
+  type InspectionPriority,
+} from '../../services/engineeringService';
 
-interface Inspection {
-  id: string;
-  number: string;
-  type: 'Fire Safety' | 'Elevator' | 'Boiler' | 'Electrical' | 'Water System' | 'HVAC' | 'Structural' | 'Environmental';
-  category: 'Compliance' | 'Safety' | 'Preventive' | 'Regulatory' | 'Insurance';
-  location: string;
-  description: string;
-  status: 'Scheduled' | 'In Progress' | 'Completed' | 'Failed' | 'Overdue';
-  scheduledDate: string;
-  completedDate?: string;
-  inspector?: string;
-  findings?: string;
-  nextDueDate?: string;
-  priority: 'Critical' | 'High' | 'Normal' | 'Low';
+// ── Static registries ────────────────────────────────────────────────────
+
+const ALL_TYPES: InspectionType[] = [
+  'Fire Safety', 'Elevator', 'Boiler', 'Electrical', 'Water System', 'HVAC', 'Structural', 'Environmental',
+];
+
+const ALL_CATEGORIES: InspectionCategory[] = ['Compliance', 'Safety', 'Preventive', 'Regulatory', 'Insurance'];
+
+const ALL_PRIORITIES: InspectionPriority[] = ['Critical', 'High', 'Normal', 'Low'];
+
+const STATUS_FLOW: InspectionStatus[] = ['Scheduled', 'In Progress', 'Completed', 'Failed', 'Overdue'];
+
+const TYPE_ICON: Record<InspectionType, LucideIcon> = {
+  'Fire Safety': Flame,
+  Elevator: Building2,
+  Boiler: Thermometer,
+  Electrical: Zap,
+  'Water System': Droplets,
+  HVAC: Thermometer,
+  Structural: Building2,
+  Environmental: Factory,
+};
+
+const STATUS_TONE: Record<InspectionStatus, StatusTone> = {
+  Scheduled: 'neutral',
+  'In Progress': 'warning',
+  Completed: 'success',
+  Failed: 'danger',
+  Overdue: 'danger',
+};
+
+const PRIORITY_TONE: Record<InspectionPriority, StatusTone> = {
+  Critical: 'danger',
+  High: 'warning',
+  Normal: 'info',
+  Low: 'neutral',
+};
+
+// Next available status transitions for each status.
+const NEXT_ACTIONS: Record<InspectionStatus, InspectionStatus[]> = {
+  Scheduled: ['In Progress'],
+  'In Progress': ['Completed', 'Failed'],
+  Completed: [],
+  Failed: [],
+  Overdue: ['In Progress'],
+};
+
+const ACTION_LABELS: Record<InspectionStatus, string> = {
+  Scheduled: 'Mark In Progress',
+  'In Progress': 'Complete',
+  Completed: 'Completed',
+  Failed: 'Failed',
+  Overdue: 'Mark In Progress',
+};
+
+const INSPECTOR_OPTIONS = [
+  'Fire Safety Inspector',
+  'Elevator Inspector',
+  'Health Inspector',
+  'HVAC Technician',
+  'Electrical Inspector',
+  'Boiler Inspector',
+  'Structural Engineer',
+  'Environmental Inspector',
+  'General Maintenance Team',
+] as const;
+
+// ── Field helper ─────────────────────────────────────────────────────────
+
+const inputClass =
+  'w-full px-3 py-2 text-sm border border-gray-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-gray-900 dark:text-white outline-none focus:ring-1 focus:ring-[var(--color-accent-operations)]';
+
+function Field({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <label className="block">
+      <span className="block text-xs font-bold text-gray-500 uppercase tracking-wide mb-1.5">{label}</span>
+      {children}
+    </label>
+  );
 }
 
+function fmtDate(s: string | null): string {
+  if (!s) return '';
+  const d = new Date(s);
+  if (isNaN(d.getTime())) return s;
+  return d.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+function fmtDay(s: string | null): string {
+  if (!s) return '';
+  const d = new Date(s);
+  if (isNaN(d.getTime())) return s;
+  return d.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+// ── Component ────────────────────────────────────────────────────────────
+
 const Inspections: React.FC = () => {
-  const [inspections, setInspections] = useState<Inspection[]>([
-    {
-      id: 'INS-001',
-      number: 'INS-2026-001',
-      type: 'Fire Safety',
-      category: 'Compliance',
-      location: 'All Floors',
-      description: 'Annual fire alarm system inspection and testing',
-      status: 'Completed',
-      scheduledDate: '2026-07-15',
-      completedDate: '2026-07-15',
-      inspector: 'Fire Safety Inspector',
-      findings: 'All systems operational. Minor repairs required on 2 smoke detectors.',
-      nextDueDate: '2027-07-15',
-      priority: 'Critical',
-    },
-    {
-      id: 'INS-002',
-      number: 'INS-2026-002',
-      type: 'Elevator',
-      category: 'Safety',
-      location: 'Service Elevator Alpha',
-      description: 'Quarterly elevator safety inspection and load testing',
-      status: 'In Progress',
-      scheduledDate: '2026-07-29',
-      inspector: 'Elevator Inspector',
-      priority: 'Critical',
-    },
-    {
-      id: 'INS-003',
-      number: 'INS-2026-003',
-      type: 'Boiler',
-      category: 'Regulatory',
-      location: 'Boiler Room',
-      description: 'Annual boiler pressure vessel inspection',
-      status: 'Scheduled',
-      scheduledDate: '2026-08-10',
-      priority: 'Critical',
-    },
-    {
-      id: 'INS-004',
-      number: 'INS-2026-004',
-      type: 'Electrical',
-      category: 'Preventive',
-      location: 'Main Distribution Panels',
-      description: 'Thermal imaging of electrical panels',
-      status: 'Scheduled',
-      scheduledDate: '2026-08-15',
-      priority: 'High',
-    },
-    {
-      id: 'INS-005',
-      number: 'INS-2026-005',
-      type: 'Water System',
-      category: 'Compliance',
-      location: 'Water Tank Room',
-      description: 'Water quality testing and tank inspection',
-      status: 'Overdue',
-      scheduledDate: '2026-07-20',
-      inspector: 'Health Inspector',
-      priority: 'High',
-    },
-    {
-      id: 'INS-006',
-      number: 'INS-2026-006',
-      type: 'HVAC',
-      category: 'Preventive',
-      location: 'Rooftop Units',
-      description: 'HVAC system performance inspection',
-      status: 'Completed',
-      scheduledDate: '2026-07-10',
-      completedDate: '2026-07-10',
-      inspector: 'HVAC Technician',
-      findings: 'All units operating within normal parameters. Filter replacement recommended.',
-      nextDueDate: '2026-10-10',
-      priority: 'Normal',
-    },
-  ]);
+  const { currentPropertyId, addNotification } = useERP();
 
-  const [activeType, setActiveType] = useState<string>('All');
-  const [activeStatus, setActiveStatus] = useState<string>('All');
+  const [inspections, setInspections] = useState<Inspection[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [actingOn, setActingOn] = useState<string | null>(null);
 
-  const types = ['All', 'Fire Safety', 'Elevator', 'Boiler', 'Electrical', 'Water System', 'HVAC', 'Structural', 'Environmental'];
-  const statuses = ['All', 'Scheduled', 'In Progress', 'Completed', 'Failed', 'Overdue'];
+  const [statusFilter, setStatusFilter] = useState<'All' | InspectionStatus>('All');
+  const [typeFilter, setTypeFilter] = useState<'All' | InspectionType>('All');
+  const [categoryFilter, setCategoryFilter] = useState<'All' | InspectionCategory>('All');
+  const [priorityFilter, setPriorityFilter] = useState<'All' | InspectionPriority>('All');
+  const [search, setSearch] = useState('');
 
-  const getTypeIcon = (type: string) => {
-    switch (type) {
-      case 'Fire Safety': return Flame;
-      case 'Elevator': return Building2;
-      case 'Boiler': return Thermometer;
-      case 'Electrical': return Zap;
-      case 'Water System': return Droplets;
-      case 'HVAC': return Thermometer;
-      case 'Structural': return Building2;
-      case 'Environmental': return Factory;
-      default: return ShieldCheck;
-    }
-  };
-
-  const getStatusBadge = (status: string) => {
-    switch (status) {
-      case 'Scheduled': return 'bg-slate-100 text-slate-600 border-slate-200';
-      case 'In Progress': return 'bg-amber-50 text-amber-700 border-amber-100';
-      case 'Completed': return 'bg-emerald-50 text-emerald-700 border-emerald-100';
-      case 'Failed': return 'bg-rose-50 text-rose-700 border-rose-100';
-      case 'Overdue': return 'bg-rose-100 text-rose-600 border-rose-200';
-      default: return 'bg-slate-50 text-slate-500 border-slate-100';
-    }
-  };
-
-  const getPriorityColor = (priority: string) => {
-    switch (priority) {
-      case 'Critical': return 'bg-rose-500 text-white';
-      case 'High': return 'bg-amber-500 text-white';
-      case 'Normal': return 'bg-blue-500 text-white';
-      case 'Low': return 'bg-slate-500 text-white';
-      default: return 'bg-slate-100 text-slate-500';
-    }
-  };
-
-  const filteredInspections = inspections.filter(inspection => {
-    if (activeType !== 'All' && inspection.type !== activeType) return false;
-    if (activeStatus !== 'All' && inspection.status !== activeStatus) return false;
-    return true;
+  const [showForm, setShowForm] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [form, setForm] = useState<{
+    type: InspectionType;
+    category: InspectionCategory;
+    location: string;
+    roomNumber: string;
+    description: string;
+    priority: InspectionPriority;
+    scheduledDate: string;
+    inspector: string;
+    nextDueDate: string;
+  }>({
+    type: 'Fire Safety',
+    category: 'Compliance',
+    location: '',
+    roomNumber: '',
+    description: '',
+    priority: 'Normal',
+    scheduledDate: '',
+    inspector: '',
+    nextDueDate: '',
   });
 
+  const [detail, setDetail] = useState<Inspection | null>(null);
+  const [detailReadOnly, setDetailReadOnly] = useState(true);
+  const [detailForm, setDetailForm] = useState<{
+    inspector: string;
+    findings: string;
+    nextDueDate: string;
+    completedDate: string;
+  }>({ inspector: '', findings: '', nextDueDate: '', completedDate: '' });
+  const [savingDetail, setSavingDetail] = useState(false);
+
+  const [convertId, setConvertId] = useState<string | null>(null);
+  const [convertForm, setConvertForm] = useState({ assignedTo: '', scheduledDate: '', notes: '' });
+  const [converting, setConverting] = useState(false);
+
+  const [menuOpen, setMenuOpen] = useState<string | null>(null);
+
+  // ── Load ────────────────────────────────────────────────────────────────
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const data = await fetchInspections({
+        propertyId: currentPropertyId || undefined,
+      });
+      setInspections(data);
+    } catch (e: any) {
+      setError(e?.message || 'Failed to load inspections');
+    } finally {
+      setLoading(false);
+    }
+  }, [currentPropertyId]);
+
+  useEffect(() => { load(); }, [load]);
+
+  // ── Derived list ───────────────────────────────────────────────────────
+  const filtered = useMemo(
+    () =>
+      inspections.filter(i => {
+        const matchesStatus = statusFilter === 'All' || i.status === statusFilter;
+        const matchesType = typeFilter === 'All' || i.type === typeFilter;
+        const matchesCategory = categoryFilter === 'All' || i.category === categoryFilter;
+        const matchesPriority = priorityFilter === 'All' || i.priority === priorityFilter;
+        const q = search.trim().toLowerCase();
+        const matchesSearch =
+          !q ||
+          i.ins_number.toLowerCase().includes(q) ||
+          i.description.toLowerCase().includes(q) ||
+          i.location.toLowerCase().includes(q) ||
+          i.type.toLowerCase().includes(q) ||
+          (i.inspector || '').toLowerCase().includes(q);
+        return matchesStatus && matchesType && matchesCategory && matchesPriority && matchesSearch;
+      }),
+    [inspections, statusFilter, typeFilter, categoryFilter, priorityFilter, search]
+  );
+
+  const counts = {
+    scheduled: inspections.filter(i => i.status === 'Scheduled').length,
+    inProgress: inspections.filter(i => i.status === 'In Progress').length,
+    overdue: inspections.filter(i => i.status === 'Overdue').length,
+    completed: inspections.filter(i => i.status === 'Completed').length,
+    failed: inspections.filter(i => i.status === 'Failed').length,
+  };
+
+  // ── Actions ────────────────────────────────────────────────────────────
+  const submitCreate = async () => {
+    if (!form.type || !form.category || !form.location.trim() || !form.description.trim() || !form.scheduledDate) return;
+    setSubmitting(true);
+    try {
+      const created = await createInspection({
+        propertyId: currentPropertyId || undefined,
+        type: form.type,
+        category: form.category,
+        location: form.location.trim(),
+        roomNumber: form.roomNumber.trim() || undefined,
+        description: form.description.trim(),
+        priority: form.priority,
+        scheduledDate: form.scheduledDate,
+        inspector: form.inspector.trim() || undefined,
+        nextDueDate: form.nextDueDate || undefined,
+      });
+      setInspections(prev => [created, ...prev]);
+      addNotification(`Inspection ${created.ins_number} scheduled for ${created.location}.`, 'task', 'Maintenance');
+      setShowForm(false);
+      setForm({
+        type: 'Fire Safety', category: 'Compliance', location: '', roomNumber: '',
+        description: '', priority: 'Normal', scheduledDate: '', inspector: '', nextDueDate: '',
+      });
+    } catch (e: any) {
+      addNotification(e?.message || 'Failed to schedule inspection', 'warning', 'Maintenance');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const changeStatus = async (id: string, status: InspectionStatus) => {
+    setActingOn(id);
+    setMenuOpen(null);
+    try {
+      const { inspection } = await updateInspection(id, { status });
+      setInspections(prev => prev.map(i => (i.id === id ? inspection : i)));
+      addNotification(`Inspection ${inspection.ins_number} → ${status}.`, 'task', 'Maintenance');
+    } catch (e: any) {
+      addNotification(e?.message || `Failed to update status to ${status}`, 'warning', 'Maintenance');
+    } finally {
+      setActingOn(null);
+    }
+  };
+
+  const saveDetail = async () => {
+    if (!detail) return;
+    setSavingDetail(true);
+    try {
+      const { inspection } = await updateInspection(detail.id, {
+        inspector: detailForm.inspector.trim() || null,
+        findings: detailForm.findings.trim() || null,
+        nextDueDate: detailForm.nextDueDate || null,
+        completedDate: detailForm.completedDate || null,
+      });
+      setInspections(prev => prev.map(i => (i.id === detail.id ? inspection : i)));
+      setDetail(inspection);
+      setDetailReadOnly(true);
+      addNotification(`Inspection ${inspection.ins_number} details updated.`, 'task', 'Maintenance');
+    } catch (e: any) {
+      addNotification(e?.message || 'Failed to update inspection details', 'warning', 'Maintenance');
+    } finally {
+      setSavingDetail(false);
+    }
+  };
+
+  const doConvert = async () => {
+    if (!convertId) return;
+    setConverting(true);
+    try {
+      const { inspection, workOrder } = await convertInspectionToWO(convertId, {
+        assignedTo: convertForm.assignedTo.trim() || undefined,
+        scheduledDate: convertForm.scheduledDate || undefined,
+        notes: convertForm.notes.trim() || undefined,
+      });
+      setInspections(prev => prev.map(i => (i.id === convertId ? inspection : i)));
+      addNotification(
+        `Inspection ${inspection.ins_number} converted to work order ${workOrder.wo_number}.`,
+        'task', 'Maintenance'
+      );
+      setConvertId(null);
+      setConvertForm({ assignedTo: '', scheduledDate: '', notes: '' });
+    } catch (e: any) {
+      addNotification(e?.message || 'Failed to convert to work order', 'warning', 'Maintenance');
+    } finally {
+      setConverting(false);
+    }
+  };
+
+  const doDelete = async (id: string) => {
+    setActingOn(id);
+    setMenuOpen(null);
+    try {
+      await deleteInspection(id);
+      setInspections(prev => prev.filter(i => i.id !== id));
+      addNotification(`Inspection ${id} deleted.`, 'task', 'Maintenance');
+    } catch (e: any) {
+      addNotification(e?.message || 'Failed to delete inspection', 'warning', 'Maintenance');
+    } finally {
+      setActingOn(null);
+    }
+  };
+
+  const openDetail = (i: Inspection) => {
+    setDetail(i);
+    setDetailReadOnly(true);
+    setDetailForm({
+      inspector: i.inspector || '',
+      findings: i.findings || '',
+      nextDueDate: i.next_due_date ? i.next_due_date.slice(0, 10) : '',
+      completedDate: i.completed_date ? i.completed_date.slice(0, 10) : '',
+    });
+  };
+
+  // ── Render ─────────────────────────────────────────────────────────────
   return (
-    <div className="space-y-6">
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div>
-          <h2 className="text-xl font-sans font-black text-slate-900 dark:text-white leading-tight">Inspections</h2>
-          <p className="text-xs text-slate-400 font-medium tracking-tight">Compliance, safety, regulatory, and preventive inspections</p>
-        </div>
-        <div className="flex items-center gap-2">
-          <button className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white font-bold py-2.5 px-4 rounded-2xl flex items-center gap-2 text-xs hover:bg-slate-50 transition shadow-sm">
-            <Search size={16} />
-            Search
-          </button>
-          <button className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2.5 px-4 rounded-2xl flex items-center gap-2 text-xs transition shadow-md shadow-indigo-200 dark:shadow-none">
-            <Plus size={16} />
-            Schedule Inspection
-          </button>
-        </div>
-      </div>
-
-      {/* Type Filter */}
-      <div className="flex bg-white dark:bg-slate-900 p-1.5 border border-slate-200 dark:border-slate-800 rounded-2xl overflow-x-auto no-scrollbar gap-1.5">
-        {types.map((type) => {
-          const Icon = getTypeIcon(type);
-          return (
-            <button
-              key={type}
-              onClick={() => setActiveType(type)}
-              className={`px-3 py-1.5 rounded-xl text-xs font-black transition-all whitespace-nowrap uppercase tracking-tighter flex items-center gap-1.5 ${
-                activeType === type
-                  ? 'bg-slate-950 dark:bg-white text-white dark:text-slate-950 shadow-sm'
-                  : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-200'
-              }`}
-            >
-              <Icon size={12} />
-              {type}
+    <div className={`${layout.sectionStack} animate-fade-in`}>
+      <PageHeader
+        title="Inspections"
+        subtitle="Compliance, safety, regulatory, and preventive inspections."
+        icon={ShieldCheck}
+        actions={
+          <div className="flex items-center gap-2">
+            <button onClick={load} disabled={loading} className={button.secondary + ' disabled:opacity-50'}>
+              {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <ArrowRight className="w-4 h-4" />}
+              Refresh
             </button>
-          );
-        })}
+            <button onClick={() => setShowForm(true)} className={button.primary}>
+              <Plus className="w-4 h-4" /> Schedule Inspection
+            </button>
+          </div>
+        }
+      />
+
+      {/* KPIs */}
+      <div className={layout.kpiGrid}>
+        <StatCard title="Scheduled" value={counts.scheduled} icon={Calendar} tone="info" />
+        <StatCard title="In Progress" value={counts.inProgress} icon={Clock} tone="warning" />
+        <StatCard title="Overdue" value={counts.overdue} icon={AlertTriangle} tone="danger" />
+        <StatCard title="Completed" value={counts.completed} icon={CheckCircle2} tone="success" />
       </div>
 
-      {/* Status Filter */}
-      <div className="flex bg-white dark:bg-slate-900 p-1.5 border border-slate-200 dark:border-slate-800 rounded-2xl overflow-x-auto no-scrollbar gap-1.5">
-        {statuses.map((status) => (
-          <button
-            key={status}
-            onClick={() => setActiveStatus(status)}
-            className={`px-4 py-1.5 rounded-xl text-xs font-black transition-all whitespace-nowrap uppercase tracking-tighter ${
-              activeStatus === status
-                ? 'bg-slate-950 dark:bg-white text-white dark:text-slate-950 shadow-sm'
-                : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-200'
-            }`}
-          >
-            {status}
-          </button>
-        ))}
-      </div>
-
-      {/* Summary Stats */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 p-4 rounded-3xl shadow-3xs">
-          <div className="flex items-center gap-2 mb-2">
-            <div className="p-2 rounded-xl bg-blue-50 dark:bg-blue-500/10 text-blue-500">
-              <Calendar size={14} />
-            </div>
-            <span className="text-xl font-black text-slate-900 dark:text-white">{inspections.filter(i => i.status === 'Scheduled').length}</span>
-          </div>
-          <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Scheduled</span>
-        </div>
-        <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 p-4 rounded-3xl shadow-3xs">
-          <div className="flex items-center gap-2 mb-2">
-            <div className="p-2 rounded-xl bg-amber-50 dark:bg-amber-500/10 text-amber-500">
-              <Clock size={14} />
-            </div>
-            <span className="text-xl font-black text-slate-900 dark:text-white">{inspections.filter(i => i.status === 'In Progress').length}</span>
-          </div>
-          <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">In Progress</span>
-        </div>
-        <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 p-4 rounded-3xl shadow-3xs">
-          <div className="flex items-center gap-2 mb-2">
-            <div className="p-2 rounded-xl bg-rose-50 dark:bg-rose-500/10 text-rose-500">
-              <AlertTriangle size={14} />
-            </div>
-            <span className="text-xl font-black text-slate-900 dark:text-white">{inspections.filter(i => i.status === 'Overdue').length}</span>
-          </div>
-          <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Overdue</span>
-        </div>
-        <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 p-4 rounded-3xl shadow-3xs">
-          <div className="flex items-center gap-2 mb-2">
-            <div className="p-2 rounded-xl bg-emerald-50 dark:bg-emerald-500/10 text-emerald-500">
-              <CheckCircle2 size={14} />
-            </div>
-            <span className="text-xl font-black text-slate-900 dark:text-white">{inspections.filter(i => i.status === 'Completed').length}</span>
-          </div>
-          <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Completed</span>
-        </div>
-      </div>
-
-      {/* Inspections List */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        <div className="lg:col-span-8 space-y-4">
-          {filteredInspections.map((inspection) => {
-            const TypeIcon = getTypeIcon(inspection.type);
+      {/* Type quick filter */}
+      <SectionCard title="Inspection Types" subtitle="Click to filter by inspection type" pad="md">
+        <div className="grid grid-cols-4 sm:grid-cols-6 lg:grid-cols-8 gap-2">
+          {(['All' as const, ...ALL_TYPES] as const).map(t => {
+            const Icon = t === 'All' ? ShieldCheck : TYPE_ICON[t];
+            const active = typeFilter === t;
+            const count = t === 'All' ? inspections.length : inspections.filter(i => i.type === t).length;
             return (
-              <div
-                key={inspection.id}
-                className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-3xl p-5 shadow-3xs group hover:border-indigo-300 transition-all cursor-pointer relative overflow-hidden"
+              <button
+                key={t}
+                onClick={() => setTypeFilter(typeFilter === t ? 'All' : (t as InspectionType | 'All'))}
+                className={[
+                  'p-2.5 rounded-xl border text-center smooth-transition',
+                  active
+                    ? 'border-[var(--color-accent-operations)] ring-1 ring-[var(--color-accent-operations)]/30 bg-[var(--color-accent-operations)]/10'
+                    : 'border-gray-200 dark:border-slate-700 hover:border-[var(--color-accent-operations)]/50',
+                ].join(' ')}
               >
-                {/* Priority Indicator Line */}
-                <div className={`absolute top-0 left-0 w-1.5 h-full ${getPriorityColor(inspection.priority).split(' ')[0]}`} />
-
-                <div className="flex flex-col md:flex-row justify-between gap-4 ml-2">
-                  <div className="space-y-3 flex-1">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="text-[10px] font-mono font-black text-slate-400 group-hover:text-indigo-500 transition-colors uppercase tracking-widest">{inspection.number}</span>
-                      <span className={`px-2 py-0.5 rounded-full border text-[8px] font-black uppercase tracking-tight ${getStatusBadge(inspection.status)}`}>
-                        {inspection.status}
-                      </span>
-                      <span className={`px-2 py-0.5 rounded-full text-[8px] font-black uppercase tracking-tight ${getPriorityColor(inspection.priority)}`}>
-                        {inspection.priority}
-                      </span>
-                      <span className="px-2 py-0.5 bg-indigo-50 dark:bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 rounded-full text-[8px] font-black uppercase tracking-tight">
-                        {inspection.category}
-                      </span>
-                    </div>
-
-                    <div>
-                      <h4 className="text-sm font-sans font-extrabold text-slate-900 dark:text-white leading-tight">{inspection.description}</h4>
-                      <div className="flex flex-wrap items-center gap-3 mt-1.5">
-                        <div className="flex items-center gap-1 text-[10px] font-bold text-slate-500">
-                          <TypeIcon size={10} className="text-indigo-500" />
-                          {inspection.type}
-                        </div>
-                        <div className="flex items-center gap-1 text-[10px] font-bold text-slate-500">
-                          <MapPin size={10} className="text-indigo-500" />
-                          {inspection.location}
-                        </div>
-                      </div>
-                    </div>
-
-                    {inspection.findings && (
-                      <div className="p-3 bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-100 dark:border-emerald-500/20 rounded-2xl">
-                        <div className="flex items-center gap-2 mb-1">
-                          <FileText size={12} className="text-emerald-500" />
-                          <span className="text-[9px] font-black text-emerald-600 uppercase tracking-widest">Findings</span>
-                        </div>
-                        <p className="text-[10px] font-bold text-slate-700 dark:text-slate-300">{inspection.findings}</p>
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="flex flex-row md:flex-col justify-between items-end md:items-end gap-2 border-t md:border-t-0 md:border-l border-slate-100 dark:border-slate-800 md:pl-6 pt-3 md:pt-0">
-                    <div className="space-y-2">
-                      {inspection.inspector && (
-                        <div className="flex items-center gap-2">
-                          <div className="w-6 h-6 rounded-full bg-slate-100 dark:bg-slate-800 flex items-center justify-center text-slate-400">
-                            <User size={12} />
-                          </div>
-                          <span className="text-[10px] font-bold text-slate-700 dark:text-slate-300">{inspection.inspector}</span>
-                        </div>
-                      )}
-                      <div>
-                        <span className="text-[9px] font-black text-slate-400 uppercase block tracking-tighter leading-none">Scheduled</span>
-                        <span className="text-[10px] font-bold text-slate-700 dark:text-slate-300 block">{inspection.scheduledDate}</span>
-                      </div>
-                      {inspection.nextDueDate && (
-                        <div>
-                          <span className="text-[9px] font-black text-slate-400 uppercase block tracking-tighter leading-none">Next Due</span>
-                          <span className="text-[10px] font-bold text-slate-700 dark:text-slate-300 block">{inspection.nextDueDate}</span>
-                        </div>
-                      )}
-                    </div>
-
-                    <button className="p-2 rounded-xl bg-slate-50 dark:bg-slate-800 text-slate-400 hover:bg-indigo-50 hover:text-indigo-500 transition">
-                      <ChevronRight size={16} />
-                    </button>
-                  </div>
-                </div>
-              </div>
+                <Icon className="w-4 h-4 mx-auto text-[var(--color-accent-operations)] mb-1" />
+                <p className="text-[9px] font-bold uppercase leading-tight text-gray-700 dark:text-gray-300">{t}</p>
+                {count > 0 && <span className="block text-[10px] font-bold text-gray-500 mt-1">{count}</span>}
+              </button>
             );
           })}
         </div>
+      </SectionCard>
 
-        {/* Sidebar */}
-        <div className="lg:col-span-4 space-y-6">
-          <div className="bg-slate-900 text-white p-6 rounded-3xl space-y-6">
-            <div>
-              <h3 className="text-sm font-sans font-extrabold leading-tight">Compliance Status</h3>
-              <p className="text-[10px] text-slate-400 uppercase font-bold tracking-widest mt-0.5">Regulatory overview</p>
-            </div>
-
-            <div className="space-y-4">
-              <div className="flex justify-between items-end border-b border-white/5 pb-2">
-                <div>
-                  <span className="text-[8px] font-black text-slate-400 uppercase tracking-widest">Fire Safety</span>
-                  <span className="block text-xl font-black text-emerald-400">Compliant</span>
-                </div>
-                <CheckCircle2 size={16} className="text-emerald-400" />
-              </div>
-              <div className="flex justify-between items-end border-b border-white/5 pb-2">
-                <div>
-                  <span className="text-[8px] font-black text-slate-400 uppercase tracking-widest">Elevator</span>
-                  <span className="block text-xl font-black text-amber-400">In Progress</span>
-                </div>
-                <Clock size={16} className="text-amber-400" />
-              </div>
-              <div className="flex justify-between items-end border-b border-white/5 pb-2">
-                <div>
-                  <span className="text-[8px] font-black text-slate-400 uppercase tracking-widest">Boiler</span>
-                  <span className="block text-xl font-black text-blue-400">Scheduled</span>
-                </div>
-                <Calendar size={16} className="text-blue-400" />
-              </div>
-              <div className="flex justify-between items-end">
-                <div>
-                  <span className="text-[8px] font-black text-slate-400 uppercase tracking-widest">Water Quality</span>
-                  <span className="block text-xl font-black text-rose-400">Overdue</span>
-                </div>
-                <AlertTriangle size={16} className="text-rose-400" />
-              </div>
-            </div>
+      {/* Status filter + search */}
+      <SectionCard pad="md">
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <div className="flex bg-slate-100 dark:bg-slate-900/40 p-1 rounded-xl gap-1 flex-wrap">
+            {(['All', ...STATUS_FLOW] as const).map(f => (
+              <button
+                key={f}
+                onClick={() => setStatusFilter(f)}
+                className={[
+                  'px-4 py-1.5 rounded-lg text-xs font-medium transition whitespace-nowrap',
+                  statusFilter === f
+                    ? 'bg-white dark:bg-slate-700 text-gray-900 dark:text-white shadow-sm'
+                    : 'text-gray-500 hover:text-gray-700',
+                ].join(' ')}
+              >
+                {f}
+              </button>
+            ))}
           </div>
-
-          <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 p-6 rounded-3xl space-y-4">
-            <div>
-              <h3 className="text-sm font-sans font-extrabold text-slate-900 dark:text-white">Upcoming Inspections</h3>
-              <p className="text-[10px] text-slate-400 uppercase font-black tracking-widest mt-0.5">Next 30 days</p>
-            </div>
-
-            <div className="space-y-3">
-              {inspections
-                .filter(i => i.status === 'Scheduled')
-                .slice(0, 4)
-                .map((inspection, i) => {
-                  const TypeIcon = getTypeIcon(inspection.type);
-                  return (
-                    <div key={i} className="p-3 bg-slate-50 dark:bg-slate-850 rounded-xl">
-                      <div className="flex items-center gap-2 mb-1">
-                        <TypeIcon size={12} className="text-indigo-500" />
-                        <span className="text-[10px] font-bold text-slate-700 dark:text-slate-300">{inspection.type}</span>
-                      </div>
-                      <div className="flex justify-between items-center">
-                        <span className="text-[8px] font-bold text-slate-500">{inspection.location}</span>
-                        <span className="text-[9px] font-black text-slate-900 dark:text-white">{inspection.scheduledDate}</span>
-                      </div>
-                    </div>
-                  );
-                })}
-            </div>
+          <div className="relative w-full max-w-xs">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+            <input
+              placeholder="Search number, location, type…"
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              className="w-full pl-9 pr-3 py-2 text-sm border border-gray-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-gray-900 dark:text-white outline-none focus:ring-1 focus:ring-[var(--color-accent-operations)]"
+            />
           </div>
         </div>
-      </div>
+      </SectionCard>
+
+      {error && (
+        <div className="px-4 py-3 rounded-xl bg-red-50 dark:bg-red-900/20 text-sm text-red-700 dark:text-red-300 border border-red-200 dark:border-red-800 flex items-center gap-2">
+          <ServerCrash className="w-4 h-4 shrink-0" /> {error}
+          <button onClick={load} className={button.ghost + ' ml-auto'}>Retry</button>
+        </div>
+      )}
+
+      {/* Inspections list */}
+      <SectionCard
+        title="Inspections"
+        subtitle={loading ? 'Loading…' : `${filtered.length} matching inspection${filtered.length === 1 ? '' : 's'}`}
+        pad="none"
+        bodyClassName="divide-y divide-gray-100 dark:divide-slate-700"
+      >
+        {loading && (
+          <div className="p-8 flex items-center justify-center gap-2 text-sm text-gray-500">
+            <Loader2 className="w-5 h-5 animate-spin" /> Loading inspections…
+          </div>
+        )}
+
+        {!loading && !error && filtered.length === 0 && (
+          <div className="p-8 text-center text-sm text-gray-500">
+            {inspections.length === 0 ? 'No inspections scheduled yet.' : 'No inspections match the filters.'}
+          </div>
+        )}
+
+        {!loading && !error && filtered.map(i => {
+          const TypeIcon = TYPE_ICON[i.type];
+          const statusIdx = STATUS_FLOW.indexOf(i.status);
+          const tone = STATUS_TONE[i.status];
+          const priorityTone = PRIORITY_TONE[i.priority];
+          const actions = NEXT_ACTIONS[i.status] || [];
+          const isMenuOpen = menuOpen === i.id;
+
+          return (
+            <div
+              key={i.id}
+              className="p-4 flex flex-col md:flex-row md:items-center gap-4 cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/50 transition"
+              onClick={() => openDetail(i)}
+            >
+              {/* Identity */}
+              <div className="flex items-center gap-3 md:w-64 shrink-0">
+                <div className={`p-2 rounded-xl ${statusTone[tone].soft}`}>
+                  <TypeIcon className={`w-4 h-4 ${statusTone[tone].text}`} />
+                </div>
+                <div className="min-w-0">
+                  <h4 className="text-sm font-bold text-gray-900 dark:text-white uppercase truncate">{i.type}</h4>
+                  <p className="text-xs text-gray-500 font-mono truncate">
+                    {i.ins_number} · {i.location}{i.room_number ? ` · Room ${i.room_number}` : ''}
+                  </p>
+                </div>
+              </div>
+
+              {/* Body */}
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium text-gray-700 dark:text-gray-200 line-clamp-2">{i.description}</p>
+                <div className="flex flex-wrap items-center gap-2 mt-1.5 text-xs text-gray-500">
+                  <span className="inline-flex items-center gap-1">
+                    <MapPin className="w-3.5 h-3.5" /> {i.location}
+                  </span>
+                  <span>·</span>
+                  <span>{fmtDate(i.scheduled_date)}</span>
+                  {i.inspector && (
+                    <>
+                      <span>·</span>
+                      <span className="inline-flex items-center gap-1">
+                        <User className="w-3.5 h-3.5" /> {i.inspector}
+                      </span>
+                    </>
+                  )}
+                </div>
+
+                {i.findings && (
+                  <div className="mt-2 p-2.5 rounded-xl bg-[var(--color-success)]/10 border border-[var(--color-success)]/20">
+                    <div className="flex items-center gap-1.5 mb-0.5">
+                      <FileText className="w-3.5 h-3.5 text-[var(--color-success)]" />
+                      <span className="text-[10px] font-bold text-[var(--color-success)] uppercase tracking-wide">Findings</span>
+                    </div>
+                    <p className="text-xs font-medium text-gray-700 dark:text-gray-300 line-clamp-2">{i.findings}</p>
+                  </div>
+                )}
+              </div>
+
+              {/* Status + priority */}
+              <div className="md:w-48 shrink-0">
+                <div className="flex items-center gap-2 mb-1.5">
+                  <Badge tone={tone}>{i.status}</Badge>
+                  <Badge tone={priorityTone} variant="solid">{i.priority}</Badge>
+                </div>
+                <div className="flex gap-1">
+                  {['Scheduled', 'In Progress', 'Completed', 'Failed'].map((s, idx) => (
+                    <div
+                      key={s}
+                      className={[
+                        'h-1.5 flex-1 rounded-full',
+                        (statusIdx === 4 ? 0 : statusIdx) >= idx ? 'bg-[var(--color-accent-operations)]' : 'bg-slate-100 dark:bg-slate-800',
+                      ].join(' ')}
+                    />
+                  ))}
+                </div>
+                {i.converted_work_order_id && (
+                  <div className="mt-1.5">
+                    <Badge tone="success" icon={CheckCircle2}>Linked WO</Badge>
+                  </div>
+                )}
+              </div>
+
+              {/* Actions */}
+              <div className="md:w-36 shrink-0 flex justify-end items-center gap-1.5">
+                <div className="relative" onClick={e => e.stopPropagation()}>
+                  <button
+                    onClick={() => setMenuOpen(isMenuOpen ? null : i.id)}
+                    disabled={actingOn === i.id}
+                    className={button.ghost + ' disabled:opacity-50'}
+                  >
+                    {actingOn === i.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <MoreVertical className="w-4 h-4" />}
+                  </button>
+                  {isMenuOpen && (
+                    <div className="absolute right-0 top-full mt-2 w-52 bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl shadow-xl z-20 overflow-hidden">
+                      {actions.map(a => (
+                        <button
+                          key={a}
+                          onClick={() => changeStatus(i.id, a)}
+                          className="w-full text-left px-3 py-2 text-xs font-medium text-gray-700 dark:text-gray-200 hover:bg-slate-100 dark:hover:bg-slate-700 transition"
+                        >
+                          {ACTION_LABELS[a]}
+                        </button>
+                      ))}
+                      {!i.converted_work_order_id && (
+                        <button
+                          onClick={() => { setConvertId(i.id); setMenuOpen(null); }}
+                          className="w-full text-left px-3 py-2 text-xs font-medium text-[var(--color-accent-operations)] hover:bg-slate-100 dark:hover:bg-slate-700 transition border-t border-gray-100 dark:border-slate-700"
+                        >
+                          <Package className="w-3.5 h-3.5 inline mr-1" /> Convert to Work Order
+                        </button>
+                      )}
+                      <button
+                        onClick={() => doDelete(i.id)}
+                        className="w-full text-left px-3 py-2 text-xs font-medium text-[var(--color-danger)] hover:bg-red-50 dark:hover:bg-red-900/20 transition border-t border-gray-100 dark:border-slate-700"
+                      >
+                        <Trash2 className="w-3.5 h-3.5 inline mr-1" /> Delete
+                      </button>
+                    </div>
+                  )}
+                </div>
+                <ChevronRight className="w-4 h-4 text-gray-400" />
+              </div>
+            </div>
+          );
+        })}
+      </SectionCard>
+
+      {/* New Inspection modal */}
+      <ModalSystem
+        isOpen={showForm}
+        onClose={() => (submitting ? undefined : setShowForm(false))}
+        title="Schedule Inspection"
+        subtitle="Create a compliance, safety, regulatory, or preventive inspection."
+        variant="form"
+        size="lg"
+        loading={submitting}
+        confirmLabel={submitting ? 'Scheduling…' : 'Schedule Inspection'}
+        cancelLabel="Cancel"
+        confirmColor="indigo"
+        onConfirm={submitCreate}
+        showFooter
+      >
+        <div className="space-y-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <Field label="Inspection Type">
+              <select
+                value={form.type}
+                onChange={e => setForm(f => ({ ...f, type: e.target.value as InspectionType }))}
+                className={inputClass}
+              >
+                {ALL_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+              </select>
+            </Field>
+            <Field label="Category">
+              <select
+                value={form.category}
+                onChange={e => setForm(f => ({ ...f, category: e.target.value as InspectionCategory }))}
+                className={inputClass}
+              >
+                {ALL_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+              </select>
+            </Field>
+            <Field label="Location">
+              <input
+                value={form.location}
+                onChange={e => setForm(f => ({ ...f, location: e.target.value }))}
+                placeholder="e.g. All Floors, Boiler Room, Rooftop"
+                className={inputClass}
+              />
+            </Field>
+            <Field label="Room Number">
+              <input
+                value={form.roomNumber}
+                onChange={e => setForm(f => ({ ...f, roomNumber: e.target.value }))}
+                placeholder="Optional"
+                className={inputClass}
+              />
+            </Field>
+            <Field label="Priority">
+              <select
+                value={form.priority}
+                onChange={e => setForm(f => ({ ...f, priority: e.target.value as InspectionPriority }))}
+                className={inputClass}
+              >
+                {ALL_PRIORITIES.map(p => <option key={p} value={p}>{p}</option>)}
+              </select>
+            </Field>
+            <Field label="Scheduled Date">
+              <input
+                type="date"
+                value={form.scheduledDate}
+                onChange={e => setForm(f => ({ ...f, scheduledDate: e.target.value }))}
+                className={inputClass}
+              />
+            </Field>
+            <Field label="Inspector">
+              <select
+                value={form.inspector}
+                onChange={e => setForm(f => ({ ...f, inspector: e.target.value }))}
+                className={inputClass}
+              >
+                <option value="">— Unassigned —</option>
+                {INSPECTOR_OPTIONS.map(o => <option key={o} value={o}>{o}</option>)}
+              </select>
+            </Field>
+            <Field label="Next Due Date">
+              <input
+                type="date"
+                value={form.nextDueDate}
+                onChange={e => setForm(f => ({ ...f, nextDueDate: e.target.value }))}
+                className={inputClass}
+              />
+            </Field>
+          </div>
+          <Field label="Description">
+            <textarea
+              value={form.description}
+              onChange={e => setForm(f => ({ ...f, description: e.target.value }))}
+              placeholder="Describe the scope of the inspection…"
+              rows={3}
+              className={inputClass}
+            />
+          </Field>
+        </div>
+      </ModalSystem>
+
+      {/* Inspection detail modal */}
+      <ModalSystem
+        isOpen={!!detail}
+        onClose={() => { setDetail(null); setDetailReadOnly(true); }}
+        title={detail ? `${detail.type} Inspection` : 'Inspection'}
+        subtitle={detail ? `${detail.ins_number} · ${detail.location}` : ''}
+        variant="form"
+        size="lg"
+        loading={savingDetail}
+        confirmLabel={detailReadOnly ? (savingDetail ? 'Saving…' : 'Edit') : (savingDetail ? 'Saving…' : 'Save Changes')}
+        cancelLabel="Close"
+        confirmColor="indigo"
+        onConfirm={() => {
+          if (detailReadOnly) setDetailReadOnly(false);
+          else saveDetail();
+        }}
+        showFooter
+      >
+        {detail && (
+          <div className="space-y-4">
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge tone={STATUS_TONE[detail.status]}>{detail.status}</Badge>
+              <Badge tone={PRIORITY_TONE[detail.priority]} variant="solid">{detail.priority}</Badge>
+              <Badge tone="neutral">{detail.category}</Badge>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <Field label="Inspector">
+                {detailReadOnly ? (
+                  <p className="text-sm text-gray-900 dark:text-white">{detail.inspector || '—'}</p>
+                ) : (
+                  <select
+                    value={detailForm.inspector}
+                    onChange={e => setDetailForm(f => ({ ...f, inspector: e.target.value }))}
+                    className={inputClass}
+                  >
+                    <option value="">— Unassigned —</option>
+                    {INSPECTOR_OPTIONS.map(o => <option key={o} value={o}>{o}</option>)}
+                  </select>
+                )}
+              </Field>
+              <Field label="Completed Date">
+                {detailReadOnly ? (
+                  <p className="text-sm text-gray-900 dark:text-white">{fmtDay(detail.completed_date)}</p>
+                ) : (
+                  <input
+                    type="date"
+                    value={detailForm.completedDate}
+                    onChange={e => setDetailForm(f => ({ ...f, completedDate: e.target.value }))}
+                    className={inputClass}
+                  />
+                )}
+              </Field>
+              <Field label="Next Due Date">
+                {detailReadOnly ? (
+                  <p className="text-sm text-gray-900 dark:text-white">{fmtDay(detail.next_due_date)}</p>
+                ) : (
+                  <input
+                    type="date"
+                    value={detailForm.nextDueDate}
+                    onChange={e => setDetailForm(f => ({ ...f, nextDueDate: e.target.value }))}
+                    className={inputClass}
+                  />
+                )}
+              </Field>
+              <Field label="Scheduled">
+                <p className="text-sm text-gray-900 dark:text-white">{fmtDay(detail.scheduled_date)}</p>
+              </Field>
+            </div>
+
+            <Field label="Findings">
+              {detailReadOnly ? (
+                <p className="text-sm text-gray-700 dark:text-gray-300 bg-slate-50 dark:bg-slate-900/40 p-3 rounded-xl">{detail.findings || 'No findings recorded.'}</p>
+              ) : (
+                <textarea
+                  value={detailForm.findings}
+                  onChange={e => setDetailForm(f => ({ ...f, findings: e.target.value }))}
+                  placeholder="Record inspection findings…"
+                  rows={3}
+                  className={inputClass}
+                />
+              )}
+            </Field>
+
+            {detail.converted_work_order_id && (
+              <div className="p-3 rounded-xl bg-[var(--color-success)]/10 border border-[var(--color-success)]/20 text-sm text-[var(--color-success)]">
+                Converted to work order. ID: {detail.converted_work_order_id}
+              </div>
+            )}
+          </div>
+        )}
+      </ModalSystem>
+
+      {/* Convert to Work Order modal */}
+      <ModalSystem
+        isOpen={!!convertId}
+        onClose={() => { if (!converting) { setConvertId(null); setConvertForm({ assignedTo: '', scheduledDate: '', notes: '' }); } }}
+        title="Convert to Work Order"
+        subtitle="Create a real work order from this inspection. Typically used when an inspection fails and a repair is required."
+        variant="form"
+        size="md"
+        loading={converting}
+        confirmLabel={converting ? 'Converting…' : 'Convert to WO'}
+        cancelLabel="Cancel"
+        confirmColor="indigo"
+        onConfirm={doConvert}
+        showFooter
+      >
+        <div className="space-y-4">
+          <Field label="Assign To (optional)">
+            <select
+              value={convertForm.assignedTo}
+              onChange={e => setConvertForm(f => ({ ...f, assignedTo: e.target.value }))}
+              className={inputClass}
+            >
+              <option value="">— Unassigned —</option>
+              {INSPECTOR_OPTIONS.map(o => <option key={o} value={o}>{o}</option>)}
+            </select>
+          </Field>
+          <Field label="Scheduled Date">
+            <input
+              type="date"
+              value={convertForm.scheduledDate}
+              onChange={e => setConvertForm(f => ({ ...f, scheduledDate: e.target.value }))}
+              className={inputClass}
+            />
+          </Field>
+          <Field label="Notes">
+            <textarea
+              value={convertForm.notes}
+              onChange={e => setConvertForm(f => ({ ...f, notes: e.target.value }))}
+              placeholder="Optional work order notes…"
+              rows={2}
+              className={inputClass}
+            />
+          </Field>
+        </div>
+      </ModalSystem>
     </div>
   );
 };

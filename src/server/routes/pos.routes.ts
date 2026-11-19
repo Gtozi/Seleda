@@ -2,11 +2,33 @@ import { Router } from 'express';
 import { authenticate, requirePermission } from '../middleware/auth';
 import { hasSupabaseAdminConfig, supabaseAdmin } from '../supabaseAdmin';
 import { cacheService } from '../services/cacheService';
+import { syncKdsTicketToErp } from '../services/kdsErpSync';
+import { getTaxRates } from '../services/adminConfigService';
 
 const router = Router();
 
 function dbNotConfigured(res: any) {
   return res.status(503).json({ error: 'Database not configured' });
+}
+
+// Normalize client payment-method labels to the pos_transactions.payment_method
+// CHECK constraint: ('cash','card','room_folio','mobile_money','split','complimentary','staff_meal')
+function normalizePaymentMethod(method: any): string {
+  const key = String(method || '').toLowerCase().replace(/[\s-]+/g, '_');
+  if (['room_charge', 'roomcharge', 'room', 'folio', 'charge_to_room'].includes(key)) return 'room_folio';
+  if (['mobile', 'mobilemoney', 'mobile_pay', 'telebirr', 'mpesa'].includes(key)) return 'mobile_money';
+  if (['credit_card', 'debit_card', 'visa', 'mastercard'].includes(key)) return 'card';
+  if (['cash', 'card', 'room_folio', 'mobile_money', 'split', 'complimentary', 'staff_meal'].includes(key)) return key;
+  return 'cash';
+}
+
+// Normalize customer_type to the CHECK constraint:
+// ('walk_in','in_house_guest','corporate','member','staff')
+function normalizeCustomerType(type: any): string {
+  const key = String(type || '').toLowerCase().replace(/[\s-]+/g, '_');
+  if (['in_house', 'inhouse', 'guest', 'hotel_guest', 'in_house_guest'].includes(key)) return 'in_house_guest';
+  if (['walk_in', 'walkin', 'corporate', 'member', 'staff'].includes(key)) return key === 'walkin' ? 'walk_in' : key;
+  return 'walk_in';
 }
 
 // ── Offline Transaction Sync ───────────────────────────────────────
@@ -47,7 +69,7 @@ router.post('/sync/transactions', authenticate, async (req, res) => {
       // Get outlet config for tax/GL references
       const { data: outlet } = await supabaseAdmin
         .from('pos_outlets')
-        .select('tax_profile_id, gl_mapping_id, inventory_mode')
+        .select('gl_mapping_id, inventory_mode')
         .eq('id', tx.outlet_id)
         .single();
 
@@ -62,7 +84,7 @@ router.post('/sync/transactions', authenticate, async (req, res) => {
           business_date: tx.business_date || new Date().toISOString().split('T')[0],
           cashier_id: tx.cashier_id,
           cashier_name: tx.cashier_name || 'Offline Sync',
-          customer_type: tx.customer_type || 'walk_in',
+          customer_type: normalizeCustomerType(tx.customer_type),
           reservation_id: tx.reservation_id || null,
           room_number: tx.room_number || null,
           guest_name: tx.guest_name || null,
@@ -74,10 +96,9 @@ router.post('/sync/transactions', authenticate, async (req, res) => {
           tax_amount: tx.tax_amount || 0,
           additional_tax_amount: tx.additional_tax_amount || 0,
           total_amount: tx.total_amount || 0,
-          payment_method: tx.payment_method || 'cash',
+          payment_method: normalizePaymentMethod(tx.payment_method),
           split_payments: tx.split_payments || null,
           room_charge_details: tx.room_charge_details || null,
-          tax_profile_id: outlet?.tax_profile_id || null,
           gl_mapping_id: outlet?.gl_mapping_id || null,
           inventory_mode: outlet?.inventory_mode || 'sku',
           inventory_deducted: false,
@@ -312,6 +333,85 @@ router.get('/hardware/payment-terminals', authenticate, async (req, res) => {
   return res.json(data || []);
 });
 
+// Update printer (rename / change station / toggle active)
+router.patch('/hardware/printers/:id', authenticate, requirePermission('pos:hardware:manage'), async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) return dbNotConfigured(res);
+
+  const updates: Record<string, any> = {};
+  if (req.body.name !== undefined) updates.name = req.body.name;
+  if (req.body.type !== undefined) updates.type = req.body.type;
+  if (req.body.station !== undefined) updates.station = req.body.station;
+  if (req.body.ipAddress !== undefined) updates.ip_address = req.body.ipAddress;
+  if (req.body.is_active !== undefined) updates.is_active = req.body.is_active;
+  if (req.body.isActive !== undefined) updates.is_active = req.body.isActive;
+
+  if (Object.keys(updates).length === 0) {
+    return res.status(400).json({ error: 'No fields to update' });
+  }
+
+  const { data, error } = await supabaseAdmin
+    .from('pos_printers')
+    .update(updates)
+    .eq('id', req.params.id)
+    .select()
+    .single();
+
+  if (error) return res.status(500).json({ error: error.message });
+  return res.json(data);
+});
+
+// Delete printer
+router.delete('/hardware/printers/:id', authenticate, requirePermission('pos:hardware:manage'), async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) return dbNotConfigured(res);
+
+  const { error } = await supabaseAdmin
+    .from('pos_printers')
+    .delete()
+    .eq('id', req.params.id);
+
+  if (error) return res.status(500).json({ error: error.message });
+  return res.json({ success: true });
+});
+
+// Update payment terminal
+router.patch('/hardware/payment-terminals/:id', authenticate, requirePermission('pos:hardware:manage'), async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) return dbNotConfigured(res);
+
+  const updates: Record<string, any> = {};
+  if (req.body.type !== undefined) updates.type = req.body.type;
+  if (req.body.model !== undefined) updates.model = req.body.model;
+  if (req.body.serialNumber !== undefined) updates.serial_number = req.body.serialNumber;
+  if (req.body.is_active !== undefined) updates.is_active = req.body.is_active;
+  if (req.body.isActive !== undefined) updates.is_active = req.body.isActive;
+
+  if (Object.keys(updates).length === 0) {
+    return res.status(400).json({ error: 'No fields to update' });
+  }
+
+  const { data, error } = await supabaseAdmin
+    .from('pos_payment_terminals')
+    .update(updates)
+    .eq('id', req.params.id)
+    .select()
+    .single();
+
+  if (error) return res.status(500).json({ error: error.message });
+  return res.json(data);
+});
+
+// Delete payment terminal
+router.delete('/hardware/payment-terminals/:id', authenticate, requirePermission('pos:hardware:manage'), async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) return dbNotConfigured(res);
+
+  const { error } = await supabaseAdmin
+    .from('pos_payment_terminals')
+    .delete()
+    .eq('id', req.params.id);
+
+  if (error) return res.status(500).json({ error: error.message });
+  return res.json({ success: true });
+});
+
 // ── Kitchen Display System ───────────────────────────────────────
 // Send order to KDS — multi-station ticket splitting (§4.2)
 // Items with different prep_station_id values create separate KDS tickets,
@@ -438,9 +538,9 @@ router.post('/kds/orders', authenticate, async (req, res) => {
 router.get('/kds/orders', authenticate, async (req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) return dbNotConfigured(res);
   
-  const { station_id, status } = req.query as Record<string, string>;
+  const { station_id, status, outlet_id } = req.query as Record<string, string>;
   
-  const cacheKey = `kds-orders:${station_id || 'all'}:${status || 'all'}`;
+  const cacheKey = `kds-orders:${station_id || 'all'}:${status || 'all'}:${outlet_id || 'all'}`;
   const cached = cacheService.get(cacheKey);
   if (cached) {
     return res.json(cached);
@@ -453,6 +553,7 @@ router.get('/kds/orders', authenticate, async (req, res) => {
   
   if (station_id) q = q.eq('station_id', station_id);
   if (status) q = q.eq('status', status);
+  if (outlet_id) q = q.eq('outlet_id', outlet_id);
   
   const { data, error } = await q;
   if (error) return res.status(500).json({ error: error.message });
@@ -508,10 +609,26 @@ router.put('/kds/orders/:id/status', authenticate, async (req, res) => {
 });
 
 // ── Barcode Scanner ───────────────────────────────────────────────
-// Lookup product by barcode
+// Lookup product by barcode — searches pos_menu_items when outlet_id is
+// provided, otherwise falls back to the generic products table.
 router.get('/products/barcode/:barcode', authenticate, async (req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) return dbNotConfigured(res);
   
+  const { outlet_id } = req.query as Record<string, string>;
+
+  if (outlet_id) {
+    const { data: menuItem, error: menuError } = await supabaseAdmin
+      .from('pos_menu_items')
+      .select('*')
+      .eq('barcode', req.params.barcode)
+      .eq('outlet_id', outlet_id)
+      .maybeSingle();
+
+    if (menuError) return res.status(500).json({ error: menuError.message });
+    if (menuItem) return res.json(menuItem);
+    return res.status(404).json({ error: 'Product not found' });
+  }
+
   const { data, error } = await supabaseAdmin
     .from('products')
     .select('*')
@@ -529,6 +646,55 @@ router.get('/products/barcode/:barcode', authenticate, async (req, res) => {
 });
 
 // ── POS Outlet Management ───────────────────────────────────────────
+// Get POS outlets accessible to the current ERP user.
+// Bridges system_users.auth_user_id -> pos_outlet_roles.user_id (auth.users)
+// via the same get_user_pos_outlets RPC the Supabase-auth POS login used.
+router.get('/my-outlets', authenticate, async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) return dbNotConfigured(res);
+
+  try {
+    let authUserId = (req.user as any)?.authUserId as string | undefined;
+    if (!authUserId && req.user?.id) {
+      const { data: su } = await supabaseAdmin
+        .from('system_users')
+        .select('auth_user_id')
+        .eq('id', req.user.id)
+        .maybeSingle();
+      authUserId = su?.auth_user_id || undefined;
+    }
+    if (!authUserId) return res.json({ outlets: [] });
+
+    const { data, error } = await supabaseAdmin
+      .rpc('get_user_pos_outlets', { p_user_id: authUserId });
+    if (error) return res.status(500).json({ error: error.message });
+    return res.json({ outlets: data || [] });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// In-house rooms for room-charge selection — checked-in reservations with a room
+router.get('/in-house-rooms', authenticate, async (_req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) return dbNotConfigured(res);
+
+  const { data, error } = await supabaseAdmin
+    .from('reservations')
+    .select('id, room_number, guest_name, check_out_date')
+    .eq('status', 'CheckedIn')
+    .not('room_number', 'is', null)
+    .order('room_number');
+
+  if (error) return res.status(500).json({ error: error.message });
+
+  return res.json({
+    rooms: (data || []).map((r: any) => ({
+      reservationId: r.id,
+      roomNumber: r.room_number,
+      guestName: r.guest_name,
+    })),
+  });
+});
+
 // Get all POS outlets
 router.get('/outlets', authenticate, requirePermission('pos_settings:read'), async (_req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) return dbNotConfigured(res);
@@ -550,7 +716,7 @@ router.post('/outlets', authenticate, requirePermission('pos_settings:update'), 
   const { 
     name, outlet_type, code, description, location, store_location, 
     default_tax_rate, default_service_charge,
-    inventory_mode, charge_modes, tax_profile_id, gl_mapping_id,
+    inventory_mode, charge_modes, gl_mapping_id,
     requires_guest_link, shift_reconciliation_required, outlet_status,
     outlet_category, requires_kds
   } = req.body || {};
@@ -573,7 +739,6 @@ router.post('/outlets', authenticate, requirePermission('pos_settings:update'), 
     // Outlet Registry framework fields
     inventory_mode: inventory_mode || 'sku',
     charge_modes: charge_modes || '["cash","card","room_folio","mobile_money"]',
-    tax_profile_id,
     gl_mapping_id,
     requires_guest_link: requires_guest_link || false,
     shift_reconciliation_required: shift_reconciliation_required !== undefined ? shift_reconciliation_required : true,
@@ -596,11 +761,11 @@ router.put('/outlets/:outletId', authenticate, requirePermission('pos_settings:u
   
   const { outletId } = req.params;
   const { 
-    name, outlet_type, code, description, location, store_location, 
+    name, outlet_type, code, description, location, store_location,
     default_tax_rate, default_service_charge, is_active, operating_hours,
-    inventory_mode, charge_modes, tax_profile_id, gl_mapping_id,
+    inventory_mode, charge_modes, gl_mapping_id,
     requires_guest_link, shift_reconciliation_required, outlet_status,
-    outlet_category, requires_kds
+    outlet_category, requires_kds, settings
   } = req.body || {};
   
   const updates: Record<string, any> = {};
@@ -617,13 +782,13 @@ router.put('/outlets/:outletId', authenticate, requirePermission('pos_settings:u
   // Outlet Registry framework fields
   if (inventory_mode !== undefined) updates.inventory_mode = inventory_mode;
   if (charge_modes !== undefined) updates.charge_modes = charge_modes;
-  if (tax_profile_id !== undefined) updates.tax_profile_id = tax_profile_id;
   if (gl_mapping_id !== undefined) updates.gl_mapping_id = gl_mapping_id;
   if (requires_guest_link !== undefined) updates.requires_guest_link = requires_guest_link;
   if (shift_reconciliation_required !== undefined) updates.shift_reconciliation_required = shift_reconciliation_required;
   if (outlet_status !== undefined) updates.outlet_status = outlet_status;
   if (outlet_category !== undefined) updates.outlet_category = outlet_category;
   if (requires_kds !== undefined) updates.requires_kds = requires_kds;
+  if (settings !== undefined) updates.settings = settings;
   
   if (Object.keys(updates).length === 0) {
     return res.status(400).json({ error: 'No fields to update' });
@@ -641,6 +806,68 @@ router.put('/outlets/:outletId', authenticate, requirePermission('pos_settings:u
   // Invalidate POS cache
   cacheService.invalidatePattern('pos:*');
   
+  return res.json(data);
+});
+
+// Get a single POS outlet (settings view)
+router.get('/outlets/:outletId', authenticate, requirePermission('pos_settings:read'), async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) return dbNotConfigured(res);
+
+  const { data, error } = await supabaseAdmin
+    .from('pos_outlets')
+    .select('*')
+    .eq('id', req.params.outletId)
+    .maybeSingle();
+
+  if (error) return res.status(500).json({ error: error.message });
+  if (!data) return res.status(404).json({ error: 'Outlet not found' });
+  return res.json(data);
+});
+
+// Update a POS outlet — general settings + freeform settings jsonb merge
+router.patch('/outlets/:outletId', authenticate, requirePermission('pos_settings:update'), async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) return dbNotConfigured(res);
+
+  const updates: Record<string, any> = {};
+  if (req.body.name !== undefined) updates.name = req.body.name;
+  if (req.body.description !== undefined) updates.description = req.body.description;
+  if (req.body.location !== undefined) updates.location = req.body.location;
+  if (req.body.default_tax_rate !== undefined) updates.default_tax_rate = req.body.default_tax_rate;
+  if (req.body.default_service_charge !== undefined) updates.default_service_charge = req.body.default_service_charge;
+  if (req.body.operating_hours !== undefined) updates.operating_hours = req.body.operating_hours;
+  if (req.body.charge_modes !== undefined) updates.charge_modes = req.body.charge_modes;
+  if (req.body.requires_kds !== undefined) updates.requires_kds = req.body.requires_kds;
+  if (req.body.is_active !== undefined) updates.is_active = req.body.is_active;
+  if (req.body.printer_station !== undefined) updates.printer_station = req.body.printer_station;
+  if (req.body.payment_terminal_id !== undefined) updates.payment_terminal_id = req.body.payment_terminal_id;
+
+  // settings is a freeform jsonb bag — merge instead of replace
+  if (req.body.settings !== undefined) {
+    const { data: current } = await supabaseAdmin
+      .from('pos_outlets')
+      .select('settings')
+      .eq('id', req.params.outletId)
+      .maybeSingle();
+    updates.settings = {
+      ...(current?.settings && typeof current.settings === 'object' ? current.settings : {}),
+      ...(typeof req.body.settings === 'object' ? req.body.settings : {}),
+    };
+  }
+
+  if (Object.keys(updates).length === 0) {
+    return res.status(400).json({ error: 'No fields to update' });
+  }
+
+  const { data, error } = await supabaseAdmin
+    .from('pos_outlets')
+    .update(updates)
+    .eq('id', req.params.outletId)
+    .select()
+    .single();
+
+  if (error) return res.status(500).json({ error: error.message });
+
+  cacheService.invalidatePattern('pos:*');
   return res.json(data);
 });
 
@@ -753,97 +980,6 @@ router.delete('/outlets/:outletId/roles/:userId', authenticate, requirePermissio
   if (error) return res.status(500).json({ error: error.message });
   
   // Invalidate POS cache
-  cacheService.invalidatePattern('pos:*');
-  
-  return res.json({ success: true });
-});
-
-// ── POS Tax Profiles CRUD ──────────────────────────────────────────────
-router.get('/tax-profiles', authenticate, requirePermission('pos_settings:read'), async (_req, res) => {
-  if (!hasSupabaseAdminConfig || !supabaseAdmin) return dbNotConfigured(res);
-  
-  const { data, error } = await supabaseAdmin
-    .from('pos_tax_profiles')
-    .select('*')
-    .order('name');
-  
-  if (error) return res.status(500).json({ error: error.message });
-  
-  return res.json({ profiles: data || [] });
-});
-
-router.post('/tax-profiles', authenticate, requirePermission('pos_settings:update'), async (req, res) => {
-  if (!hasSupabaseAdminConfig || !supabaseAdmin) return dbNotConfigured(res);
-  
-  const { name, description, vat_rate, service_charge_rate, is_vat_exempt, is_service_charge_exempt, additional_tax_rules } = req.body || {};
-  
-  if (!name) {
-    return res.status(400).json({ error: 'name is required' });
-  }
-  
-  const { data, error } = await supabaseAdmin.from('pos_tax_profiles').insert({
-    name,
-    description,
-    vat_rate: vat_rate || 15.00,
-    service_charge_rate: service_charge_rate || 10.00,
-    is_vat_exempt: is_vat_exempt || false,
-    is_service_charge_exempt: is_service_charge_exempt || false,
-    additional_tax_rules: additional_tax_rules || '[]',
-    is_active: true
-  }).select().single();
-  
-  if (error) return res.status(500).json({ error: error.message });
-  
-  cacheService.invalidatePattern('pos:*');
-  
-  return res.status(201).json(data);
-});
-
-router.put('/tax-profiles/:profileId', authenticate, requirePermission('pos_settings:update'), async (req, res) => {
-  if (!hasSupabaseAdminConfig || !supabaseAdmin) return dbNotConfigured(res);
-  
-  const { profileId } = req.params;
-  const updates: Record<string, any> = {};
-  
-  if (req.body.name !== undefined) updates.name = req.body.name;
-  if (req.body.description !== undefined) updates.description = req.body.description;
-  if (req.body.vat_rate !== undefined) updates.vat_rate = req.body.vat_rate;
-  if (req.body.service_charge_rate !== undefined) updates.service_charge_rate = req.body.service_charge_rate;
-  if (req.body.is_vat_exempt !== undefined) updates.is_vat_exempt = req.body.is_vat_exempt;
-  if (req.body.is_service_charge_exempt !== undefined) updates.is_service_charge_exempt = req.body.is_service_charge_exempt;
-  if (req.body.additional_tax_rules !== undefined) updates.additional_tax_rules = req.body.additional_tax_rules;
-  if (req.body.is_active !== undefined) updates.is_active = req.body.is_active;
-  
-  if (Object.keys(updates).length === 0) {
-    return res.status(400).json({ error: 'No fields to update' });
-  }
-  
-  const { data, error } = await supabaseAdmin
-    .from('pos_tax_profiles')
-    .update(updates)
-    .eq('id', profileId)
-    .select()
-    .single();
-  
-  if (error) return res.status(500).json({ error: error.message });
-  
-  cacheService.invalidatePattern('pos:*');
-  
-  return res.json(data);
-});
-
-router.delete('/tax-profiles/:profileId', authenticate, requirePermission('pos_settings:update'), async (req, res) => {
-  if (!hasSupabaseAdminConfig || !supabaseAdmin) return dbNotConfigured(res);
-  
-  const { profileId } = req.params;
-  
-  const { error } = await supabaseAdmin
-    .from('pos_tax_profiles')
-    .delete()
-    .eq('id', profileId);
-  
-  if (error) return res.status(500).json({ error: error.message });
-  
   cacheService.invalidatePattern('pos:*');
   
   return res.json({ success: true });
@@ -1054,35 +1190,24 @@ router.post('/tax-calculate', authenticate, async (req, res) => {
 
   const { data: outlet } = await supabaseAdmin
     .from('pos_outlets')
-    .select('tax_profile_id, default_tax_rate, default_service_charge')
+    .select('property_id, default_tax_rate, default_service_charge')
     .eq('id', outlet_id)
     .single();
 
   if (!outlet) return res.status(404).json({ error: 'Outlet not found' });
 
-  let vatRate = outlet.default_tax_rate || 15;
-  let serviceChargeRate = outlet.default_service_charge || 10;
-  let isVatExempt = false;
-  let isServiceChargeExempt = false;
-  let additionalTaxRules: any[] = [];
-
-  if (outlet.tax_profile_id) {
-    const { data: taxProfile } = await supabaseAdmin
-      .from('pos_tax_profiles')
-      .select('*')
-      .eq('id', outlet.tax_profile_id)
-      .single();
-
-    if (taxProfile) {
-      vatRate = Number(taxProfile.vat_rate);
-      serviceChargeRate = Number(taxProfile.service_charge_rate);
-      isVatExempt = taxProfile.is_vat_exempt;
-      isServiceChargeExempt = taxProfile.is_service_charge_exempt;
-      additionalTaxRules = typeof taxProfile.additional_tax_rules === 'string'
-        ? JSON.parse(taxProfile.additional_tax_rules)
-        : (taxProfile.additional_tax_rules || []);
-    }
-  }
+  // Central Admin tax rules (outlet-scoped rules win, then property, then "all");
+  // outlet default_tax_rate / default_service_charge are the fallback. Rate 0 = exempt.
+  const central = await getTaxRates({ appliesTo: 'f&b', propertyId: outlet.property_id, outletId: outlet_id });
+  const vatRate = central.vat ?? (outlet.default_tax_rate || 15);
+  const serviceChargeRate = central.serviceCharge ?? (outlet.default_service_charge || 10);
+  const isVatExempt = vatRate === 0;
+  const isServiceChargeExempt = serviceChargeRate === 0;
+  const additionalTaxRules: any[] = (central.additional || []).map(r => ({
+    name: r.name,
+    rate: r.rate,
+    applies_to: r.calcBase === 'total' ? 'total' : 'subtotal',
+  }));
 
   const baseSubtotal = Number(subtotal);
   const discount = Number(discount_amount || 0);
@@ -1131,58 +1256,95 @@ router.post('/transactions', authenticate, requirePermission('pos:transaction'),
   if (!outlet_id || !cashier_id || !cashier_name || !line_items || !total_amount) {
     return res.status(400).json({ error: 'outlet_id, cashier_id, cashier_name, line_items, and total_amount are required' });
   }
-  
+
+  // Normalize client-supplied enums to the DB CHECK constraints
+  const normalizedCustomerType = normalizeCustomerType(customer_type);
+  const normalizedPaymentMethod = normalizePaymentMethod(payment_method);
+  const normalizedSplits = Array.isArray(split_payments)
+    ? split_payments.map((s: any) => ({ ...s, method: normalizePaymentMethod(s.method) }))
+    : null;
+
+  // Room-folio (charge to room) detection — the payment method itself or any split leg
+  const roomChargeAmount =
+    normalizedPaymentMethod === 'room_folio'
+      ? Number(total_amount) || 0
+      : (normalizedSplits || [])
+          .filter((s: any) => s.method === 'room_folio')
+          .reduce((sum: number, s: any) => sum + (Number(s.amount) || 0), 0);
+
+  // Validate the room charge target BEFORE recording the transaction
+  let roomChargeTarget: { reservation: any; folio: any } | null = null;
+  if (roomChargeAmount > 0) {
+    const roomNorm = String(room_number || '').trim();
+    if (!roomNorm) {
+      return res.status(400).json({ error: 'room_number is required for room charge payments' });
+    }
+
+    const { data: reservation, error: resError } = await supabaseAdmin
+      .from('reservations')
+      .select('id, guest_name, room_number, status')
+      .ilike('room_number', roomNorm)
+      .eq('status', 'CheckedIn')
+      .order('check_in_date', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (resError) return res.status(500).json({ error: `Reservation lookup failed: ${resError.message}` });
+    if (!reservation) {
+      return res.status(404).json({
+        error: `No checked-in guest found for Room ${roomNorm}. The guest must be checked in to charge to the room.`,
+      });
+    }
+
+    const { data: folio, error: folioError } = await supabaseAdmin
+      .from('folios')
+      .select('id, status, folio_type')
+      .eq('reservation_id', reservation.id)
+      .eq('folio_type', 'Guest')
+      .eq('status', 'Open')
+      .maybeSingle();
+
+    if (folioError) return res.status(500).json({ error: `Folio lookup failed: ${folioError.message}` });
+    if (!folio) {
+      return res.status(404).json({
+        error: `No open Guest folio found for reservation ${reservation.id} (${reservation.guest_name}).`,
+      });
+    }
+
+    roomChargeTarget = { reservation, folio };
+  }
+
   // Get outlet configuration for tax/GL references
   const { data: outlet } = await supabaseAdmin
     .from('pos_outlets')
-    .select('tax_profile_id, gl_mapping_id, inventory_mode')
+    .select('name, property_id, gl_mapping_id, inventory_mode')
     .eq('id', outlet_id)
     .single();
-  
-  // ── Tax Profile Engine (Phase 2: ERCA compliance) ──
-  // Fetch the tax profile and compute taxes server-side if not provided by client
+
+  // Central Admin tax rules compute taxes server-side when the client sent none.
+  // Outlet-scoped rules win over property rules, which win over "all". Rate 0 = exempt.
   let computedTaxAmount = tax_amount;
   let computedServiceCharge = service_charge_amount;
   let computedAdditionalTax = additional_tax_amount;
 
-  if (outlet?.tax_profile_id) {
-    const { data: taxProfile } = await supabaseAdmin
-      .from('pos_tax_profiles')
-      .select('*')
-      .eq('id', outlet.tax_profile_id)
-      .single();
+  const txBase = (subtotal || 0) - (discount_amount || 0);
+  const central = await getTaxRates({ appliesTo: 'f&b', propertyId: outlet?.property_id, outletId: outlet_id });
 
-    if (taxProfile) {
-      const baseSubtotal = subtotal || 0;
-      const baseAfterDiscount = baseSubtotal - (discount_amount || 0);
-
-      // Compute VAT if not exempt
-      if (!taxProfile.is_vat_exempt && !tax_amount) {
-        computedTaxAmount = Math.round(baseAfterDiscount * Number(taxProfile.vat_rate) / 100 * 100) / 100;
-      }
-
-      // Compute service charge if not exempt
-      if (!taxProfile.is_service_charge_exempt && !service_charge_amount) {
-        computedServiceCharge = Math.round(baseAfterDiscount * Number(taxProfile.service_charge_rate) / 100 * 100) / 100;
-      }
-
-      // Compute additional tax rules (e.g. Tourism Levy)
-      if ((!additional_tax_amount || additional_tax_amount === 0) && taxProfile.additional_tax_rules) {
-        const rules = typeof taxProfile.additional_tax_rules === 'string'
-          ? JSON.parse(taxProfile.additional_tax_rules)
-          : taxProfile.additional_tax_rules;
-        if (Array.isArray(rules) && rules.length > 0) {
-          let additionalTotal = 0;
-          for (const rule of rules) {
-            const base = rule.applies_to === 'total' ? baseAfterDiscount + (computedTaxAmount || 0) : baseAfterDiscount;
-            additionalTotal += Math.round(Number(base) * Number(rule.rate) / 100 * 100) / 100;
-          }
-          computedAdditionalTax = additionalTotal;
-        }
-      }
-    }
+  if (!tax_amount && central.vat !== null) {
+    computedTaxAmount = Math.round(txBase * central.vat / 100 * 100) / 100;
   }
-  
+  if (!service_charge_amount && central.serviceCharge !== null) {
+    computedServiceCharge = Math.round(txBase * central.serviceCharge / 100 * 100) / 100;
+  }
+  if ((!additional_tax_amount || additional_tax_amount === 0) && central.additional?.length) {
+    let additionalTotal = 0;
+    for (const rule of central.additional) {
+      const base = rule.calcBase === 'total' ? txBase + (computedTaxAmount || 0) : txBase;
+      additionalTotal += Math.round(Number(base) * Number(rule.rate) / 100 * 100) / 100;
+    }
+    computedAdditionalTax = additionalTotal;
+  }
+
   // Generate invoice number if not provided
   let invoice = invoice_number;
   if (!invoice) {
@@ -1198,10 +1360,10 @@ router.post('/transactions', authenticate, requirePermission('pos:transaction'),
     business_date: new Date().toISOString().split('T')[0],
     cashier_id,
     cashier_name,
-    customer_type: customer_type || 'walk_in',
-    reservation_id,
+    customer_type: normalizedCustomerType,
+    reservation_id: reservation_id || roomChargeTarget?.reservation.id || null,
     room_number,
-    guest_name,
+    guest_name: guest_name || roomChargeTarget?.reservation.guest_name || null,
     line_items,
     subtotal: subtotal || 0,
     discount_amount: discount_amount || 0,
@@ -1210,10 +1372,9 @@ router.post('/transactions', authenticate, requirePermission('pos:transaction'),
     tax_amount: computedTaxAmount || 0,
     additional_tax_amount: computedAdditionalTax || 0,
     total_amount,
-    payment_method: payment_method || 'cash',
-    split_payments,
+    payment_method: normalizedSplits && normalizedSplits.length > 1 ? 'split' : normalizedPaymentMethod,
+    split_payments: normalizedSplits,
     room_charge_details,
-    tax_profile_id: outlet?.tax_profile_id,
     gl_mapping_id: outlet?.gl_mapping_id,
     inventory_mode: outlet?.inventory_mode || 'sku',
     inventory_deducted: false,
@@ -1361,50 +1522,95 @@ router.post('/transactions', authenticate, requirePermission('pos:transaction'),
     })();
   }
 
-  // Folio Posting (§3 Transaction Pipeline) — if payment_method=room_folio and reservation_id, post to folio
-  if (payment_method === 'room_folio' && reservation_id) {
-    (async () => {
-      try {
-        // Check if reservation exists and has a folio
-        const { data: res } = await supabaseAdmin
-          .from('reservations')
-          .select('id, folio_id')
-          .eq('id', reservation_id)
-          .single();
+  // Folio Posting (§3 Transaction Pipeline) — post the room-charge portion to the
+  // guest's open folio via the routing-enabled RPC. The reservation + folio were
+  // already validated above; the RPC adds fee/VAT lines from global settings, so
+  // the base amount is subtotal minus discount (pre-fee) scaled to the room-charge
+  // portion when the payment is split.
+  let folioPosted = false;
+  let folioError: string | null = null;
+  if (roomChargeAmount > 0 && roomChargeTarget) {
+    try {
+      const baseTotal = Math.max(0, (subtotal || 0) - (discount_amount || 0));
+      const ratio = total_amount > 0 ? roomChargeAmount / total_amount : 1;
+      const chargeBase = Math.round(baseTotal * Math.min(ratio, 1) * 100) / 100;
 
-        if (res?.folio_id) {
-          // Post charge to folio
-          await supabaseAdmin.from('folio_lines').insert({
-            folio_id: res.folio_id,
-            line_type: 'charge',
-            description: `POS Invoice ${invoice}`,
-            amount: total_amount,
-            reference_type: 'pos_transaction',
-            reference_id: data.id.toString(),
-            created_at: new Date().toISOString()
-          });
+      const itemsSummary = Array.isArray(line_items)
+        ? line_items.slice(0, 5).map((li: any) => `${li.quantity || 1}× ${li.name || 'Item'}`).join(', ')
+        : '';
+      const description = `${outlet?.name || 'POS'} — Invoice ${invoice}${itemsSummary ? ` (${itemsSummary}${line_items.length > 5 ? ', …' : ''})` : ''}`;
 
-          // Update transaction with folio linkage
-          await supabaseAdmin
-            .from('pos_transactions')
-            .update({ folio_charge_id: res.folio_id })
-            .eq('id', data.id);
-        }
-      } catch (err) {
-        console.error('Folio posting failed:', err);
+      const { data: chargeResult, error: chargeError } = await supabaseAdmin.rpc('post_folio_charge_with_routing', {
+        p_origin_folio_id: roomChargeTarget.folio.id,
+        p_description: description,
+        p_amount: chargeBase > 0 ? chargeBase : roomChargeAmount,
+        p_quantity: 1,
+        p_line_type: 'Restaurant',
+        p_revenue_account_code: null,
+        p_user_id: String(req.user?.id || cashier_id),
+        p_source_reference: String(data.id),
+        p_discount_percent: 0,
+        p_reservation_id: String(roomChargeTarget.reservation.id),
+        p_source_module: 'pos',
+      });
+
+      if (chargeError || chargeResult?.success === false) {
+        folioError = chargeError?.message || chargeResult?.error || 'Folio charge posting failed';
+        console.error('POS room-charge folio posting failed:', folioError);
+      } else {
+        folioPosted = true;
+        await supabaseAdmin
+          .from('pos_transactions')
+          .update({
+            folio_charge_id: chargeResult?.lineId || null,
+            room_charge_details: {
+              ...(typeof room_charge_details === 'object' && room_charge_details ? room_charge_details : {}),
+              reservation_id: roomChargeTarget.reservation.id,
+              folio_id: roomChargeTarget.folio.id,
+              room_number: roomChargeTarget.reservation.room_number,
+              guest_name: roomChargeTarget.reservation.guest_name,
+              amount: roomChargeAmount,
+              folio_line_id: chargeResult?.lineId || null,
+              posted: true,
+            },
+          })
+          .eq('id', data.id);
       }
-    })();
+    } catch (err: any) {
+      folioError = err.message;
+      console.error('POS room-charge folio posting failed:', err);
+    }
+
+    if (!folioPosted) {
+      await supabaseAdmin
+        .from('pos_transactions')
+        .update({
+          room_charge_details: {
+            ...(typeof room_charge_details === 'object' && room_charge_details ? room_charge_details : {}),
+            reservation_id: roomChargeTarget.reservation.id,
+            folio_id: roomChargeTarget.folio.id,
+            amount: roomChargeAmount,
+            posted: false,
+            error: folioError,
+          },
+        })
+        .eq('id', data.id);
+    }
   }
 
   cacheService.invalidatePattern('pos:*');
 
-  return res.status(201).json(data);
+  return res.status(201).json({
+    ...data,
+    folio_posted: roomChargeAmount > 0 ? folioPosted : undefined,
+    folio_error: folioError || undefined,
+  });
 });
 
 router.get('/transactions', authenticate, requirePermission('pos:transaction'), async (req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) return dbNotConfigured(res);
   
-  const { outlet_id, business_date, status, limit = 100 } = req.query;
+  const { outlet_id, business_date, status, limit = 100, from, to } = req.query;
   
   let query = supabaseAdmin
     .from('pos_transactions')
@@ -1413,6 +1619,8 @@ router.get('/transactions', authenticate, requirePermission('pos:transaction'), 
   if (outlet_id) query = query.eq('outlet_id', outlet_id);
   if (business_date) query = query.eq('business_date', business_date);
   if (status) query = query.eq('status', status);
+  if (from) query = query.gte('transaction_date', String(from));
+  if (to) query = query.lte('transaction_date', String(to));
   
   const { data, error } = await query
     .order('transaction_date', { ascending: false })
@@ -1780,7 +1988,7 @@ router.post('/sync/flush', authenticate, requirePermission('pos:transaction'), a
       // Get outlet config for tax/GL
       const { data: outlet } = await supabaseAdmin
         .from('pos_outlets')
-        .select('tax_profile_id, gl_mapping_id, inventory_mode')
+        .select('gl_mapping_id, inventory_mode')
         .eq('id', item.outlet_id)
         .single();
 
@@ -1815,7 +2023,6 @@ router.post('/sync/flush', authenticate, requirePermission('pos:transaction'), a
         payment_method: p.payment_method || 'cash',
         split_payments: p.split_payments,
         room_charge_details: p.room_charge_details,
-        tax_profile_id: outlet?.tax_profile_id,
         gl_mapping_id: outlet?.gl_mapping_id,
         inventory_mode: outlet?.inventory_mode || 'sku',
         inventory_deducted: false,
@@ -2564,6 +2771,8 @@ router.put('/kds/tickets/:id/status', authenticate, async (req, res) => {
 
   if (error) return res.status(500).json({ error: error.message });
 
+  await syncKdsTicketToErp(data, status);
+
   // ── KDS → POS feedback loop (§4.4) ──────────────────────────────
   // When ticket is bumped to 'served', update parent transaction line items
   if (status === 'served' && data?.order_id) {
@@ -2950,37 +3159,6 @@ router.post('/outlets/:outletId/clone', authenticate, requirePermission('pos_set
     return res.status(404).json({ error: 'Source outlet not found' });
   }
 
-  // Clone tax profile if exists
-  let clonedTaxProfileId = null;
-  if (sourceOutlet.tax_profile_id) {
-    const { data: taxProfile } = await supabaseAdmin
-      .from('pos_tax_profiles')
-      .select('*')
-      .eq('id', sourceOutlet.tax_profile_id)
-      .single();
-
-    if (taxProfile) {
-      const { data: newTaxProfile, error: tpError } = await supabaseAdmin
-        .from('pos_tax_profiles')
-        .insert({
-          name: `${taxProfile.name} (Clone)`,
-          description: taxProfile.description,
-          vat_rate: taxProfile.vat_rate,
-          service_charge_rate: taxProfile.service_charge_rate,
-          is_vat_exempt: taxProfile.is_vat_exempt,
-          is_service_charge_exempt: taxProfile.is_service_charge_exempt,
-          additional_tax_rules: taxProfile.additional_tax_rules,
-          is_active: true,
-        })
-        .select()
-        .single();
-
-      if (!tpError && newTaxProfile) {
-        clonedTaxProfileId = newTaxProfile.id;
-      }
-    }
-  }
-
   // Clone GL mapping if exists
   let clonedGlMappingId = null;
   if (sourceOutlet.gl_mapping_id) {
@@ -3029,7 +3207,6 @@ router.post('/outlets/:outletId/clone', authenticate, requirePermission('pos_set
       operating_hours: sourceOutlet.operating_hours,
       inventory_mode: sourceOutlet.inventory_mode,
       charge_modes: sourceOutlet.charge_modes,
-      tax_profile_id: clonedTaxProfileId,
       gl_mapping_id: clonedGlMappingId,
       requires_guest_link: sourceOutlet.requires_guest_link,
       shift_reconciliation_required: sourceOutlet.shift_reconciliation_required,
@@ -3132,7 +3309,6 @@ router.post('/outlets/:outletId/clone', authenticate, requirePermission('pos_set
 
   return res.status(201).json({
     cloned_outlet: newOutlet,
-    cloned_tax_profile_id: clonedTaxProfileId,
     cloned_gl_mapping_id: clonedGlMappingId,
     cloned_categories: categoryMap.size,
     cloned_menu_items: clonedMenuItems,

@@ -1,0 +1,1 @@
+{ "extends": "./tsconfig.json", "include": ["src", "server.ts"], "exclude": ["src/components/FrontOffice/BusinessIntelligenceDashboard.tsx"] }

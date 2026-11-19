@@ -8,15 +8,17 @@
  * AI-powered sales forecasting with multiple factors
  */
 
-const API_BASE = '/api/food-beverage';
+const API_BASE = '/api/sales-events';
 
 async function apiRequest<T>(endpoint: string, options?: RequestInit): Promise<T> {
+  const token = localStorage.getItem('erp_token');
   const response = await fetch(`${API_BASE}${endpoint}`, {
+    ...options,
     headers: {
       'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...options?.headers,
     },
-    ...options,
   });
 
   if (!response.ok) {
@@ -435,6 +437,9 @@ export class SalesForecastingEngine {
     };
   }
 }
+
+export const recordMarketingSpend = (data: { propertyId: string; channel: string; amount: number; spendDate?: string; campaign?: string; notes?: string }) =>
+  apiRequest('/analytics/marketing-spend', { method: 'POST', body: JSON.stringify(data) });
 
 // Export singleton instance
 export const salesForecastingEngine = SalesForecastingEngine;

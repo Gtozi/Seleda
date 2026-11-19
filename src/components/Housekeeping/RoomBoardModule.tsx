@@ -1,461 +1,596 @@
 /**
  * @license
  * SPDX-License-Identifier: Apache-2.0
+ *
+ * Room Status module — docs/Housekeeping Portal new.md §5.
+ *
+ * DB-integrated: fetches the live room matrix from
+ *   GET  /api/hk-portal/rooms-board/:propertyId
+ * and persists every control through the housekeeping portal API:
+ *   PUT  /api/hk-portal/rooms-board/room-status   (change status / clean / inspect / clear DND)
+ *   POST /api/hk-portal/rooms-board/assign         (assign housekeeper)
+ *   POST /api/hk-portal/rooms-board/priority       (priority queue toggle)
+ *   POST /api/hk-portal/rooms-board/maintenance    (dispatch maintenance)
+ *
+ * Renders the full set of room conditions (11) and the per-room controls:
+ * Change Status, Lock Room, Release Room, Mark Cleaning Started,
+ * Mark Cleaning Completed.
  */
 
-import React, { useState, useMemo } from 'react';
-import { motion, AnimatePresence } from 'motion/react';
-import { useERP } from '../../context/ERPContext';
-import { RoomStatus, RoomType } from '../../types/erp';
-import { 
-  Sparkles, 
-  CheckCircle, 
-  Wrench, 
-  Search, 
-  User, 
-  Check, 
-  Filter, 
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  BedDouble,
+  Lock,
+  Unlock,
+  PlayCircle,
+  CheckCircle2,
+  Search,
+  Filter,
+  RefreshCw,
   AlertTriangle,
-  Info,
-  Clock,
-  Send,
-  Printer,
-  Layers,
-  Moon,
-  Waves,
-  Coffee,
-  Package,
-  Play,
-  Pause,
-  ClipboardList,
-  CheckCircle2
+  Star,
+  UserCircle2,
+  Wrench,
+  Ban,
+  DoorOpen,
+  Loader2,
+  ServerCrash,
+  type LucideIcon,
 } from 'lucide-react';
+import { PageHeader, SectionCard, Badge } from '../FrontOffice/ui';
+import { button, layout, statusTone, type StatusTone } from '../FrontOffice/brandTheme';
+import { useERP } from '../../context/ERPContext';
 
-interface RoomBoardModuleProps {
-  priorityQueue: string[];
-  setPriorityQueue: React.Dispatch<React.SetStateAction<string[]>>;
-  housekeepers: any[];
-  setHousekeepers: React.Dispatch<React.SetStateAction<any[]>>;
+type RoomCondition =
+  | 'Vacant Clean'
+  | 'Vacant Dirty'
+  | 'Occupied Clean'
+  | 'Occupied Dirty'
+  | 'Inspected'
+  | 'Ready'
+  | 'Pickup'
+  | 'Sleep-Out'
+  | 'Do Not Disturb'
+  | 'Out of Order'
+  | 'Out of Service';
+
+interface BoardRoom {
+  id: string;
+  number: string;
+  type: string;
+  floor: number;
+  rate: number | string;
+  status: string;
+  canonicalStatus: string;
+  dnd: boolean;
+  lastCleaned: string | null;
+  lastInspected: string | null;
+  housekeeperId: string | null;
+  arrival: string | null;
+  departure: string | null;
 }
 
-export default function RoomBoardModule({ 
-  priorityQueue, 
-  setPriorityQueue, 
-  housekeepers, 
-  setHousekeepers 
-}: RoomBoardModuleProps) {
-  const { 
-    rooms, 
-    setRoomStatus, 
-    addNotification,
-    formatAmount
-  } = useERP();
+interface BoardStaff {
+  id: string;
+  name: string;
+  avatar: string;
+  status: string;
+  solvedToday: number;
+  qualityScore: number;
+  assignedRooms: string[];
+}
 
-  const [selectedFloor, setSelectedFloor] = useState<number | 'all'>('all');
-  const [statusFilter, setStatusFilter] = useState<RoomStatus | 'all'>('all');
-  const [typeFilter, setTypeFilter] = useState<RoomType | 'all'>('all');
-  const [searchTerm, setSearchTerm] = useState('');
-  const [activeRoomNum, setActiveRoomNum] = useState<string | null>(null);
+interface RoomsBoardResponse {
+  propertyId: string;
+  rooms: BoardRoom[];
+  staff: BoardStaff[];
+  priorityQueue: string[];
+  generatedAt: string;
+}
 
-  // Mock extra room data
-  const [roomDetails, setRoomDetails] = useState<Record<string, any>>({
-    '101': { dnd: false, lastCleaned: '08:30 AM', lastInspected: '09:00 AM', housekeeper: 'Elena R.', arrival: '2026-05-30', departure: '2026-06-02' },
-    '102': { dnd: true, lastCleaned: '07:45 AM', lastInspected: '08:15 AM', housekeeper: 'Carlos M.', arrival: '2026-05-28', departure: '2026-05-31' },
-    '103': { dnd: false, lastCleaned: '09:15 AM', lastInspected: '10:00 AM', housekeeper: 'Aisha P.', arrival: '2026-05-29', departure: '2026-06-05' },
-    '304': { dnd: false, lastCleaned: 'Yesterday', lastInspected: 'Yesterday', housekeeper: 'Aisha P.', arrival: '2026-05-30', departure: '2026-06-05' },
-  });
+const CONDITION_TONE: Record<RoomCondition, StatusTone> = {
+  'Vacant Clean': 'success',
+  'Vacant Dirty': 'warning',
+  'Occupied Clean': 'info',
+  'Occupied Dirty': 'danger',
+  Inspected: 'info',
+  Ready: 'success',
+  Pickup: 'info',
+  'Sleep-Out': 'neutral',
+  'Do Not Disturb': 'danger',
+  'Out of Order': 'neutral',
+  'Out of Service': 'warning',
+};
 
-  const [viewMode, setViewMode] = useState<'grid' | 'table'>('grid');
+const CONDITION_CODE: Record<RoomCondition, string> = {
+  'Vacant Clean': 'VC',
+  'Vacant Dirty': 'VD',
+  'Occupied Clean': 'OC',
+  'Occupied Dirty': 'OD',
+  Inspected: 'IN',
+  Ready: 'RD',
+  Pickup: 'PK',
+  'Sleep-Out': 'SO',
+  'Do Not Disturb': 'DND',
+  'Out of Order': 'OOO',
+  'Out of Service': 'OOS',
+};
 
-  // Checklist state
-  const [checklist, setChecklist] = useState({
-    linens: false,
-    towels: false,
-    bathroom: false,
-    minibar: false,
-    dusting: false,
-    vacuum: false
-  });
+const ALL_CONDITIONS = Object.keys(CONDITION_CODE) as RoomCondition[];
 
-  // Maintenance state
-  const [maintenanceMsg, setMaintenanceMsg] = useState('');
-  const [maintenancePriority, setMaintenancePriority] = useState<'info' | 'warning'>('warning');
+// Conditions that represent a "locked" / unavailable room (§5 Lock Room).
+const LOCKED_CONDITIONS: ReadonlySet<RoomCondition> = new Set(['Out of Order', 'Out of Service']);
 
-  const getStatusColor = (status: string) => {
-    switch (status) {
-      case 'Vacant Clean': return 'bg-emerald-500';
-      case 'Vacant Dirty': return 'bg-orange-500';
-      case 'Occupied Clean': return 'bg-indigo-500';
-      case 'Occupied Dirty': return 'bg-rose-500';
-      case 'Inspected': return 'bg-purple-500';
-      case 'Out of Order': return 'bg-slate-700';
-      case 'Out of Service': return 'bg-red-700';
-      case 'Maintenance Required': return 'bg-amber-600';
-      default: return 'bg-slate-200';
+function isRoomCondition(value: string): value is RoomCondition {
+  return Object.prototype.hasOwnProperty.call(CONDITION_CODE, value);
+}
+
+function nowTimeLabel(): string {
+  return new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+function authHeaders(json = false): Record<string, string> {
+  const token = typeof window !== 'undefined' ? localStorage.getItem('auth_token') : null;
+  const headers: Record<string, string> = {};
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+  if (json) headers['Content-Type'] = 'application/json';
+  return headers;
+}
+
+export default function RoomBoardModule() {
+  const { currentPropertyId, addNotification } = useERP();
+
+  const [rooms, setRooms] = useState<BoardRoom[]>([]);
+  const [staff, setStaff] = useState<BoardStaff[]>([]);
+  const [priorityQueue, setPriorityQueue] = useState<string[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [actingOn, setActingOn] = useState<string | null>(null);
+
+  const [conditionFilter, setConditionFilter] = useState<'All' | RoomCondition>('All');
+  const [floorFilter, setFloorFilter] = useState<'All' | number>('All');
+  const [search, setSearch] = useState('');
+
+  const fetchBoard = useCallback(async () => {
+    if (!currentPropertyId) {
+      setLoading(false);
+      return;
     }
-  };
-
-  const getStatusBadge = (status: string) => {
-    switch (status) {
-      case 'Vacant Clean': return 'bg-emerald-50 text-emerald-700 border-emerald-100';
-      case 'Vacant Dirty': return 'bg-orange-50 text-orange-700 border-orange-100';
-      case 'Occupied Clean': return 'bg-indigo-50 text-indigo-700 border-indigo-100';
-      case 'Occupied Dirty': return 'bg-rose-50 text-rose-700 border-rose-100';
-      case 'Inspected': return 'bg-purple-50 text-purple-700 border-purple-100';
-      case 'Out of Order': return 'bg-slate-100 text-slate-700 border-slate-200';
-      default: return 'bg-slate-50 text-slate-500 border-slate-100';
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/hk-portal/rooms-board/${currentPropertyId}`, {
+        headers: authHeaders(),
+      });
+      if (!res.ok) throw new Error(`Failed to load room board (${res.status})`);
+      const data = (await res.json()) as RoomsBoardResponse;
+      setRooms(data.rooms || []);
+      setStaff(data.staff || []);
+      setPriorityQueue(data.priorityQueue || []);
+    } catch (e: any) {
+      setError(e?.message || 'Failed to load room board');
+    } finally {
+      setLoading(false);
     }
-  };
+  }, [currentPropertyId]);
 
-  const floors = useMemo(() => {
-    return Array.from(new Set(rooms.map(r => r.floor))).sort();
+  useEffect(() => {
+    fetchBoard();
+  }, [fetchBoard]);
+
+  const staffById = useMemo(() => {
+    const map: Record<string, BoardStaff> = {};
+    staff.forEach(s => (map[s.id] = s));
+    return map;
+  }, [staff]);
+
+  const floors = useMemo(() => [...new Set(rooms.map(r => r.floor))].sort((a, b) => a - b), [rooms]);
+
+  const counts = useMemo(() => {
+    const map = {} as Record<RoomCondition, number>;
+    ALL_CONDITIONS.forEach(c => (map[c] = 0));
+    rooms.forEach(r => {
+      if (isRoomCondition(r.status)) map[r.status] += 1;
+    });
+    return map;
   }, [rooms]);
 
-  const filteredRooms = useMemo(() => {
-    return rooms.filter(room => {
-      const matchFloor = selectedFloor === 'all' || room.floor === selectedFloor;
-      const matchStatus = statusFilter === 'all' || room.status === statusFilter;
-      const matchType = typeFilter === 'all' || room.type === typeFilter;
-      const matchSearch = room.number.toLowerCase().includes(searchTerm.toLowerCase()) || 
-                          room.status.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                          room.type.toLowerCase().includes(searchTerm.toLowerCase());
-      return matchFloor && matchStatus && matchType && matchSearch;
-    });
-  }, [rooms, selectedFloor, statusFilter, typeFilter, searchTerm]);
+  const filtered = useMemo(
+    () =>
+      rooms.filter(r => {
+        const matchesCond = conditionFilter === 'All' || r.status === conditionFilter;
+        const matchesFloor = floorFilter === 'All' || r.floor === floorFilter;
+        const matchesSearch =
+          r.number.toLowerCase().includes(search.toLowerCase()) ||
+          r.type.toLowerCase().includes(search.toLowerCase()) ||
+          (staffById[r.housekeeperId ?? '']?.name.toLowerCase().includes(search.toLowerCase()) ?? false);
+        return matchesCond && matchesFloor && matchesSearch;
+      }),
+    [rooms, conditionFilter, floorFilter, search, staffById]
+  );
 
-  const activeRoom = useMemo(() => {
-    return rooms.find(r => r.number === activeRoomNum) || null;
-  }, [rooms, activeRoomNum]);
+  // ── Mutations ───────────────────────────────────────────────────────────
+  const patchRoom = (number: string, patch: Partial<BoardRoom>) =>
+    setRooms(prev => prev.map(r => (r.number === number ? { ...r, ...patch } : r)));
 
-  const handleSelectRoom = (roomNum: string) => {
-    setActiveRoomNum(roomNum);
-    const r = rooms.find(rm => rm.number === roomNum);
-    setChecklist({
-      linens: r ? r.status.includes('Clean') || r.status === 'Inspected' : false,
-      towels: r ? r.status.includes('Clean') || r.status === 'Inspected' : false,
-      bathroom: r ? r.status.includes('Clean') || r.status === 'Inspected' : false,
-      minibar: r ? r.status.includes('Clean') || r.status === 'Inspected' : false,
-      dusting: r ? r.status.includes('Clean') || r.status === 'Inspected' : false,
-      vacuum: r ? r.status.includes('Clean') || r.status === 'Inspected' : false
-    });
-  };
-
-  const toggleChecklistItem = (item: keyof typeof checklist) => {
-    setChecklist(prev => ({ ...prev, [item]: !prev[item] }));
-  };
-
-  const togglePriorityRoom = (roomNum: string) => {
-    const exists = priorityQueue.includes(roomNum);
-    if (exists) {
-      addNotification(`Room ${roomNum} removed from Priority Queue.`, 'info', 'Housekeeping');
-      setPriorityQueue(prev => prev.filter(r => r !== roomNum));
-    } else {
-      addNotification(`Room ${roomNum} flagged as HIGH PRIORITY. Staff notified.`, 'warning', 'Housekeeping');
-      setPriorityQueue(prev => [...prev, roomNum]);
+  const changeStatus = async (room: BoardRoom, status: RoomCondition) => {
+    if (!currentPropertyId) return;
+    setActingOn(room.number);
+    patchRoom(room.number, { status });
+    try {
+      const res = await fetch('/api/hk-portal/rooms-board/room-status', {
+        method: 'PUT',
+        headers: authHeaders(true),
+        body: JSON.stringify({ propertyId: currentPropertyId, roomNumber: room.number, status }),
+      });
+      if (!res.ok) throw new Error('Failed to update status');
+      addNotification(`Room ${room.number} status → ${status}`, 'success', 'Housekeeping');
+    } catch {
+      patchRoom(room.number, { status: room.status }); // rollback
+      addNotification(`Failed to update Room ${room.number} status`, 'error', 'Housekeeping');
+    } finally {
+      setActingOn(null);
     }
   };
 
-  const handleAssignStaff = (housekeeperId: string, roomNum: string) => {
-    setHousekeepers(prev => prev.map(hk => {
-      if (hk.id === housekeeperId) {
-        const exists = hk.assignedRooms.includes(roomNum);
-        return {
-          ...hk,
-          assignedRooms: exists ? hk.assignedRooms : [...hk.assignedRooms, roomNum]
-        };
-      } else {
-        return {
-          ...hk,
-          assignedRooms: hk.assignedRooms.filter((r: string) => r !== roomNum)
-        };
-      }
-    }));
-    addNotification(`Room ${roomNum} assigned directly to ${housekeepers.find(h => h.id === housekeeperId)?.name}.`, 'info', 'Housekeeping');
+  const completeCleaning = async (room: BoardRoom) => {
+    if (!currentPropertyId) return;
+    const stamp = nowTimeLabel();
+    setActingOn(room.number);
+    patchRoom(room.number, { status: 'Inspected', lastCleaned: stamp, lastInspected: stamp, dnd: false });
+    try {
+      const res = await fetch('/api/hk-portal/rooms-board/room-status', {
+        method: 'PUT',
+        headers: authHeaders(true),
+        body: JSON.stringify({
+          propertyId: currentPropertyId,
+          roomNumber: room.number,
+          status: 'Inspected',
+          lastCleaned: stamp,
+          lastInspected: stamp,
+          clearDnd: true,
+        }),
+      });
+      if (!res.ok) throw new Error('Failed to mark cleaning complete');
+      addNotification(`Room ${room.number} cleaning completed & inspected`, 'success', 'Housekeeping');
+    } catch {
+      patchRoom(room.number, { status: room.status, lastCleaned: room.lastCleaned, lastInspected: room.lastInspected, dnd: room.dnd });
+      addNotification(`Failed to complete Room ${room.number}`, 'error', 'Housekeeping');
+    } finally {
+      setActingOn(null);
+    }
   };
 
-  const handleDispatchMaintenance = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!maintenanceMsg.trim() || !activeRoomNum) return;
-
-    addNotification(`[Room ${activeRoomNum}] Housekeeping Alert: ${maintenanceMsg}`, maintenancePriority, 'Maintenance');
-    setRoomStatus(activeRoomNum, 'Maintenance Required');
-    setMaintenanceMsg('');
+  const togglePriority = async (room: BoardRoom) => {
+    if (!currentPropertyId) return;
+    const isPriority = priorityQueue.includes(room.number);
+    const action = isPriority ? 'remove' : 'add';
+    setPriorityQueue(prev => (isPriority ? prev.filter(n => n !== room.number) : [...prev, room.number]));
+    try {
+      const res = await fetch('/api/hk-portal/rooms-board/priority', {
+        method: 'POST',
+        headers: authHeaders(true),
+        body: JSON.stringify({ propertyId: currentPropertyId, roomNumber: room.number, action }),
+      });
+      if (!res.ok) throw new Error('Failed to toggle priority');
+      addNotification(`Room ${room.number} ${isPriority ? 'removed from' : 'added to'} priority`, 'info', 'Housekeeping');
+    } catch {
+      setPriorityQueue(prev => (isPriority ? [...prev, room.number] : prev.filter(n => n !== room.number)));
+      addNotification(`Failed to update priority for Room ${room.number}`, 'error', 'Housekeeping');
+    }
   };
 
-  const handleUpdateStatus = (status: any) => {
-    if (!activeRoomNum) return;
-    setRoomStatus(activeRoomNum, status);
-    addNotification(`Room ${activeRoomNum} status updated to ${status}.`, 'success', 'Housekeeping');
+  const assignHousekeeper = async (room: BoardRoom, staffId: string | null) => {
+    if (!currentPropertyId) return;
+    patchRoom(room.number, { housekeeperId: staffId });
+    try {
+      const res = await fetch('/api/hk-portal/rooms-board/assign', {
+        method: 'POST',
+        headers: authHeaders(true),
+        body: JSON.stringify({ propertyId: currentPropertyId, roomNumber: room.number, staffId }),
+      });
+      if (!res.ok) throw new Error('Failed to assign housekeeper');
+      addNotification(`Room ${room.number} ${staffId ? `assigned to ${staffById[staffId]?.name ?? staffId}` : 'unassigned'}`, 'success', 'Housekeeping');
+    } catch {
+      patchRoom(room.number, { housekeeperId: room.housekeeperId });
+      addNotification(`Failed to assign Room ${room.number}`, 'error', 'Housekeeping');
+    }
   };
 
-  const handleCompleteCleaning = () => {
-    if (!activeRoomNum) return;
-    const nextStatus = rooms.find(r => r.number === activeRoomNum)?.status.startsWith('Occupied') ? 'Occupied Clean' : 'Vacant Clean';
-    setRoomStatus(activeRoomNum, nextStatus);
-    addNotification(`Room ${activeRoomNum} cleaning complete. Pending inspection.`, 'info', 'Housekeeping');
+  const dispatchMaintenance = async (room: BoardRoom) => {
+    if (!currentPropertyId) return;
+    setActingOn(room.number);
+    patchRoom(room.number, { status: 'Out of Order' });
+    try {
+      const res = await fetch('/api/hk-portal/rooms-board/maintenance', {
+        method: 'POST',
+        headers: authHeaders(true),
+        body: JSON.stringify({ propertyId: currentPropertyId, roomNumber: room.number, issueType: 'General', notes: 'Reported from Room Status board' }),
+      });
+      if (!res.ok) throw new Error('Failed to dispatch maintenance');
+      addNotification(`Maintenance dispatched for Room ${room.number}`, 'warning', 'Housekeeping');
+    } catch {
+      patchRoom(room.number, { status: room.status });
+      addNotification(`Failed to dispatch maintenance for Room ${room.number}`, 'error', 'Housekeeping');
+    } finally {
+      setActingOn(null);
+    }
   };
 
-  const handleSupervisorInspection = () => {
-    if (!activeRoomNum) return;
-    setRoomStatus(activeRoomNum, 'Inspected');
-    addNotification(`Room ${activeRoomNum} inspected and verified.`, 'success', 'Housekeeping');
-  };
+  // ── Render ──────────────────────────────────────────────────────────────
+  const totalRooms = rooms.length;
+  const priorityCount = priorityQueue.length;
+  const dndCount = rooms.filter(r => r.dnd).length;
+  const needsAttention = rooms.filter(r => isRoomCondition(r.status) && ['Vacant Dirty', 'Occupied Dirty', 'Out of Order', 'Out of Service', 'Do Not Disturb'].includes(r.status)).length;
+
+  if (!currentPropertyId) {
+    return (
+      <div className={layout.sectionStack}>
+        <PageHeader title="Room Status" subtitle="Live room conditions & housekeeping controls" icon={BedDouble} />
+        <SectionCard pad="md">
+          <div className="flex items-center gap-3 text-sm text-amber-700 dark:text-amber-400">
+            <AlertTriangle className="w-5 h-5" /> Select a property in the header to load the room board.
+          </div>
+        </SectionCard>
+      </div>
+    );
+  }
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 animate-fade-in">
-      {/* ROOM BOARD FILTERS & GRID */}
-      <div className="lg:col-span-8 space-y-4">
-        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-4 rounded-3xl flex flex-wrap items-center gap-4 transition-all shadow-3xs">
-          <div className="relative flex-1 min-w-[200px]">
-            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-            <input 
-              type="text" 
-              placeholder="Search room number, type, or status..." 
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              className="w-full pl-9 pr-4 py-2 bg-slate-50 dark:bg-slate-850 border border-transparent dark:border-slate-800 rounded-xl text-xs outline-none focus:ring-1 focus:ring-indigo-500 font-sans"
-            />
-          </div>
+    <div className={layout.sectionStack}>
+      <PageHeader
+        title="Room Status"
+        subtitle="Live room conditions & housekeeping controls · DB-synced"
+        icon={BedDouble}
+        actions={
+          <button onClick={fetchBoard} disabled={loading} className={button.secondary}>
+            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} /> Refresh Board
+          </button>
+        }
+      />
 
-          <div className="flex bg-slate-100 dark:bg-slate-800 p-1 rounded-xl">
-             <button 
-               onClick={() => setViewMode('grid')}
-               className={`p-1.5 rounded-lg transition-all ${viewMode === 'grid' ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-white shadow-sm' : 'text-slate-400'}`}
-             >
-               <Layers size={14} />
-             </button>
-             <button 
-               onClick={() => setViewMode('table')}
-               className={`p-1.5 rounded-lg transition-all ${viewMode === 'table' ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-white shadow-sm' : 'text-slate-400'}`}
-             >
-               <ClipboardList size={14} />
-             </button>
-          </div>
+      {/* Summary KPIs */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <SummaryTile label="Total Rooms" value={totalRooms} tone="info" icon={BedDouble} />
+        <SummaryTile label="Needs Attention" value={needsAttention} tone="danger" icon={AlertTriangle} />
+        <SummaryTile label="Priority Queue" value={priorityCount} tone="warning" icon={Star} />
+        <SummaryTile label="Do Not Disturb" value={dndCount} tone="neutral" icon={Ban} />
+      </div>
 
-          <div className="flex items-center gap-2">
-            <Filter size={14} className="text-slate-400" />
-            <select 
-              value={selectedFloor}
-              onChange={(e) => setSelectedFloor(e.target.value === 'all' ? 'all' : parseInt(e.target.value))}
-              className="bg-slate-50 dark:bg-slate-850 border border-transparent dark:border-slate-800 rounded-xl px-3 py-2 text-[11px] font-bold text-slate-600 dark:text-slate-200 outline-none cursor-pointer"
+      {/* Condition legend / counts */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-11 gap-2">
+        {ALL_CONDITIONS.map(c => {
+          const tone = statusTone[CONDITION_TONE[c]];
+          return (
+            <button
+              key={c}
+              onClick={() => setConditionFilter(conditionFilter === c ? 'All' : c)}
+              className={`p-2.5 rounded-xl border text-left transition-all ${
+                conditionFilter === c ? 'border-[var(--color-accent-operations)] ring-1 ring-[var(--color-accent-operations)]/30' : 'border-gray-200 dark:border-slate-700 hover:border-[var(--color-accent-operations)]/50'
+              } ${tone.soft}`}
             >
-              <option value="all">Every Floor</option>
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-xs font-bold font-mono">{CONDITION_CODE[c]}</span>
+                <span className="text-sm font-bold">{counts[c]}</span>
+              </div>
+              <p className="text-[10px] font-semibold uppercase leading-tight">{c}</p>
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Filters */}
+      <SectionCard pad="md">
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <div className="flex items-center gap-2">
+            <Filter className="w-4 h-4 text-slate-400" />
+            <select
+              value={String(conditionFilter)}
+              onChange={e => setConditionFilter(e.target.value as 'All' | RoomCondition)}
+              className="px-3 py-2 text-sm border border-gray-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-gray-900 dark:text-white outline-none cursor-pointer"
+            >
+              <option value="All">All Conditions</option>
+              {ALL_CONDITIONS.map(c => <option key={c} value={c}>{c}</option>)}
+            </select>
+            <select
+              value={String(floorFilter)}
+              onChange={e => setFloorFilter(e.target.value === 'All' ? 'All' : Number(e.target.value))}
+              className="px-3 py-2 text-sm border border-gray-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-gray-900 dark:text-white outline-none cursor-pointer"
+            >
+              <option value="All">All Floors</option>
               {floors.map(f => <option key={f} value={f}>Floor {f}</option>)}
             </select>
           </div>
+          <div className="relative w-full max-w-xs">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+            <input
+              type="text"
+              placeholder="Search room, type, attendant..."
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              className="w-full pl-9 pr-3 py-2 text-sm border border-gray-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-gray-900 dark:text-white outline-none focus:ring-1 focus:ring-[var(--color-accent-operations)]"
+            />
+          </div>
         </div>
+      </SectionCard>
 
-        {viewMode === 'grid' ? (
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 gap-3">
-            <AnimatePresence mode="popLayout">
-              {filteredRooms.map(room => {
-                const isPriority = priorityQueue.includes(room.number);
-                const isAssigned = housekeepers.some(hk => hk.assignedRooms.includes(room.number));
-                const housekeeper = housekeepers.find(hk => hk.assignedRooms.includes(room.number));
-                const details = roomDetails[room.number] || { dnd: false, lastCleaned: 'N/A', housekeeper: 'Unassigned' };
-                const statusColor = getStatusColor(room.status);
-                
-                return (
-                  <motion.div 
-                    layout
-                    initial={{ opacity: 0, scale: 0.9 }}
-                    animate={{ opacity: 1, scale: 1 }}
-                    exit={{ opacity: 0, scale: 0.9 }}
-                    key={room.number}
-                    onClick={() => handleSelectRoom(room.number)}
-                    className={`p-0 rounded-2xl border transition-all cursor-pointer group relative overflow-hidden ${
-                      activeRoomNum === room.number 
-                        ? 'border-indigo-500 ring-2 ring-indigo-500/20' 
-                        : 'border-slate-150 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700 shadow-3xs'
-                    } bg-white dark:bg-slate-950`}
-                  >
-                    <div className={`h-1.5 w-full ${statusColor}`} />
-                    
-                    <div className="p-3 space-y-2">
-                      <div className="flex justify-between items-start">
-                        <div className="flex flex-col leading-tight">
-                          <span className="text-xs font-black text-slate-900 dark:text-white leading-none">#{room.number}</span>
-                          <span className="text-[8px] font-mono text-slate-400 uppercase tracking-tighter">{room.type}</span>
-                        </div>
-                        {isPriority && <Sparkles size={10} className="text-amber-500 animate-pulse" />}
-                      </div>
-                      
-                      <div className={`text-[8px] font-black px-1.5 py-0.5 rounded-full border inline-block ${getStatusBadge(room.status)}`}>
-                        {room.status.toUpperCase()}
-                      </div>
+      {/* States */}
+      {loading && rooms.length === 0 && (
+        <div className="bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 p-10 rounded-2xl flex items-center justify-center gap-3 text-sm text-gray-500">
+          <Loader2 className="w-5 h-5 animate-spin" /> Loading room board…
+        </div>
+      )}
+      {error && !loading && (
+        <div className="bg-rose-50 dark:bg-rose-900/20 border border-rose-200 dark:border-rose-800 p-8 rounded-2xl text-center">
+          <ServerCrash className="w-8 h-8 mx-auto mb-2 text-rose-500" />
+          <p className="text-sm font-semibold text-rose-700 dark:text-rose-400">{error}</p>
+          <button onClick={fetchBoard} className={`mt-3 ${button.secondary}`}>Retry</button>
+        </div>
+      )}
 
-                      <div className="pt-2 border-t border-slate-50 dark:border-slate-900 space-y-1">
-                        <div className="flex items-center justify-between text-[7px] font-mono text-slate-400">
-                          <span>HSKP:</span>
-                          <span className="text-slate-600 dark:text-slate-300 font-bold">{details.housekeeper}</span>
-                        </div>
-                        <div className="flex items-center justify-between text-[7px] font-mono text-slate-400">
-                          <span>CLEAN:</span>
-                          <span className="text-slate-600 dark:text-slate-300 font-bold">{details.lastCleaned}</span>
-                        </div>
+      {/* Room grid */}
+      {!loading && !error && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+          {filtered.map(room => {
+            const condition = isRoomCondition(room.status) ? room.status : 'Vacant Dirty';
+            const tone = statusTone[CONDITION_TONE[condition]];
+            const locked = LOCKED_CONDITIONS.has(condition);
+            const isPriority = priorityQueue.includes(room.number);
+            const housekeeper = room.housekeeperId ? staffById[room.housekeeperId] : undefined;
+            const busy = actingOn === room.number;
+            return (
+              <div key={room.id} className="bg-white dark:bg-slate-800 rounded-2xl border border-gray-200 dark:border-slate-700 card-shadow smooth-transition overflow-hidden">
+                <div className={`h-1 ${tone.dot}`} />
+                <div className="p-5">
+                  <div className="flex justify-between items-start mb-3">
+                    <div className="flex items-center gap-2">
+                      <div className="p-2 rounded-xl bg-slate-50 dark:bg-slate-900/40 text-gray-500">
+                        <BedDouble className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <h3 className="text-sm font-bold text-gray-900 dark:text-white">Room {room.number}</h3>
+                        <p className="text-xs text-gray-500 dark:text-gray-500">Floor {room.floor} · {room.type}</p>
                       </div>
                     </div>
-
-                    <div className="absolute inset-x-0 bottom-0 top-1.5 opacity-0 group-hover:opacity-100 transition-opacity bg-slate-900/60 backdrop-blur-[1px] flex items-center justify-center gap-2">
-                       <button 
-                         onClick={(e) => { e.stopPropagation(); togglePriorityRoom(room.number); }}
-                         className={`p-1.5 rounded-lg shadow-sm ${isPriority ? 'bg-amber-500 text-white' : 'bg-white text-slate-600'} transition hover:scale-110`}
-                       >
-                         <Sparkles size={12} />
-                       </button>
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        onClick={() => togglePriority(room)}
+                        title={isPriority ? 'Remove from priority' : 'Add to priority'}
+                        className={`p-1.5 rounded-lg transition ${
+                          isPriority ? 'bg-amber-100 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400' : 'text-slate-300 dark:text-slate-600 hover:text-amber-500 hover:bg-amber-50 dark:hover:bg-amber-900/20'
+                        }`}
+                      >
+                        <Star className={`w-4 h-4 ${isPriority ? 'fill-current' : ''}`} />
+                      </button>
+                      {locked && <Badge tone="danger" icon={Lock}>Locked</Badge>}
+                      {room.dnd && <Badge tone="neutral" icon={Ban}>DND</Badge>}
                     </div>
-                  </motion.div>
-                );
-              })}
-            </AnimatePresence>
-          </div>
-        ) : (
-          <div className="bg-white dark:bg-slate-900rder border-slate-200 dark:border-slate-8008rounded-3xl overflow-hidden shadow-3xs">
-            <table className="w-full text-left border-collapse text-[10px] dark:text-slate-200">
-              <thead>
-                <tr className="bg-slate-50 dark:bg-slate-900/40 h-10 border-b dark:border-slate-700 text-slate-400 dark:text-slate-300 uppercase font-black tracking-widest">
-                  <th className="px-4">Room</th>
-                  <th className="px-4">Type</th>
-                  <th className="px-4">Status</th>
-                  <th className="px-4">Housekeeper</th>
-                  <th className="px-4">Last Cleaned</th>
-                  <th className="px-4">Arrival / Dep.</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100 dark:divide-slate-700/40">
-                {filteredRooms.map(room => {
-                   const details = roomDetails[room.number] || { lastCleaned: 'N/A', housekeeper: 'Unassigned', arrival: 'N/A', departure: 'N/A' };
-                   return (
-                    <tr 
-                      key={room.number} 
-                      onClick={() => handleSelectRoom(room.number)}
-                      className={`hover:bg-slate-50 dark:hover:bg-slate-850 cursor-pointer h-12 transition-colors ${activeRoomNum === room.number ? 'bg-indigo-50/50 dark:bg-indigo-900/20' : ''}`}
+                  </div>
+
+                  <div className={`flex items-center justify-between p-3 rounded-xl ${tone.soft} mb-3`}>
+                    <div>
+                      <span className="text-xs font-bold font-mono">{CONDITION_CODE[condition]}</span>
+                      <p className="text-sm font-bold uppercase leading-tight">{condition}</p>
+                    </div>
+                    <select
+                      value={condition}
+                      onChange={e => changeStatus(room, e.target.value as RoomCondition)}
+                      disabled={busy}
+                      className="bg-white/70 dark:bg-slate-900/70 border border-gray-200 dark:border-slate-700 rounded-lg px-2 py-1 text-xs font-medium text-gray-600 dark:text-gray-300 outline-none cursor-pointer disabled:opacity-50"
+                      title="Change Status"
                     >
-                      <td className="px-4 font-black">#{room.number}</td>
-                      <td className="px-4 text-slate-500 font-bold">{room.type}</td>
-                      <td className="px-4">
-                        <span className={`px-2 py-0.5 rounded-full border text-[8px] font-black ${getStatusBadge(room.status)}`}>
-                          {room.status}
-                        </span>
-                      </td>
-                      <td className="px-4 font-bold text-slate-600 dark:text-slate-300">{details.housekeeper}</td>
-                      <td className="px-4 text-slate-400 font-mono italic">{details.lastCleaned}</td>
-                      <td className="px-4 text-slate-400 font-mono text-[9px]">
-                         <div>{details.arrival}</div>
-                         <div className="font-black text-slate-600">{details.departure}</div>
-                      </td>
-                    </tr>
-                   );
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
+                      {ALL_CONDITIONS.map(c => <option key={c} value={c}>{c}</option>)}
+                    </select>
+                  </div>
+
+                  {/* Housekeeper assignment */}
+                  <div className="flex items-center gap-2 mb-3">
+                    <UserCircle2 className="w-4 h-4 text-slate-400 shrink-0" />
+                    <select
+                      value={room.housekeeperId ?? ''}
+                      onChange={e => assignHousekeeper(room, e.target.value || null)}
+                      className="flex-1 px-2 py-1.5 text-xs border border-gray-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-gray-700 dark:text-gray-300 outline-none cursor-pointer"
+                    >
+                      <option value="">Unassigned</option>
+                      {staff.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                    </select>
+                    {housekeeper && (
+                      <span className="text-[10px] font-medium text-slate-400 whitespace-nowrap">{housekeeper.solvedToday} today</span>
+                    )}
+                  </div>
+
+                  {/* Meta: last cleaned / inspected + arrival/departure */}
+                  <div className="grid grid-cols-2 gap-2 text-[11px] mb-3">
+                    <MetaCell label="Last Cleaned" value={room.lastCleaned || '—'} />
+                    <MetaCell label="Last Inspected" value={room.lastInspected || '—'} />
+                    <MetaCell label="Arrival" value={room.arrival || '—'} />
+                    <MetaCell label="Departure" value={room.departure || '—'} />
+                  </div>
+
+                  {/* §5 Controls */}
+                  <div className="grid grid-cols-2 gap-2 pt-3 border-t border-gray-200 dark:border-slate-700">
+                    <button
+                      onClick={() => changeStatus(room, locked ? 'Ready' : 'Out of Order')}
+                      disabled={busy}
+                      className={`flex items-center justify-center gap-1.5 py-2 rounded-lg text-xs font-medium transition disabled:opacity-40 ${
+                        locked
+                          ? 'bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-100'
+                          : 'bg-rose-50 dark:bg-rose-900/20 text-rose-700 dark:text-rose-400 hover:bg-rose-100'
+                      }`}
+                    >
+                      {locked ? <Unlock className="w-3.5 h-3.5" /> : <Lock className="w-3.5 h-3.5" />}
+                      {locked ? 'Unlock' : 'Lock'}
+                    </button>
+                    <button
+                      onClick={() => changeStatus(room, 'Ready')}
+                      disabled={busy}
+                      className="flex items-center justify-center gap-1.5 py-2 bg-slate-50 dark:bg-slate-900/40 text-gray-600 dark:text-gray-300 hover:text-teal-600 rounded-lg text-xs font-medium transition disabled:opacity-40"
+                    >
+                      <DoorOpen className="w-3.5 h-3.5" /> Release
+                    </button>
+                    <button
+                      onClick={() => changeStatus(room, 'Vacant Dirty')}
+                      disabled={busy || condition === 'Vacant Dirty'}
+                      className="flex items-center justify-center gap-1.5 py-2 bg-indigo-50 dark:bg-indigo-900/20 text-indigo-700 dark:text-indigo-400 hover:bg-indigo-100 rounded-lg text-xs font-medium transition disabled:opacity-40"
+                    >
+                      <PlayCircle className="w-3.5 h-3.5" /> Start
+                    </button>
+                    <button
+                      onClick={() => completeCleaning(room)}
+                      disabled={busy || condition === 'Inspected'}
+                      className="flex items-center justify-center gap-1.5 py-2 bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-100 rounded-lg text-xs font-medium transition disabled:opacity-40"
+                    >
+                      {busy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle2 className="w-3.5 h-3.5" />} Complete
+                    </button>
+                  </div>
+
+                  {/* Maintenance escalation */}
+                  {condition !== 'Out of Order' && (
+                    <button
+                      onClick={() => dispatchMaintenance(room)}
+                      disabled={busy}
+                      className="mt-2 w-full flex items-center justify-center gap-1.5 py-1.5 text-[11px] font-medium text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-900/20 rounded-lg transition disabled:opacity-40"
+                    >
+                      <Wrench className="w-3.5 h-3.5" /> Dispatch Maintenance
+                    </button>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {!loading && !error && filtered.length === 0 && (
+        <div className="bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 p-8 rounded-2xl text-center text-sm text-gray-500">
+          No rooms match the current filters.
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Small presentational helpers ───────────────────────────────────────────
+
+function SummaryTile({ label, value, tone, icon: Icon }: { label: string; value: number; tone: StatusTone; icon: LucideIcon }) {
+  const t = statusTone[tone];
+  return (
+    <div className="bg-white dark:bg-slate-800 rounded-2xl border border-gray-200 dark:border-slate-700 p-4 flex items-center gap-3 card-shadow">
+      <div className={`p-2.5 rounded-xl ${t.soft}`}>
+        <Icon className="w-5 h-5" />
       </div>
-
-      {/* INSPECTION & CHECKLIST DRAWER (Right column) */}
-      <div className="lg:col-span-4 space-y-6">
-        {activeRoom ? (
-          <div className="bg-white dark:bg-slate-900 border border-slate-205 dark:border-slate-800 rounded-3xl p-6 shadow-xs sticky top-4 space-y-6 theme-transition">
-            <div className="flex justify-between items-start">
-              <div>
-                <h3 className="text-lg font-sans font-black text-slate-900 dark:text-white leading-none">Operation Centre: {activeRoom.number}</h3>
-                <p className="text-xs text-slate-400 mt-1 uppercase font-mono tracking-widest">{activeRoom.type} • Floor {activeRoom.floor}</p>
-              </div>
-              <div className="flex gap-1">
-                 <button className="p-1 px-2 border border-slate-200 dark:border-slate-800 rounded text-[9px] font-black uppercase text-slate-500">History</button>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-2 gap-2">
-               <button onClick={handleCompleteCleaning} className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-2.5 rounded-2xl flex flex-col items-center gap-1 hover:border-emerald-500 transition-all group">
-                  <Play size={16} className="text-emerald-500 group-hover:scale-110 transition-transform" />
-                  <span className="text-[9px] font-black uppercase">Start Clean</span>
-               </button>
-               <button onClick={handleSupervisorInspection} className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-2.5 rounded-2xl flex flex-col items-center gap-1 hover:border-purple-500 transition-all group">
-                  <CheckCircle2 size={16} className="text-purple-500 group-hover:scale-110 transition-transform" />
-                  <span className="text-[9px] font-black uppercase">Inspection</span>
-               </button>
-            </div>
-
-            <div className="p-4 bg-slate-50 dark:bg-slate-850 border border-slate-100 dark:border-slate-800 rounded-2xl space-y-3">
-              <span className="text-[10px] font-mono tracking-widest text-slate-400 font-extrabold uppercase">Quick Status Update</span>
-              <div className="grid grid-cols-2 gap-2">
-                {[
-                  'Vacant Clean', 'Vacant Dirty',
-                  'Occupied Clean', 'Occupied Dirty',
-                  'Inspected', 'Ready',
-                  'Pickup', 'Sleep-Out',
-                  'Do Not Disturb', 'Out of Order',
-                  'Out of Service', 'Maintenance Required'
-                ].map((s) => (
-                  <button 
-                    key={s}
-                    onClick={() => handleUpdateStatus(s)}
-                    className={`px-2 py-1.5 rounded-xl border text-[8px] font-black text-left transition-all ${activeRoom.status === s ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white dark:bg-slate-900 border-slate-100 dark:border-slate-800 text-slate-500'}`}
-                  >
-                    {s}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div className="space-y-3">
-              <span className="text-[10px] font-mono tracking-widest text-slate-400 font-extrabold uppercase block">Assign Duty</span>
-              <div className="flex flex-wrap gap-2">
-                {housekeepers.map(hk => (
-                  <button
-                    key={hk.id}
-                    onClick={() => handleAssignStaff(hk.id, activeRoom.number)}
-                    className={`px-3 py-1.5 rounded-xl border text-[10px] font-bold font-sans transition ${
-                      hk.assignedRooms.includes(activeRoom.number)
-                        ? 'bg-indigo-600 border-indigo-600 text-white shadow-sm'
-                        : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 text-slate-500 hover:border-indigo-400'
-                    }`}
-                  >
-                    {hk.name}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div className="border-t dark:border-slate-800 pt-6 space-y-3">
-              <div className="flex items-center gap-2 text-rose-600 dark:text-rose-450">
-                <AlertTriangle size={14} />
-                <span className="text-[10px] font-black uppercase tracking-widest">Report Maintenance Issue</span>
-              </div>
-              <form onSubmit={handleDispatchMaintenance} className="space-y-3">
-                <select className="w-full bg-slate-50 dark:bg-slate-850 p-3 rounded-2xl border dark:border-slate-800 text-[10px] outline-none font-bold">
-                   <option>Electrical Issue</option>
-                   <option>Plumbing Issue</option>
-                   <option>Furniture Repair</option>
-                   <option>HVAC / AC Issue</option>
-                   <option>Security / Keycard</option>
-                </select>
-                <textarea 
-                  value={maintenanceMsg}
-                  onChange={(e) => setMaintenanceMsg(e.target.value)}
-                  placeholder="Notes for Engineering team..." 
-                  className="w-full p-3 bg-slate-50 dark:bg-slate-850 border dark:border-slate-800 rounded-2xl text-[10px] outline-none min-h-[60px] font-sans"
-                />
-                <button className="w-full bg-slate-900 dark:bg-white text-white dark:text-slate-900 rounded-2xl py-3 font-black font-mono text-[10px] tracking-widest hover:bg-slate-800 transition">
-                   DISPATCH ENGINEERING
-                </button>
-              </form>
-            </div>
-          </div>
-        ) : (
-          <div className="bg-slate-100/50 dark:bg-slate-900/50 border-2 border-dashed border-slate-200 dark:border-slate-800 rounded-3xl h-full min-h-[400px] flex flex-col items-center justify-center p-8 text-center space-y-4">
-             <div className="p-5 bg-white dark:bg-slate-850 rounded-full shadow-sm text-slate-300 dark:text-slate-600">
-               <Layers size={48} strokeWidth={1} />
-             </div>
-             <div className="space-y-1">
-               <h4 className="text-sm font-sans font-extrabold text-slate-800 dark:text-slate-100">Verification Terminal Standby</h4>
-               <p className="text-[10px] text-slate-400 font-sans max-w-[200px]">Select a room from the matrix to begin detailed cleaning inspection & staff dispatch.</p>
-             </div>
-          </div>
-        )}
+      <div>
+        <p className="text-2xl font-bold text-gray-900 dark:text-white leading-none">{value}</p>
+        <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-500 mt-1">{label}</p>
       </div>
+    </div>
+  );
+}
+
+function MetaCell({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="bg-slate-50 dark:bg-slate-900/40 rounded-lg px-2 py-1.5">
+      <p className="text-[9px] font-semibold uppercase tracking-wide text-slate-400">{label}</p>
+      <p className="text-[11px] font-medium text-gray-700 dark:text-gray-300 truncate">{value}</p>
     </div>
   );
 }

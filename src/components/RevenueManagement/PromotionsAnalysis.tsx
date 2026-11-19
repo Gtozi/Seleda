@@ -1,430 +1,159 @@
-/**
- * Promotions Analysis Component
- * Analyzes promotion performance, discount analysis, coupon performance, campaign revenue, incremental revenue, and ROI
- */
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useERP } from '../../context/ERPContext';
+import { BarChart3, DollarSign, Edit, Loader2, Percent, Plus, ServerCrash, Tag, Trash2, TrendingUp, Users, X } from 'lucide-react';
+import StatCard from '../FrontOffice/StatCard';
+import { Badge, PageHeader, SectionCard } from '../FrontOffice/ui';
+import { button } from '../FrontOffice/brandTheme';
+import { rmsGet, rmsRequest } from '../../services/rmsService';
 
-import React, { useState, useMemo } from 'react';
-import {
-  Tag,
-  TrendingUp,
-  TrendingDown,
-  DollarSign,
-  BarChart3,
-  Percent,
-  Calendar,
-  Users,
-  Settings,
-  Plus,
-  Eye,
-  CheckCircle2,
-  XCircle
-} from 'lucide-react';
+const API = '/api/rms-portal/promotions-analysis';
 
-const PromotionsAnalysis = () => {
+
+type PromoStatus = 'active' | 'scheduled' | 'ended';
+type Promo = { id: string; name: string; code: string; promo_type: string; discount: number; status: PromoStatus; start_date: string | null; end_date: string | null; bookings: number; revenue: number; incremental_revenue: number; roi: number; target_segment: string };
+type Coupon = { id: string; code: string; usage_count: number; redemptions: number; conversion: number; avg_discount: number };
+
+const statusTone: Record<PromoStatus, 'success' | 'info' | 'neutral'> = { active: 'success', scheduled: 'info', ended: 'neutral' };
+const typeTone: Record<string, 'accent' | 'warning' | 'info' | 'success'> = { discount: 'accent', flash: 'warning', loyalty: 'info', group: 'success' };
+
+export default function PromotionsAnalysis() {
+  const { currentPropertyId } = useERP();
+  const [promotions, setPromotions] = useState<Promo[]>([]);
+  const [coupons, setCoupons] = useState<Coupon[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
   const [selectedPromotion, setSelectedPromotion] = useState<string | null>(null);
-  const [viewMode, setViewMode] = useState<'active' | 'scheduled' | 'ended' | 'all'>('active');
+  const [viewMode, setViewMode] = useState<'all' | PromoStatus>('active');
+  const [form, setForm] = useState<Promo | 'new' | null>(null);
 
-  const promotions = useMemo(() => [
-    { 
-      id: '1', 
-      name: 'Early Bird Summer', 
-      code: 'EARLY24',
-      type: 'discount',
-      discount: 15,
-      status: 'active',
-      startDate: '2024-06-01',
-      endDate: '2024-08-31',
-      bookings: 245,
-      revenue: 36750,
-      incrementalRevenue: 8500,
-      roi: 180,
-      targetSegment: 'leisure'
-    },
-    { 
-      id: '2', 
-      name: 'Corporate Weekend', 
-      code: 'CORPWKND',
-      type: 'discount',
-      discount: 20,
-      status: 'active',
-      startDate: '2024-11-01',
-      endDate: '2024-12-31',
-      bookings: 85,
-      revenue: 12750,
-      incrementalRevenue: 3200,
-      roi: 145,
-      targetSegment: 'corporate'
-    },
-    { 
-      id: '3', 
-      name: 'Last Minute Flash Sale', 
-      code: 'FLASH24',
-      type: 'flash',
-      discount: 25,
-      status: 'scheduled',
-      startDate: '2024-12-20',
-      endDate: '2024-12-22',
-      bookings: 0,
-      revenue: 0,
-      incrementalRevenue: 0,
-      roi: 0,
-      targetSegment: 'all'
-    },
-    { 
-      id: '4', 
-      name: 'Loyalty Member Bonus', 
-      code: 'LOYALTY25',
-      type: 'loyalty',
-      discount: 10,
-      status: 'active',
-      startDate: '2024-01-01',
-      endDate: '2024-12-31',
-      bookings: 180,
-      revenue: 24300,
-      incrementalRevenue: 4200,
-      roi: 165,
-      targetSegment: 'loyalty'
-    },
-    { 
-      id: '5', 
-      name: 'Group Booking Special', 
-      code: 'GROUP10',
-      type: 'group',
-      discount: 10,
-      status: 'ended',
-      startDate: '2024-09-01',
-      endDate: '2024-10-31',
-      bookings: 45,
-      revenue: 6750,
-      incrementalRevenue: 1500,
-      roi: 120,
-      targetSegment: 'group'
-    }
-  ], []);
+  const load = useCallback(async () => {
+    setLoading(true); setError(null);
+    try {
+      const json = await rmsGet(API, { propertyId: currentPropertyId });
+      setPromotions(json.promotions || []); setCoupons(json.coupons || []);
+    } catch (e: any) { setError(e.message || 'Failed to load promotions'); }
+    finally { setLoading(false); }
+  }, [currentPropertyId]);
+  useEffect(() => { load(); }, [load]);
 
-  const filteredPromotions = useMemo(() => {
-    if (viewMode === 'all') return promotions;
-    return promotions.filter(p => p.status === viewMode);
-  }, [promotions, viewMode]);
+  const request = (url: string, method: string, body?: unknown) =>
+    rmsRequest(url, { method, body, propertyId: currentPropertyId });
+  const savePromo = async (f: any, editing?: Promo) => {
+    setBusy(true); setError(null);
+    try { await request(editing ? `${API}/${editing.id}` : API, editing ? 'PUT' : 'POST', { ...f, propertyId: currentPropertyId }); setForm(null); await load(); } catch (e: any) { setError(e.message); }
+    finally { setBusy(false); }
+  };
+  const deletePromo = async (id: string) => {
+    if (!confirm('Delete this promotion?')) return;
+    setBusy(true); setError(null);
+    try { await request(`${API}/${id}`, 'DELETE', { propertyId: currentPropertyId }); await load(); } catch (e: any) { setError(e.message); }
+    finally { setBusy(false); }
+  };
 
-  const promotionMetrics = useMemo(() => {
+  const filtered = useMemo(() => viewMode === 'all' ? promotions : promotions.filter(p => p.status === viewMode), [promotions, viewMode]);
+  const metrics = useMemo(() => {
     const active = promotions.filter(p => p.status === 'active');
-    const totalRevenue = active.reduce((sum, p) => sum + p.revenue, 0);
-    const totalIncremental = active.reduce((sum, p) => sum + p.incrementalRevenue, 0);
-    const avgROI = Math.round(active.reduce((sum, p) => sum + p.roi, 0) / active.length);
-    const totalBookings = active.reduce((sum, p) => sum + p.bookings, 0);
-
-    return { totalRevenue, totalIncremental, avgROI, totalBookings };
+    return {
+      totalRevenue: active.reduce((s, p) => s + Number(p.revenue || 0), 0),
+      totalIncremental: active.reduce((s, p) => s + Number(p.incremental_revenue || 0), 0),
+      avgROI: active.length ? Math.round(active.reduce((s, p) => s + Number(p.roi || 0), 0) / active.length) : 0,
+      totalBookings: active.reduce((s, p) => s + Number(p.bookings || 0), 0),
+    };
   }, [promotions]);
+  const activePromos = useMemo(() => promotions.filter(p => p.status === 'active'), [promotions]);
 
-  const couponPerformance = useMemo(() => [
-    { id: 1, code: 'EARLY24', usage: 245, redemptions: 198, conversion: 81, avgDiscount: 22 },
-    { id: 2, code: 'CORPWKND', usage: 85, redemptions: 72, conversion: 85, avgDiscount: 30 },
-    { id: 3, code: 'LOYALTY25', usage: 180, redemptions: 162, conversion: 90, avgDiscount: 15 }
-  ], []);
+  if (loading && !promotions.length) return <div className="p-6 flex justify-center py-20 text-slate-400"><Loader2 className="w-6 h-6 animate-spin mr-2"/>Loading promotions…</div>;
+  if (error && !promotions.length) return <div className="p-6 flex flex-col items-center py-20 text-rose-600"><ServerCrash className="w-10 h-10 mb-3"/><p>{error}</p><button onClick={load} className="mt-4 text-blue-600">Retry</button></div>;
 
-  return (
-    <div className="p-6 space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-2xl font-bold text-slate-900 dark:text-white">Promotions Analysis</h2>
-          <p className="text-slate-600 dark:text-slate-400">Analyze promotion performance and ROI</p>
-        </div>
-        <div className="flex items-center gap-3">
-          <select 
-            value={viewMode}
-            onChange={(e) => setViewMode(e.target.value as any)}
-            className="px-3 py-2 bg-white dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded-lg text-sm"
-          >
-            <option value="all">All Promotions</option>
-            <option value="active">Active</option>
-            <option value="scheduled">Scheduled</option>
-            <option value="ended">Ended</option>
-          </select>
-          <button className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium transition-colors">
-            <Plus className="w-4 h-4" />
-            New Promotion
-          </button>
-        </div>
-      </div>
-
-      {/* Summary Metrics */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <MetricCard
-          title="Total Revenue"
-          value={`$${promotionMetrics.totalRevenue.toLocaleString()}`}
-          icon={<DollarSign className="w-5 h-5" />}
-          color="green"
-        />
-        <MetricCard
-          title="Incremental Revenue"
-          value={`$${promotionMetrics.totalIncremental.toLocaleString()}`}
-          icon={<TrendingUp className="w-5 h-5" />}
-          color="blue"
-        />
-        <MetricCard
-          title="Average ROI"
-          value={`${promotionMetrics.avgROI}%`}
-          icon={<Percent className="w-5 h-5" />}
-          color="purple"
-        />
-        <MetricCard
-          title="Total Bookings"
-          value={promotionMetrics.totalBookings}
-          icon={<Users className="w-5 h-5" />}
-          color="orange"
-        />
-      </div>
-
-      {/* Promotions List */}
-      <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 p-6">
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="text-lg font-semibold text-slate-900 dark:text-white">Promotions</h3>
-          <button className="text-sm text-blue-600 hover:text-blue-700 font-medium">
-            View All
-          </button>
-        </div>
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {filteredPromotions.map((promotion) => (
-            <PromotionCard
-              key={promotion.id}
-              promotion={promotion}
-              selected={selectedPromotion === promotion.id}
-              onSelect={() => setSelectedPromotion(promotion.id)}
-            />
-          ))}
-        </div>
-      </div>
-
-      {/* Coupon Performance */}
-      <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 p-6">
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="text-lg font-semibold text-slate-900 dark:text-white">Coupon Performance</h3>
-          <button className="text-sm text-blue-600 hover:text-blue-700 font-medium">
-            View Details
-          </button>
-        </div>
-        <div className="space-y-3">
-          {couponPerformance.map((coupon) => (
-            <CouponPerformanceCard key={coupon.id} coupon={coupon} />
-          ))}
-        </div>
-      </div>
-
-      {/* Campaign Revenue */}
-      <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 p-6">
-        <h3 className="text-lg font-semibold text-slate-900 dark:text-white mb-4">Campaign Revenue Breakdown</h3>
-        <div className="space-y-3">
-          {promotions.filter(p => p.status === 'active').map((promo) => (
-            <CampaignRevenueRow key={promo.id} promotion={promo} />
-          ))}
-        </div>
-      </div>
+  return <div className="p-6 space-y-6">
+    <PageHeader title="Promotions Analysis" subtitle="Analyze promotion performance and ROI" actions={<div className="flex items-center gap-3"><select value={viewMode} onChange={e => setViewMode(e.target.value as any)} className="px-3 py-2 bg-white dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded-lg text-sm"><option value="all">All Promotions</option><option value="active">Active</option><option value="scheduled">Scheduled</option><option value="ended">Ended</option></select><button className={button.primary} onClick={() => setForm('new')} disabled={busy}><Plus className="w-4 h-4"/>New Promotion</button></div>} />
+    {error && <div className="px-4 py-2 rounded-lg border border-rose-200 bg-rose-50 text-sm text-rose-600">{error}</div>}
+    <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+      <StatCard title="Total Revenue" value={`$${metrics.totalRevenue.toLocaleString()}`} icon={DollarSign} tone="success" />
+      <StatCard title="Incremental Revenue" value={`$${metrics.totalIncremental.toLocaleString()}`} icon={TrendingUp} tone="info" />
+      <StatCard title="Average ROI" value={`${metrics.avgROI}%`} icon={Percent} tone="accent" />
+      <StatCard title="Total Bookings" value={metrics.totalBookings} icon={Users} tone="warning" />
     </div>
-  );
-};
 
-interface MetricCardProps {
-  title: string;
-  value: string | number;
-  icon: React.ReactNode;
-  color: 'blue' | 'green' | 'purple' | 'orange';
-}
-
-const MetricCard: React.FC<MetricCardProps> = ({ title, value, icon, color }) => {
-  const colorClasses = {
-    blue: 'bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 border-blue-200 dark:border-blue-800',
-    green: 'bg-green-50 dark:bg-green-900/20 text-green-600 dark:text-green-400 border-green-200 dark:border-green-800',
-    purple: 'bg-purple-50 dark:bg-purple-900/20 text-purple-600 dark:text-purple-400 border-purple-200 dark:border-purple-800',
-    orange: 'bg-orange-50 dark:bg-orange-900/20 text-orange-600 dark:text-orange-400 border-orange-200 dark:border-orange-800'
-  };
-
-  return (
-    <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 p-4">
-      <div className="flex items-center gap-3 mb-2">
-        <div className={`p-2 rounded-lg ${colorClasses[color]} border`}>
-          {icon}
-        </div>
-        <div className="flex-1">
-          <p className="text-xs text-slate-600 dark:text-slate-400">{title}</p>
-          <p className="text-lg font-bold text-slate-900 dark:text-white">{value}</p>
-        </div>
-      </div>
-    </div>
-  );
-};
-
-interface PromotionCardProps {
-  promotion: {
-    id: string;
-    name: string;
-    code: string;
-    type: string;
-    discount: number;
-    status: string;
-    startDate: string;
-    endDate: string;
-    bookings: number;
-    revenue: number;
-    incrementalRevenue: number;
-    roi: number;
-    targetSegment: string;
-  };
-  selected: boolean;
-  onSelect: () => void;
-}
-
-const PromotionCard: React.FC<PromotionCardProps> = ({ promotion, selected, onSelect }) => {
-  const statusColors = {
-    active: 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300',
-    scheduled: 'bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300',
-    ended: 'bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-300'
-  };
-
-  const typeColors = {
-    discount: 'bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300',
-    flash: 'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300',
-    loyalty: 'bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300',
-    group: 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300'
-  };
-
-  return (
-    <div
-      onClick={onSelect}
-      className={`p-4 rounded-lg border-2 cursor-pointer transition-all ${
-        selected
-          ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20'
-          : 'border-slate-200 dark:border-slate-700 hover:border-slate-300 dark:hover:border-slate-600'
-      }`}
-    >
-      <div className="flex items-start justify-between mb-3">
-        <div className="flex-1">
-          <div className="flex items-center gap-2 mb-1">
-            <h4 className="font-semibold text-slate-900 dark:text-white">{promotion.name}</h4>
-            <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${statusColors[promotion.status as keyof typeof statusColors]}`}>
-              {promotion.status}
-            </span>
+    <SectionCard title="Promotions" icon={Tag} pad="md">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        {filtered.map(p => <div key={p.id} onClick={() => setSelectedPromotion(p.id)} className={`p-4 rounded-lg border-2 cursor-pointer transition-all ${selectedPromotion === p.id ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20' : 'border-slate-200 dark:border-slate-700 hover:border-slate-300 dark:hover:border-slate-600'}`}>
+          <div className="flex items-start justify-between mb-3">
+            <div className="flex-1">
+              <div className="flex items-center gap-2 mb-1"><h4 className="font-semibold text-slate-900 dark:text-white">{p.name}</h4><Badge tone={statusTone[p.status]}>{p.status}</Badge></div>
+              <div className="flex items-center gap-2 mb-1"><span className="text-sm text-slate-600 dark:text-slate-400">{p.code}</span><Badge tone={typeTone[p.promo_type] || 'neutral'}>{p.promo_type}</Badge></div>
+              <p className="text-xs text-slate-600 dark:text-slate-400">{p.start_date} → {p.end_date}</p>
+            </div>
           </div>
-          <div className="flex items-center gap-2 mb-1">
-            <span className="text-sm text-slate-600 dark:text-slate-400">{promotion.code}</span>
-            <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${typeColors[promotion.type as keyof typeof typeColors]}`}>
-              {promotion.type}
-            </span>
+          <div className="grid grid-cols-2 gap-2 text-sm mb-3">
+            <div><p className="text-slate-600 dark:text-slate-400">Discount</p><p className="font-medium text-slate-900 dark:text-white">{p.discount}%</p></div>
+            <div><p className="text-slate-600 dark:text-slate-400">Bookings</p><p className="font-medium text-slate-900 dark:text-white">{p.bookings}</p></div>
+            <div><p className="text-slate-600 dark:text-slate-400">Revenue</p><p className="font-medium text-green-600 dark:text-green-400">${Number(p.revenue).toLocaleString()}</p></div>
+            <div><p className="text-slate-600 dark:text-slate-400">ROI</p><p className="font-medium text-blue-600 dark:text-blue-400">{p.roi}%</p></div>
           </div>
-          <p className="text-xs text-slate-600 dark:text-slate-400">{promotion.startDate} → {promotion.endDate}</p>
-        </div>
+          <div className="flex items-center justify-between pt-3 border-t border-slate-200 dark:border-slate-700">
+            <div className="text-xs text-slate-600 dark:text-slate-400">Target: {p.target_segment}</div>
+            <div className="flex items-center gap-1">
+              <button onClick={e => { e.stopPropagation(); setForm(p); }} disabled={busy} className="p-2 hover:bg-slate-200 dark:hover:bg-slate-600 rounded-lg transition-colors"><Edit className="w-4 h-4 text-slate-600 dark:text-slate-400"/></button>
+              <button onClick={e => { e.stopPropagation(); deletePromo(p.id); }} disabled={busy} className="p-2 hover:bg-red-100 dark:hover:bg-red-900/30 rounded-lg transition-colors"><Trash2 className="w-4 h-4 text-red-600"/></button>
+            </div>
+          </div>
+        </div>)}
+        {!filtered.length && <p className="col-span-full text-center py-8 text-slate-500">No {viewMode === 'all' ? '' : viewMode + ' '}promotions</p>}
       </div>
-      <div className="grid grid-cols-2 gap-2 text-sm mb-3">
-        <div>
-          <p className="text-slate-600 dark:text-slate-400">Discount</p>
-          <p className="font-medium text-slate-900 dark:text-white">{promotion.discount}%</p>
-        </div>
-        <div>
-          <p className="text-slate-600 dark:text-slate-400">Bookings</p>
-          <p className="font-medium text-slate-900 dark:text-white">{promotion.bookings}</p>
-        </div>
-        <div>
-          <p className="text-slate-600 dark:text-slate-400">Revenue</p>
-          <p className="font-medium text-green-600 dark:text-green-400">${promotion.revenue.toLocaleString()}</p>
-        </div>
-        <div>
-          <p className="text-slate-600 dark:text-slate-400">ROI</p>
-          <p className="font-medium text-blue-600 dark:text-blue-400">{promotion.roi}%</p>
-        </div>
-      </div>
-      <div className="flex items-center justify-between pt-3 border-t border-slate-200 dark:border-slate-700">
-        <div className="text-xs text-slate-600 dark:text-slate-400">
-          Target: {promotion.targetSegment}
-        </div>
-        <div className="flex items-center gap-2">
-          <button className="p-2 hover:bg-slate-200 dark:hover:bg-slate-600 rounded-lg transition-colors">
-            <Eye className="w-4 h-4 text-slate-600 dark:text-slate-400" />
-          </button>
-          <button className="p-2 hover:bg-slate-200 dark:hover:bg-slate-600 rounded-lg transition-colors">
-            <Settings className="w-4 h-4 text-slate-600 dark:text-slate-400" />
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-};
+    </SectionCard>
 
-interface CouponPerformanceCardProps {
-  coupon: {
-    id: number;
-    code: string;
-    usage: number;
-    redemptions: number;
-    conversion: number;
-    avgDiscount: number;
-  };
+    <SectionCard title="Coupon Performance" icon={Tag} pad="md">
+      <div className="space-y-3">
+        {coupons.map(c => <div key={c.id} className="flex items-center justify-between p-4 bg-slate-50 dark:bg-slate-700/50 rounded-lg border border-slate-200 dark:border-slate-600">
+          <div className="flex items-center gap-3"><Tag className="w-5 h-5 text-slate-600 dark:text-slate-400"/><div><h4 className="font-medium text-slate-900 dark:text-white">{c.code}</h4><div className="flex items-center gap-4 text-sm text-slate-600 dark:text-slate-400"><span>Usage: {c.usage_count}</span><span>Redemptions: {c.redemptions}</span></div></div></div>
+          <div className="flex items-center gap-6">
+            <div className="text-right"><p className="text-sm text-slate-600 dark:text-slate-400">Conversion</p><p className="text-lg font-semibold text-green-600 dark:text-green-400">{c.conversion}%</p></div>
+            <div className="text-right"><p className="text-sm text-slate-600 dark:text-slate-400">Avg Discount</p><p className="text-lg font-semibold text-slate-900 dark:text-white">${c.avg_discount}</p></div>
+          </div>
+        </div>)}
+        {!coupons.length && <p className="text-center py-8 text-slate-500">No coupon data</p>}
+      </div>
+    </SectionCard>
+
+    <SectionCard title="Campaign Revenue Breakdown" icon={BarChart3} pad="md">
+      <div className="space-y-3">
+        {activePromos.map(p => {
+          const incrementalPercent = Number(p.revenue) > 0 ? Math.round((Number(p.incremental_revenue) / Number(p.revenue)) * 100) : 0;
+          return <div key={p.id} className="flex items-center justify-between p-4 bg-slate-50 dark:bg-slate-700/50 rounded-lg">
+            <div className="flex items-center gap-4"><BarChart3 className="w-5 h-5 text-slate-600 dark:text-slate-400"/><div><h4 className="font-medium text-slate-900 dark:text-white">{p.name}</h4><p className="text-sm text-slate-600 dark:text-slate-400">{p.bookings} bookings</p></div></div>
+            <div className="flex items-center gap-6">
+              <div className="text-right"><p className="text-sm text-slate-600 dark:text-slate-400">Total Revenue</p><p className="font-semibold text-slate-900 dark:text-white">${Number(p.revenue).toLocaleString()}</p></div>
+              <div className="text-right"><p className="text-sm text-slate-600 dark:text-slate-400">Incremental</p><p className="font-semibold text-green-600 dark:text-green-400">${Number(p.incremental_revenue).toLocaleString()}</p></div>
+              <div className="text-right"><p className="text-sm text-slate-600 dark:text-slate-400">Incremental %</p><p className="font-semibold text-blue-600 dark:text-blue-400">{incrementalPercent}%</p></div>
+            </div>
+          </div>;
+        })}
+        {!activePromos.length && <p className="text-center py-8 text-slate-500">No active campaigns</p>}
+      </div>
+    </SectionCard>
+
+    {form && <PromoForm promo={form === 'new' ? undefined : form} onCancel={() => setForm(null)} onSave={savePromo} saving={busy} />}
+  </div>;
 }
 
-const CouponPerformanceCard: React.FC<CouponPerformanceCardProps> = ({ coupon }) => {
-  return (
-    <div className="flex items-center justify-between p-4 bg-slate-50 dark:bg-slate-700/50 rounded-lg border border-slate-200 dark:border-slate-600">
-      <div className="flex items-center gap-3">
-        <Tag className="w-5 h-5 text-slate-600 dark:text-slate-400" />
-        <div>
-          <h4 className="font-medium text-slate-900 dark:text-white">{coupon.code}</h4>
-          <div className="flex items-center gap-4 text-sm text-slate-600 dark:text-slate-400">
-            <span>Usage: {coupon.usage}</span>
-            <span>Redemptions: {coupon.redemptions}</span>
-          </div>
-        </div>
-      </div>
-      <div className="flex items-center gap-6">
-        <div className="text-right">
-          <p className="text-sm text-slate-600 dark:text-slate-400">Conversion</p>
-          <p className="text-lg font-semibold text-green-600 dark:text-green-400">{coupon.conversion}%</p>
-        </div>
-        <div className="text-right">
-          <p className="text-sm text-slate-600 dark:text-slate-400">Avg Discount</p>
-          <p className="text-lg font-semibold text-slate-900 dark:text-white">${coupon.avgDiscount}</p>
-        </div>
-      </div>
-    </div>
-  );
-};
+const fieldClass = "w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-white";
+function Field({ label, children }: { label: string; children: React.ReactNode }) { return <label className="block text-sm font-medium text-slate-700 dark:text-slate-300"><span className="block mb-1">{label}</span>{children}</label>; }
+function Modal({ title, onClose, children, footer }: { title: string; onClose: () => void; children: React.ReactNode; footer?: React.ReactNode }) { return <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4"><div className="bg-white dark:bg-slate-800 rounded-xl shadow-xl max-w-2xl w-full max-h-[90vh] overflow-auto"><div className="p-5 border-b flex justify-between items-center"><h3 className="font-semibold text-lg text-slate-900 dark:text-white">{title}</h3><button onClick={onClose} className="text-slate-500"><X className="w-5 h-5"/></button></div><div className="p-5">{children}</div>{footer && <div className="p-5 border-t flex justify-end gap-3">{footer}</div>}</div></div>; }
 
-interface CampaignRevenueRowProps {
-  promotion: {
-    name: string;
-    revenue: number;
-    incrementalRevenue: number;
-    bookings: number;
-  };
+function PromoForm({ promo, onCancel, onSave, saving }: { promo?: Promo; onCancel: () => void; onSave: (f: any, editing?: Promo) => void; saving: boolean }) {
+  const [f, setF] = useState({
+    name: promo?.name || '', code: promo?.code || '', promo_type: promo?.promo_type || 'discount', discount: promo?.discount || 0,
+    status: promo?.status || 'active' as PromoStatus, start_date: promo?.start_date || '', end_date: promo?.end_date || '',
+    target_segment: promo?.target_segment || 'all',
+  });
+  const set = (k: string, v: any) => setF(p => ({ ...p, [k]: v }));
+  return <Modal title={promo ? 'Edit Promotion' : 'New Promotion'} onClose={onCancel} footer={<><button className={button.secondary} onClick={onCancel}>Cancel</button><button className={button.primary} disabled={saving || !f.name || !f.code} onClick={() => onSave(f, promo)}>{saving && <Loader2 className="w-4 h-4 animate-spin"/>}Save</button></>}>
+    <div className="space-y-4">
+      <div className="grid grid-cols-2 gap-4"><Field label="Name"><input className={fieldClass} value={f.name} onChange={e=>set('name',e.target.value)}/></Field><Field label="Code"><input className={fieldClass} value={f.code} onChange={e=>set('code',e.target.value)}/></Field></div>
+      <div className="grid grid-cols-3 gap-4"><Field label="Type"><select className={fieldClass} value={f.promo_type} onChange={e=>set('promo_type',e.target.value)}><option value="discount">Discount</option><option value="flash">Flash Sale</option><option value="loyalty">Loyalty</option><option value="group">Group</option></select></Field><Field label="Discount %"><input type="number" className={fieldClass} value={f.discount} onChange={e=>set('discount',Number(e.target.value))}/></Field><Field label="Status"><select className={fieldClass} value={f.status} onChange={e=>set('status',e.target.value as PromoStatus)}><option value="active">Active</option><option value="scheduled">Scheduled</option><option value="ended">Ended</option></select></Field></div>
+      <div className="grid grid-cols-3 gap-4"><Field label="Start Date"><input type="date" className={fieldClass} value={f.start_date} onChange={e=>set('start_date',e.target.value)}/></Field><Field label="End Date"><input type="date" className={fieldClass} value={f.end_date} onChange={e=>set('end_date',e.target.value)}/></Field><Field label="Target Segment"><select className={fieldClass} value={f.target_segment} onChange={e=>set('target_segment',e.target.value)}><option value="all">All</option><option value="leisure">Leisure</option><option value="corporate">Corporate</option><option value="loyalty">Loyalty</option><option value="group">Group</option></select></Field></div>
+    </div>
+  </Modal>;
 }
-
-const CampaignRevenueRow: React.FC<CampaignRevenueRowProps> = ({ promotion }) => {
-  const incrementalPercent = Math.round((promotion.incrementalRevenue / promotion.revenue) * 100);
-
-  return (
-    <div className="flex items-center justify-between p-4 bg-slate-50 dark:bg-slate-700/50 rounded-lg">
-      <div className="flex items-center gap-4">
-        <BarChart3 className="w-5 h-5 text-slate-600 dark:text-slate-400" />
-        <div>
-          <h4 className="font-medium text-slate-900 dark:text-white">{promotion.name}</h4>
-          <p className="text-sm text-slate-600 dark:text-slate-400">{promotion.bookings} bookings</p>
-        </div>
-      </div>
-      <div className="flex items-center gap-6">
-        <div className="text-right">
-          <p className="text-sm text-slate-600 dark:text-slate-400">Total Revenue</p>
-          <p className="font-semibold text-slate-900 dark:text-white">${promotion.revenue.toLocaleString()}</p>
-        </div>
-        <div className="text-right">
-          <p className="text-sm text-slate-600 dark:text-slate-400">Incremental</p>
-          <p className="font-semibold text-green-600 dark:text-green-400">${promotion.incrementalRevenue.toLocaleString()}</p>
-        </div>
-        <div className="text-right">
-          <p className="text-sm text-slate-600 dark:text-slate-400">Incremental %</p>
-          <p className="font-semibold text-blue-600 dark:text-blue-400">{incrementalPercent}%</p>
-        </div>
-      </div>
-    </div>
-  );
-};
-
-export default PromotionsAnalysis;

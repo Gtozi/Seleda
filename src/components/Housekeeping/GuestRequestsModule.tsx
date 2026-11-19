@@ -1,399 +1,406 @@
 /**
  * @license
  * SPDX-License-Identifier: Apache-2.0
+ *
+ * Guest Requests module — docs/Housekeeping Portal new.md §17.
+ * Handles the 9 housekeeping guest request types listed in the doc.
+ *
+ * DB-integrated: reads from /api/front-office/guest-requests?department=HK
+ * (the shared guest_requests table) and persists status changes back via PUT.
+ * New requests are created with assigned_department='HK'.
  */
 
-import React, { useState } from 'react';
-import { 
-  MessageSquare, 
-  Clock, 
-  CheckCircle2, 
-  AlertTriangle, 
-  Search, 
-  Plus, 
-  User, 
-  MapPin,
-  Filter,
-  XCircle,
-  Bell
+import { useState, useMemo, useCallback, useEffect } from 'react';
+import {
+  Bath,
+  BedDouble,
+  Layers,
+  Baby,
+  Shirt,
+  HandPlatter,
+  SprayCan,
+  Moon,
+  Gift,
+  Plus,
+  Search,
+  Clock,
+  CheckCircle2,
+  PlayCircle,
+  Bell,
+  Loader2,
+  type LucideIcon,
 } from 'lucide-react';
+import StatCard from '../FrontOffice/StatCard';
+import { PageHeader, SectionCard, Badge } from '../FrontOffice/ui';
+import { button, layout, statusTone, type StatusTone } from '../FrontOffice/brandTheme';
+import { useERP } from '../../context/ERPContext';
+
+type RequestType =
+  | 'Extra Towels' | 'Extra Pillows' | 'Extra Blanket' | 'Baby Cot'
+  | 'Iron & Iron Board' | 'Laundry Pickup' | 'Cleaning Request'
+  | 'Turndown Request' | 'Special Amenities';
+
+// DB status values: Open | In Progress | Completed (plus legacy: Pending, Acknowledged)
+type RequestStatus = 'Pending' | 'In Progress' | 'Completed';
 
 interface GuestRequest {
   id: string;
-  roomNumber: string;
-  guestName?: string;
-  requestType: string;
-  description: string;
-  priority: 'Low' | 'Medium' | 'High' | 'Critical';
-  status: 'Pending' | 'In Progress' | 'Completed';
-  assignedTo?: string;
+  type: RequestType;
+  room: string;
+  guest: string;
+  qty?: number;
+  status: RequestStatus;
   requestedAt: string;
-  completedAt?: string;
+  priority: 'Normal' | 'Urgent';
+  assignedTo?: string;
 }
 
-const requestTypes = [
-  'Extra Towels', 'Extra Pillows', 'Extra Blanket', 'Baby Cot',
-  'Iron & Iron Board', 'Laundry Pickup', 'Cleaning Request',
-  'Turndown Request', 'Special Amenities'
-];
+const TYPE_ICON: Record<RequestType, LucideIcon> = {
+  'Extra Towels': Bath,
+  'Extra Pillows': BedDouble,
+  'Extra Blanket': Layers,
+  'Baby Cot': Baby,
+  'Iron & Iron Board': Shirt,
+  'Laundry Pickup': HandPlatter,
+  'Cleaning Request': SprayCan,
+  'Turndown Request': Moon,
+  'Special Amenities': Gift,
+};
+
+const ALL_TYPES = Object.keys(TYPE_ICON) as RequestType[];
+
+const STATUS_TONE: Record<RequestStatus, StatusTone> = {
+  Pending: 'warning',
+  'In Progress': 'info',
+  Completed: 'success',
+};
+
+const PRIORITY_TONE: Record<'Normal' | 'Urgent', StatusTone> = {
+  Normal: 'neutral',
+  Urgent: 'danger',
+};
+
+// ── Auth headers ───────────────────────────────────────────────────────
+function authHeaders(json = false): Record<string, string> {
+  const token = typeof window !== 'undefined' ? localStorage.getItem('auth_token') : null;
+  const headers: Record<string, string> = {};
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+  if (json) headers['Content-Type'] = 'application/json';
+  return headers;
+}
+
+// Normalize a DB row (snake_case) into the module's camelCase contract.
+function shapeRequest(row: any): GuestRequest {
+  // Map DB status to the 3-state UI contract.
+  const rawStatus = String(row.status || 'Open');
+  let status: RequestStatus = 'Pending';
+  if (rawStatus === 'In Progress' || rawStatus === 'assigned' || rawStatus === 'Acknowledged') {
+    status = 'In Progress';
+  } else if (rawStatus === 'Completed' || rawStatus === 'completed') {
+    status = 'Completed';
+  } else {
+    status = 'Pending'; // Open / Pending
+  }
+
+  const priority: 'Normal' | 'Urgent' =
+    row.priority === 'Urgent' || row.priority === 'High' ? 'Urgent' : 'Normal';
+
+  // requestedAt: prefer submitted_at (ISO), format to time label.
+  let requestedAt = '';
+  if (row.submitted_at) {
+    const d = new Date(row.submitted_at);
+    requestedAt = isNaN(d.getTime()) ? String(row.submitted_at) : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  } else if (row.created_at) {
+    const d = new Date(row.created_at);
+    requestedAt = isNaN(d.getTime()) ? String(row.created_at) : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  }
+
+  return {
+    id: row.id,
+    type: (row.request_type || 'Cleaning Request') as RequestType,
+    room: row.room_number || '',
+    guest: row.guest_name || '',
+    qty: row.quantity ? Number(row.quantity) : undefined,
+    status,
+    requestedAt,
+    priority,
+    assignedTo: row.assigned_to || undefined,
+  };
+}
+
+const inputClass =
+  'w-full px-3 py-2 text-sm border border-gray-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-gray-900 dark:text-white outline-none focus:ring-1 focus:ring-[var(--color-accent-operations)]';
 
 export default function GuestRequestsModule() {
-  const [requests, setRequests] = useState<GuestRequest[]>([
-    { 
-      id: 'GR-101', 
-      roomNumber: '101', 
-      guestName: 'John Smith', 
-      requestType: 'Extra Towels', 
-      description: 'Guest requests 2 additional bath towels', 
-      priority: 'Medium', 
-      status: 'Pending', 
-      assignedTo: undefined, 
-      requestedAt: '2026-05-30 09:15' 
-    },
-    { 
-      id: 'GR-102', 
-      roomNumber: '304', 
-      guestName: 'Sarah Johnson', 
-      requestType: 'Turndown Request', 
-      description: 'Guest requests evening turndown service at 7 PM', 
-      priority: 'High', 
-      status: 'In Progress', 
-      assignedTo: 'Staff A', 
-      requestedAt: '2026-05-30 08:30' 
-    },
-    { 
-      id: 'GR-103', 
-      roomNumber: '202', 
-      guestName: 'Michael Brown', 
-      requestType: 'Baby Cot', 
-      description: 'Guest needs baby cot for infant', 
-      priority: 'Critical', 
-      status: 'Pending', 
-      assignedTo: undefined, 
-      requestedAt: '2026-05-30 09:00' 
-    },
-    { 
-      id: 'GR-104', 
-      roomNumber: '401', 
-      guestName: 'Emily Davis', 
-      requestType: 'Laundry Pickup', 
-      description: 'Guest has laundry ready for pickup', 
-      priority: 'Medium', 
-      status: 'Completed', 
-      assignedTo: 'Staff B', 
-      requestedAt: '2026-05-30 07:45',
-      completedAt: '2026-05-30 08:15'
-    },
-  ]);
-
-  const [filter, setFilter] = useState<'All' | 'Pending' | 'In Progress' | 'Completed'>('All');
-  const [typeFilter, setTypeFilter] = useState<string>('All');
-  const [searchTerm, setSearchTerm] = useState('');
-  const [isCreating, setIsCreating] = useState(false);
-  const [newRequest, setNewRequest] = useState({
-    roomNumber: '',
-    guestName: '',
-    requestType: '',
-    description: '',
-    priority: 'Medium' as 'Low' | 'Medium' | 'High' | 'Critical'
+  const { currentPropertyId, addNotification } = useERP();
+  const [requests, setRequests] = useState<GuestRequest[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [filter, setFilter] = useState<'All' | RequestStatus>('All');
+  const [typeFilter, setTypeFilter] = useState<'All' | RequestType>('All');
+  const [search, setSearch] = useState('');
+  const [actingOn, setActingOn] = useState<string | null>(null);
+  const [showForm, setShowForm] = useState(false);
+  const [form, setForm] = useState({
+    type: 'Extra Towels' as RequestType,
+    room: '',
+    guest: '',
+    qty: '',
+    priority: 'Normal' as 'Normal' | 'Urgent',
   });
 
-  const filteredRequests = requests.filter(request => {
-    const matchesFilter = filter === 'All' || request.status === filter;
-    const matchesType = typeFilter === 'All' || request.requestType === typeFilter;
-    const matchesSearch = request.roomNumber.toLowerCase().includes(searchTerm.toLowerCase()) || 
-                          request.guestName?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                          request.description.toLowerCase().includes(searchTerm.toLowerCase());
-    return matchesFilter && matchesType && matchesSearch;
-  });
+  const fetchRequests = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      // Fetch HK-department requests from the shared guest_requests table.
+      const res = await fetch('/api/front-office/guest-requests?department=HK', { headers: authHeaders() });
+      if (!res.ok) throw new Error(`Failed to load guest requests (${res.status})`);
+      const data = await res.json();
+      const shaped = (data.requests || []).map(shapeRequest);
+      setRequests(shaped);
+    } catch (e: any) {
+      setError(e?.message || 'Failed to load guest requests');
+      console.error('[hk-guest-requests] fetch failed:', e);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
 
-  const getPriorityColor = (priority: string) => {
-    switch (priority) {
-      case 'Critical': return 'bg-red-500 text-white';
-      case 'High': return 'bg-orange-500 text-white';
-      case 'Medium': return 'bg-indigo-500 text-white';
-      case 'Low': return 'bg-slate-500 text-white';
-      default: return 'bg-slate-500 text-white';
+  useEffect(() => {
+    fetchRequests();
+  }, [fetchRequests]);
+
+  const filtered = useMemo(
+    () =>
+      requests.filter(r => {
+        const matchesStatus = filter === 'All' || r.status === filter;
+        const matchesType = typeFilter === 'All' || r.type === typeFilter;
+        const matchesSearch =
+          r.room.toLowerCase().includes(search.toLowerCase()) ||
+          r.guest.toLowerCase().includes(search.toLowerCase()) ||
+          r.type.toLowerCase().includes(search.toLowerCase());
+        return matchesStatus && matchesType && matchesSearch;
+      }),
+    [requests, filter, typeFilter, search]
+  );
+
+  const advance = async (id: string, current: RequestStatus) => {
+    setActingOn(id);
+    try {
+      const nextStatus = current === 'Pending' ? 'In Progress' : 'Completed';
+      const body: any = { status: nextStatus, assignedDepartment: 'HK' };
+      if (nextStatus === 'In Progress' && !requests.find(r => r.id === id)?.assignedTo) {
+        body.assignedTo = 'Dispatched Attendant';
+      }
+      const res = await fetch(`/api/front-office/guest-requests/${id}`, {
+        method: 'PUT',
+        headers: authHeaders(true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || `Failed to update (${res.status})`);
+      }
+      setRequests(prev => prev.map(r => r.id === id ? {
+        ...r,
+        status: nextStatus,
+        assignedTo: r.assignedTo ?? (nextStatus === 'In Progress' ? 'Dispatched Attendant' : undefined),
+      } : r));
+      addNotification(`Guest request ${id} ${nextStatus === 'In Progress' ? 'dispatched' : 'completed'}`, nextStatus === 'In Progress' ? 'info' : 'success', 'Housekeeping');
+    } catch (e: any) {
+      addNotification(e?.message || 'Failed to update request', 'error', 'Housekeeping');
+    } finally {
+      setActingOn(null);
     }
   };
 
-  const getStatusColor = (status: string) => {
-    switch (status) {
-      case 'Completed': return 'text-emerald-500';
-      case 'In Progress': return 'text-indigo-500';
-      case 'Pending': return 'text-amber-500';
-      default: return 'text-slate-400';
+  const submitRequest = async () => {
+    if (!form.room.trim() || !form.guest.trim()) return;
+    setActingOn('new');
+    try {
+      const description = `${form.type}${form.qty ? ` (x${form.qty})` : ''}`;
+      const body: any = {
+        guestName: form.guest.trim(),
+        roomNumber: form.room.trim(),
+        requestType: form.type,
+        description,
+        priority: form.priority,
+        assignedDepartment: 'HK',
+      };
+      if (currentPropertyId) body.propertyId = currentPropertyId;
+      const res = await fetch('/api/front-office/guest-requests', {
+        method: 'POST',
+        headers: authHeaders(true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || `Failed to create (${res.status})`);
+      }
+      const created = await res.json();
+      setRequests(prev => [shapeRequest(created), ...prev]);
+      addNotification('Guest request logged', 'success', 'Housekeeping');
+      setShowForm(false);
+      setForm({ type: 'Extra Towels', room: '', guest: '', qty: '', priority: 'Normal' });
+    } catch (e: any) {
+      addNotification(e?.message || 'Failed to create request', 'error', 'Housekeeping');
+    } finally {
+      setActingOn(null);
     }
   };
 
-  const handleUpdateStatus = (requestId: string, newStatus: 'Pending' | 'In Progress' | 'Completed') => {
-    setRequests(prev => prev.map(r => 
-      r.id === requestId ? { 
-        ...r, 
-        status: newStatus,
-        completedAt: newStatus === 'Completed' ? new Date().toISOString().slice(0, 16).replace('T', ' ') : r.completedAt
-      } : r
-    ));
-  };
-
-  const handleAssignStaff = (requestId: string, staffName: string) => {
-    setRequests(prev => prev.map(r => 
-      r.id === requestId ? { ...r, assignedTo: staffName } : r
-    ));
-  };
-
-  const handleCreateRequest = () => {
-    if (!newRequest.roomNumber || !newRequest.requestType || !newRequest.description) return;
-
-    const request: GuestRequest = {
-      id: `GR-${Date.now()}`,
-      roomNumber: newRequest.roomNumber,
-      guestName: newRequest.guestName || undefined,
-      requestType: newRequest.requestType,
-      description: newRequest.description,
-      priority: newRequest.priority,
-      status: 'Pending',
-      requestedAt: new Date().toISOString().slice(0, 16).replace('T', ' ')
-    };
-
-    setRequests(prev => [request, ...prev]);
-    setNewRequest({
-      roomNumber: '',
-      guestName: '',
-      requestType: '',
-      description: '',
-      priority: 'Medium'
-    });
-    setIsCreating(false);
+  const counts = {
+    pending: requests.filter(r => r.status === 'Pending').length,
+    inProgress: requests.filter(r => r.status === 'In Progress').length,
+    completed: requests.filter(r => r.status === 'Completed').length,
+    urgent: requests.filter(r => r.priority === 'Urgent').length,
   };
 
   return (
-    <div className="space-y-6 animate-fade-in">
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-        <div>
-          <h2 className="text-xl font-black text-slate-900 dark:text-white uppercase tracking-tight">Guest Requests</h2>
-          <p className="text-xs text-slate-500 font-mono italic">Manage guest housekeeping requests and special service requests.</p>
-        </div>
-        <button 
-          onClick={() => setIsCreating(true)}
-          className="flex items-center gap-2 px-4 py-2 bg-slate-900 dark:bg-white dark:text-slate-900 text-white rounded-xl text-[10px] font-black uppercase tracking-widest shadow-lg hover:bg-slate-800 transition-all"
-        >
-          <Plus size={14} /> New Request
-        </button>
+    <div className={layout.sectionStack}>
+      <PageHeader
+        title="Guest Requests"
+        subtitle="Housekeeping guest request dispatch & tracking."
+        icon={Bell}
+        actions={
+          <button onClick={() => setShowForm(s => !s)} className={button.primary}>
+            <Plus className="w-4 h-4" /> Log Request
+          </button>
+        }
+      />
+
+      <div className={layout.kpiGrid}>
+        <StatCard title="Pending" value={counts.pending} icon={Clock} tone="warning" />
+        <StatCard title="In Progress" value={counts.inProgress} icon={PlayCircle} tone="info" />
+        <StatCard title="Completed" value={counts.completed} icon={CheckCircle2} tone="success" />
+        <StatCard title="Urgent" value={counts.urgent} icon={Bell} tone="danger" />
       </div>
 
-      {isCreating ? (
-        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-6 rounded-3xl shadow-3xl">
-          <div className="flex justify-between items-start mb-6">
-            <div>
-              <h3 className="text-lg font-black text-slate-900 dark:text-white uppercase">Create Guest Request</h3>
-              <p className="text-xs text-slate-500 font-mono mt-1">Record new guest housekeeping request</p>
-            </div>
-            <button 
-              onClick={() => setIsCreating(false)}
-              className="p-2 bg-slate-100 dark:bg-slate-800 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-700 transition"
-            >
-              <XCircle size={16} className="text-slate-500" />
+      {showForm && (
+        <SectionCard title="Log New Request" icon={Plus} tone="accent" pad="md">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+            <label className="block">
+              <span className="block text-xs font-bold text-gray-500 uppercase tracking-wide mb-1.5">Type</span>
+              <select value={form.type} onChange={e => setForm(f => ({ ...f, type: e.target.value as RequestType }))} className={inputClass}>
+                {ALL_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+              </select>
+            </label>
+            <label className="block">
+              <span className="block text-xs font-bold text-gray-500 uppercase tracking-wide mb-1.5">Room</span>
+              <input placeholder="e.g. 204" value={form.room} onChange={e => setForm(f => ({ ...f, room: e.target.value }))} className={inputClass} />
+            </label>
+            <label className="block">
+              <span className="block text-xs font-bold text-gray-500 uppercase tracking-wide mb-1.5">Guest</span>
+              <input placeholder="Guest name" value={form.guest} onChange={e => setForm(f => ({ ...f, guest: e.target.value }))} className={inputClass} />
+            </label>
+            <label className="block">
+              <span className="block text-xs font-bold text-gray-500 uppercase tracking-wide mb-1.5">Qty</span>
+              <input placeholder="e.g. 4" value={form.qty} onChange={e => setForm(f => ({ ...f, qty: e.target.value }))} className={inputClass} />
+            </label>
+            <label className="block">
+              <span className="block text-xs font-bold text-gray-500 uppercase tracking-wide mb-1.5">Priority</span>
+              <select value={form.priority} onChange={e => setForm(f => ({ ...f, priority: e.target.value as 'Normal' | 'Urgent' }))} className={inputClass}>
+                <option value="Normal">Normal</option>
+                <option value="Urgent">Urgent</option>
+              </select>
+            </label>
+          </div>
+          <div className="flex gap-2 mt-4">
+            <button onClick={submitRequest} disabled={actingOn === 'new' || !form.room.trim() || !form.guest.trim()} className={button.primary + ' disabled:opacity-50'}>
+              {actingOn === 'new' ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
+              Submit
             </button>
+            <button onClick={() => setShowForm(false)} className={button.ghost}>Cancel</button>
           </div>
+        </SectionCard>
+      )}
 
-          <div className="space-y-4">
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-2">Room Number</label>
-                <input 
-                  type="text"
-                  value={newRequest.roomNumber}
-                  onChange={(e) => setNewRequest(prev => ({ ...prev, roomNumber: e.target.value }))}
-                  placeholder="Enter room number..."
-                  className="w-full px-4 py-3 bg-slate-50 dark:bg-slate-850 border border-slate-200 dark:border-slate-800 rounded-xl text-xs outline-none focus:ring-1 focus:ring-indigo-500 font-sans"
-                />
-              </div>
-              <div>
-                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-2">Guest Name (Optional)</label>
-                <input 
-                  type="text"
-                  value={newRequest.guestName}
-                  onChange={(e) => setNewRequest(prev => ({ ...prev, guestName: e.target.value }))}
-                  placeholder="Guest name..."
-                  className="w-full px-4 py-3 bg-slate-50 dark:bg-slate-850 border border-slate-200 dark:border-slate-800 rounded-xl text-xs outline-none focus:ring-1 focus:ring-indigo-500 font-sans"
-                />
-              </div>
-            </div>
-
-            <div>
-              <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-2">Request Type</label>
-              <select 
-                value={newRequest.requestType}
-                onChange={(e) => setNewRequest(prev => ({ ...prev, requestType: e.target.value }))}
-                className="w-full px-4 py-3 bg-slate-50 dark:bg-slate-850 border border-slate-200 dark:border-slate-800 rounded-xl text-xs outline-none focus:ring-1 focus:ring-indigo-500 font-sans"
+      {/* Request type quick reference */}
+      <SectionCard title="Request Types" subtitle="Click to filter by type" pad="md">
+        <div className="grid grid-cols-3 sm:grid-cols-5 lg:grid-cols-9 gap-2">
+          {ALL_TYPES.map(t => {
+            const Icon = TYPE_ICON[t];
+            const count = requests.filter(r => r.type === t && r.status !== 'Completed').length;
+            return (
+              <button
+                key={t}
+                onClick={() => setTypeFilter(typeFilter === t ? 'All' : t)}
+                className={`p-2.5 rounded-xl border text-center transition-all ${typeFilter === t ? 'border-[var(--color-accent-operations)] ring-1 ring-[var(--color-accent-operations)]/30 bg-[var(--color-accent-operations)]/10' : 'border-gray-200 dark:border-slate-700 hover:border-[var(--color-accent-operations)]/50'}`}
               >
-                <option value="">Select request type...</option>
-                {requestTypes.map(type => <option key={type} value={type}>{type}</option>)}
-              </select>
-            </div>
-
-            <div>
-              <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-2">Description</label>
-              <textarea 
-                value={newRequest.description}
-                onChange={(e) => setNewRequest(prev => ({ ...prev, description: e.target.value }))}
-                placeholder="Describe the request..."
-                rows={3}
-                className="w-full px-4 py-3 bg-slate-50 dark:bg-slate-850 border border-slate-200 dark:border-slate-800 rounded-xl text-xs outline-none focus:ring-1 focus:ring-indigo-500 font-sans resize-none"
-              />
-            </div>
-
-            <div>
-              <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-2">Priority</label>
-              <div className="flex gap-2">
-                {(['Low', 'Medium', 'High', 'Critical'] as const).map(priority => (
-                  <button
-                    key={priority}
-                    onClick={() => setNewRequest(prev => ({ ...prev, priority }))}
-                    className={`flex-1 py-2 rounded-lg text-[10px] font-black uppercase transition-all ${
-                      newRequest.priority === priority
-                        ? 'bg-indigo-600 text-white'
-                        : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700'
-                    }`}
-                  >
-                    {priority}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div className="flex gap-2">
-              <button 
-                onClick={() => setIsCreating(false)}
-                className="flex-1 py-3 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-slate-200 dark:hover:bg-slate-700 transition-all"
-              >
-                Cancel
+                <Icon className="w-4 h-4 mx-auto text-[var(--color-accent-operations)] mb-1" />
+                <p className="text-[10px] font-bold uppercase leading-tight text-gray-700 dark:text-gray-300">{t}</p>
+                {count > 0 && <span className="block text-[10px] font-bold text-[var(--color-danger)] mt-1">{count} open</span>}
               </button>
-              <button 
-                onClick={handleCreateRequest}
-                disabled={!newRequest.roomNumber || !newRequest.requestType || !newRequest.description}
-                className="flex-1 py-3 bg-indigo-600 text-white rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-indigo-700 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-              >
-                <Bell size={14} /> Create Request
-              </button>
-            </div>
-          </div>
+            );
+          })}
         </div>
-      ) : (
-        <>
-          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-4 rounded-3xl flex flex-wrap items-center justify-between gap-4 shadow-3xs">
-            <div className="flex bg-slate-100 dark:bg-slate-800 p-1 rounded-xl gap-1">
-              {(['All', 'Pending', 'In Progress', 'Completed'] as const).map(f => (
-                <button
-                  key={f}
-                  onClick={() => setFilter(f)}
-                  className={`px-4 py-1.5 rounded-lg text-[10px] font-black uppercase transition-all ${
-                    filter === f 
-                    ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-white shadow-sm' 
-                    : 'text-slate-500 hover:text-slate-700'
-                  }`}
-                >
-                  {f}
-                </button>
-              ))}
-            </div>
+      </SectionCard>
 
-            <div className="flex items-center gap-2">
-              <Filter size={14} className="text-slate-400" />
-              <select 
-                value={typeFilter}
-                onChange={(e) => setTypeFilter(e.target.value)}
-                className="bg-slate-50 dark:bg-slate-850 border border-transparent dark:border-slate-800 rounded-xl px-3 py-2 text-[10px] font-bold text-slate-600 dark:text-slate-200 outline-none cursor-pointer"
-              >
-                <option value="All">All Types</option>
-                {requestTypes.map(type => <option key={type} value={type}>{type}</option>)}
-              </select>
-            </div>
-
-            <div className="flex items-center gap-2 flex-1 max-w-md">
-              <div className="relative w-full">
-                <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-                <input 
-                  type="text" 
-                  placeholder="Search room, guest, description..." 
-                  value={searchTerm}
-                  onChange={(e) => setSearchTerm(e.target.value)}
-                  className="w-full pl-9 pr-4 py-2 bg-slate-50 dark:bg-slate-850 border border-transparent dark:border-slate-800 rounded-xl text-xs outline-none focus:ring-1 focus:ring-indigo-500 font-sans"
-                />
-              </div>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {filteredRequests.map(request => (
-              <div key={request.id} className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-5 rounded-3xl shadow-3xs group hover:border-indigo-400 transition-all">
-                <div className="flex justify-between items-start mb-4">
-                  <span className={`px-2 py-0.5 rounded-md text-[8px] font-black uppercase ${getPriorityColor(request.priority)}`}>
-                    {request.priority}
-                  </span>
-                  <span className="text-[10px] font-mono text-slate-400 font-bold">{request.id}</span>
-                </div>
-
-                <div className="space-y-1 mb-4">
-                  <div className="flex items-center gap-1.5">
-                    <MapPin size={12} className="text-indigo-500" />
-                    <h3 className="text-sm font-black text-slate-900 dark:text-white uppercase leading-tight">Room {request.roomNumber}</h3>
-                  </div>
-                  {request.guestName && (
-                    <div className="flex items-center gap-1.5">
-                      <User size={12} className="text-slate-400" />
-                      <p className="text-[11px] text-slate-500 font-bold">{request.guestName}</p>
-                    </div>
-                  )}
-                </div>
-
-                <div className="mb-4">
-                  <div className="text-[8px] font-black text-slate-400 uppercase tracking-widest mb-1">{request.requestType}</div>
-                  <p className="text-[10px] text-slate-600 dark:text-slate-400 leading-relaxed">{request.description}</p>
-                </div>
-
-                <div className="pt-4 border-t border-slate-50 dark:border-slate-800 space-y-3">
-                  <div className="flex items-center justify-between text-[10px]">
-                    <span className={`font-black ${getStatusColor(request.status)}`}>{request.status}</span>
-                    <div className="flex items-center gap-1 text-slate-400">
-                      <Clock size={10} />
-                      <span className="font-mono">{request.requestedAt.split(' ')[1]}</span>
-                    </div>
-                  </div>
-
-                  {request.status !== 'Completed' && (
-                    <div className="flex gap-2">
-                      {request.status === 'Pending' && (
-                        <button 
-                          onClick={() => handleUpdateStatus(request.id, 'In Progress')}
-                          className="flex-1 py-2 bg-indigo-50 dark:bg-indigo-900 border border-indigo-100 dark:border-indigo-800 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-600 hover:text-white transition-all rounded-xl text-[9px] font-black uppercase tracking-tight"
-                        >
-                          Start
-                        </button>
-                      )}
-                      {request.status === 'In Progress' && (
-                        <button 
-                          onClick={() => handleUpdateStatus(request.id, 'Completed')}
-                          className="flex-1 py-2 bg-emerald-50 dark:bg-emerald-900 border border-emerald-100 dark:border-emerald-800 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-600 hover:text-white transition-all rounded-xl text-[9px] font-black uppercase tracking-tight flex items-center justify-center gap-1.5"
-                        >
-                          <CheckCircle2 size={10} /> Complete
-                        </button>
-                      )}
-                    </div>
-                  )}
-
-                  {request.completedAt && (
-                    <div className="text-[9px] text-slate-400 font-mono">
-                      Completed: {request.completedAt}
-                    </div>
-                  )}
-                </div>
-              </div>
+      <SectionCard pad="md">
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <div className="flex bg-slate-100 dark:bg-slate-900/40 p-1 rounded-xl gap-1">
+            {(['All', 'Pending', 'In Progress', 'Completed'] as const).map(f => (
+              <button key={f} onClick={() => setFilter(f)} className={`px-4 py-1.5 rounded-lg text-xs font-medium transition ${filter === f ? 'bg-white dark:bg-slate-700 text-gray-900 dark:text-white shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>{f}</button>
             ))}
           </div>
-        </>
+          <div className="relative w-full max-w-xs">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+            <input placeholder="Search room, guest, type..." value={search} onChange={e => setSearch(e.target.value)} className="w-full pl-9 pr-3 py-2 text-sm border border-gray-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-gray-900 dark:text-white outline-none focus:ring-1 focus:ring-[var(--color-accent-operations)]" />
+          </div>
+        </div>
+      </SectionCard>
+
+      {error && (
+        <div className="px-4 py-3 rounded-xl bg-red-50 dark:bg-red-900/20 text-sm text-red-700 dark:text-red-300 border border-red-200 dark:border-red-800">
+          {error}
+        </div>
       )}
+
+      <SectionCard pad="none">
+        {loading ? (
+          <div className="p-8 text-center text-sm text-gray-500">
+            <Loader2 className="w-5 h-5 animate-spin inline-block mr-2" />
+            Loading guest requests…
+          </div>
+        ) : (
+          <div className="divide-y divide-gray-100 dark:divide-slate-700">
+            {filtered.map(r => {
+              const Icon = TYPE_ICON[r.type] ?? Bell;
+              return (
+                <div key={r.id} className="p-4 flex flex-col md:flex-row md:items-center gap-4">
+                  <div className="flex items-center gap-3 md:w-64 shrink-0">
+                    <div className="p-2 rounded-xl bg-[var(--color-accent-operations)]/10 text-[var(--color-accent-operations)]"><Icon className="w-4 h-4" /></div>
+                    <div>
+                      <h4 className="text-sm font-bold text-gray-900 dark:text-white uppercase">{r.type}</h4>
+                      <p className="text-xs text-gray-500">{r.id.slice(0, 12)} · Room {r.room} · {r.guest}{r.qty ? ` · ${r.qty} pcs` : ''}</p>
+                    </div>
+                  </div>
+                  <div className="flex-1 flex flex-wrap items-center gap-3 text-xs">
+                    <span className="text-gray-500">Requested {r.requestedAt}</span>
+                    {r.priority === 'Urgent' && <Badge tone={PRIORITY_TONE[r.priority]} variant="solid">Urgent</Badge>}
+                    {r.assignedTo && <span className="text-gray-500">→ {r.assignedTo}</span>}
+                  </div>
+                  <div className="flex items-center gap-3 md:w-44 shrink-0">
+                    <Badge tone={STATUS_TONE[r.status]}>{r.status}</Badge>
+                    {r.status !== 'Completed' && (
+                      <button
+                        onClick={() => advance(r.id, r.status)}
+                        disabled={actingOn === r.id}
+                        className={button.ghost + ' text-xs disabled:opacity-50'}
+                      >
+                        {actingOn === r.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : null}
+                        {r.status === 'Pending' ? 'Dispatch' : 'Complete'}
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+            {filtered.length === 0 && <div className="p-8 text-center text-sm text-gray-500">No guest requests match the filters.</div>}
+          </div>
+        )}
+      </SectionCard>
     </div>
   );
 }

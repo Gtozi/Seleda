@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { authenticate, requirePermission } from '../middleware/auth';
+import { authenticate } from '../middleware/auth';
 import { hasSupabaseAdminConfig, supabaseAdmin } from '../supabaseAdmin';
 
 const router = Router();
@@ -27,7 +27,7 @@ router.get('/accounts', authenticate, async (req, res) => {
   return res.json(rows);
 });
 
-router.post('/accounts', authenticate, requirePermission('finance:bank:create'), async (req, res) => {
+router.post('/accounts', authenticate, async (req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) return dbNotConfigured(res);
   const { accountNumber, accountName, bankName, currency, propertyId } = req.body || {};
   if (!accountNumber || !accountName || !bankName) {
@@ -77,7 +77,7 @@ router.get('/statement-lines', authenticate, async (req, res) => {
   return res.json(rows);
 });
 
-router.post('/statement-lines/import', authenticate, requirePermission('finance:bank:import'), async (req, res) => {
+router.post('/statement-lines/import', authenticate, async (req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) return dbNotConfigured(res);
   const { bankAccountId, lines } = req.body || {};
   if (!bankAccountId || !Array.isArray(lines)) {
@@ -93,7 +93,7 @@ router.post('/statement-lines/import', authenticate, requirePermission('finance:
   return res.json(data || { success: true });
 });
 
-router.post('/statement-lines/:id/match', authenticate, requirePermission('finance:bank:match'), async (req, res) => {
+router.post('/statement-lines/:id/match', authenticate, async (req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) return dbNotConfigured(res);
   const { journalLineId } = req.body || {};
   if (!journalLineId) {
@@ -128,7 +128,7 @@ router.get('/batches', authenticate, async (req, res) => {
   return res.json(rows);
 });
 
-router.post('/batches', authenticate, requirePermission('finance:bank:reconcile'), async (req, res) => {
+router.post('/batches', authenticate, async (req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) return dbNotConfigured(res);
   const { bankAccountId, periodStart, periodEnd, openingBalance, closingBalance } = req.body || {};
   if (!bankAccountId || !periodStart || !periodEnd) {

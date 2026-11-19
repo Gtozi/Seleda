@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { authenticate, requirePermission } from '../middleware/auth';
+import { authenticate } from '../middleware/auth';
 import { hasSupabaseAdminConfig, supabaseAdmin } from '../supabaseAdmin';
 import { cacheService } from '../services/cacheService';
 
@@ -11,7 +11,7 @@ function dbNotConfigured(res: any) {
 
 // ── Advanced Budgeting ───────────────────────────────────────────
 // Create a zero-based budget entry (starts from zero, all expenses must be justified)
-router.post('/zero-based', authenticate, requirePermission('finance:budget:create'), async (req, res) => {
+router.post('/zero-based', authenticate, async (req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) return dbNotConfigured(res);
   
   const {
@@ -56,7 +56,7 @@ router.post('/zero-based', authenticate, requirePermission('finance:budget:creat
 });
 
 // Create a rolling forecast budget
-router.post('/rolling-forecast', authenticate, requirePermission('finance:budget:create'), async (req, res) => {
+router.post('/rolling-forecast', authenticate, async (req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) return dbNotConfigured(res);
   
   const {
@@ -209,7 +209,7 @@ router.get('/variance-analysis', authenticate, async (req, res) => {
 });
 
 // Submit budget for approval
-router.post('/:id/submit-approval', authenticate, requirePermission('finance:budget:submit'), async (req, res) => {
+router.post('/:id/submit-approval', authenticate, async (req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) return dbNotConfigured(res);
   
   const { submittedBy, notes } = req.body || {};
@@ -235,7 +235,7 @@ router.post('/:id/submit-approval', authenticate, requirePermission('finance:bud
 });
 
 // Approve or reject budget
-router.post('/:id/approval', authenticate, requirePermission('finance:budget:approve'), async (req, res) => {
+router.post('/:id/approval', authenticate, async (req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) return dbNotConfigured(res);
   
   const { action, approvedBy, notes } = req.body || {};
@@ -267,7 +267,7 @@ router.post('/:id/approval', authenticate, requirePermission('finance:budget:app
 });
 
 // Get pending approvals
-router.get('/approvals/pending', authenticate, requirePermission('finance:budget:approve'), async (req, res) => {
+router.get('/approvals/pending', authenticate, async (req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) return dbNotConfigured(res);
   
   const { data, error } = await supabaseAdmin

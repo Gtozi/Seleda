@@ -1,17 +1,21 @@
 /**
- * Data Management & Backups
- * 1. Database Backup & Restore
- * 2. Data Retention Policies
+ * Data Management & Backups — live DB-integrated admin module.
+ * 1. Backups & Restore  → backup_jobs / backup_schedules / backup_restorations
+ * 2. Data Retention     → data_retention_policies (per-table policies)
+ * 3. Manual Exports     → live table dumps via /api/admin/exports/:dataset
  */
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
-  Database, Archive, RefreshCw, Download, Upload, ShieldCheck,
+  Archive, Download, ShieldCheck,
   Clock, Save, CheckCircle2, AlertTriangle, Trash2, HardDrive,
-  Cloud, FileJson, FileSpreadsheet, Settings, Calendar, CheckCircle
+  FileJson, FileSpreadsheet, Calendar, CheckCircle, Database,
+  Play, RotateCcw, Plus, XCircle, History, Table2, Loader2
 } from 'lucide-react';
-import { useERP } from '../../context/ERPContext';
-import { useSystem } from '../../context/SystemContext';
+import StatCard from '../FrontOffice/StatCard';
+import { PageHeader, SectionCard, Badge } from '../FrontOffice/ui';
+import { button } from '../FrontOffice/brandTheme';
+import { adminAuthHeaders } from './shared/ResourceManager';
 
 type BackupTab = 'backups' | 'retention' | 'exports';
 
@@ -21,17 +25,56 @@ const TAB_META: { id: BackupTab; label: string; icon: React.ReactNode }[] = [
   { id: 'exports', label: 'Manual Exports', icon: <Download size={14} /> },
 ];
 
+const api = async (path: string, opts: RequestInit = {}) => {
+  const res = await fetch(`/api/admin${path}`, { headers: adminAuthHeaders(), ...opts });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || `Request failed (${res.status})`);
+  return data;
+};
+
+const fmtBytes = (bytes?: number | null) => {
+  if (bytes == null) return '—';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+};
+
+const fmtDate = (v?: string | null) => (v ? new Date(v).toLocaleString() : '—');
+
+const statusTone = (s?: string) =>
+  s === 'completed' || s === 'success' ? 'success' as const
+  : s === 'failed' || s === 'error' ? 'danger' as const
+  : s === 'running' || s === 'pending' ? 'warning' as const
+  : 'neutral' as const;
+
+const CRON_PRESETS = [
+  { value: '0 2 * * *', label: 'Daily at 02:00' },
+  { value: '0 2 * * 0', label: 'Weekly (Sun) at 02:00' },
+  { value: '0 2 1 * *', label: 'Monthly (1st) at 02:00' },
+  { value: '0 */6 * * *', label: 'Every 6 hours' },
+];
+
 export default function DataManagementBackups() {
   const [activeTab, setActiveTab] = useState<BackupTab>('backups');
 
   return (
-    <div className="h-full flex flex-col bg-slate-50">
-      <div className="px-6 pt-4 flex justify-center">
-        <div className="flex bg-slate-100 p-1 border border-slate-200 rounded-xl">
+    <div className="h-full flex flex-col bg-slate-50 dark:bg-slate-900">
+      <div className="px-6 pt-4">
+        <PageHeader
+          title="Data Management & Backups"
+          subtitle="Live backup jobs, schedules, retention policies, and data exports"
+          icon={Database}
+        />
+      </div>
+      <div className="px-6 pt-2 flex justify-center">
+        <div className="flex bg-slate-100 dark:bg-slate-800 p-1 border border-slate-200 dark:border-slate-700 rounded-xl">
           {TAB_META.map(t => (
             <button key={t.id} onClick={() => setActiveTab(t.id)}
               className={`px-4 py-2 flex items-center justify-center gap-2 rounded-lg text-xs font-sans font-bold transition-all ${
-                activeTab === t.id ? 'bg-indigo-600 text-white shadow-md' : 'text-slate-600 hover:text-slate-900 bg-white'
+                activeTab === t.id
+                  ? 'bg-indigo-600 text-white shadow-md'
+                  : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white bg-white dark:bg-slate-700'
               }`}>
               {t.icon} {t.label}
             </button>
@@ -48,294 +91,498 @@ export default function DataManagementBackups() {
   );
 }
 
+// ─────────────────────────── Backups & Restore ───────────────────────────
+
 function BackupsModule() {
-  const { currentSystemDate } = useSystem();
-  const [schedule, setSchedule] = useState({
-    frequency: 'daily' as 'daily' | 'weekly' | 'manual',
-    time: '02:00',
-    cloudEnabled: true,
-    localEnabled: true,
-  });
-  const [saveStatus, setSaveStatus] = useState<'idle' | 'success'>('idle');
-  const [saveToast, setSaveToast] = useState<{ show: boolean; msg: string; type: 'success' | 'info' | 'error' }>({ show: false, msg: '', type: 'success' });
+  const [stats, setStats] = useState<any>(null);
+  const [jobs, setJobs] = useState<any[]>([]);
+  const [schedules, setSchedules] = useState<any[]>([]);
+  const [restorations, setRestorations] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [toast, setToast] = useState<{ msg: string; type: 'success' | 'error' } | null>(null);
 
-  const triggerToast = (msg: string, type: 'success' | 'info' | 'error' = 'success') => {
-    setSaveToast({ show: true, msg, type });
-    setTimeout(() => setSaveToast(prev => ({ ...prev, show: false })), 4000);
+  // new schedule form
+  const [schedForm, setSchedForm] = useState({ scheduleName: '', backupType: 'full', cronSchedule: '0 2 * * *', retentionDays: 30, storageLocation: 'supabase' });
+  const [showSchedForm, setShowSchedForm] = useState(false);
+  // trigger backup form
+  const [backupType, setBackupType] = useState('full');
+  const [storageLocation, setStorageLocation] = useState('supabase');
+
+  const notify = (msg: string, type: 'success' | 'error' = 'success') => {
+    setToast({ msg, type });
+    setTimeout(() => setToast(null), 4000);
   };
 
-  const snapshots = useMemo(() => {
-    const base = new Date(currentSystemDate);
-    const rows: { id: string; date: string; time: string; type: string; size: string; status: string }[] = [];
-    for (let i = 0; i < 5; i++) {
-      const d = new Date(base);
-      d.setDate(d.getDate() - i);
-      const dateStr = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-      rows.push({
-        id: `SNAP_${9422 - i}`,
-        date: dateStr,
-        time: '02:00 UTC',
-        type: i === 0 ? 'Full' : 'Diff',
-        size: i === 0 ? '12.4 GB' : `${200 + i * 15}MB`,
-        status: i === 0 ? 'Healthy' : 'Verified'
-      });
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [st, jb, sc, rs] = await Promise.all([
+        api('/backups/statistics').catch(() => ({ statistics: null })),
+        api('/backups').catch(() => ({ backups: [] })),
+        api('/backup-schedules').catch(() => ({ schedules: [] })),
+        api('/backups/restorations').catch(() => ({ restorations: [] })),
+      ]);
+      setStats(st.statistics);
+      setJobs(jb.backups || []);
+      setSchedules(sc.schedules || []);
+      setRestorations(rs.restorations || []);
+    } finally {
+      setLoading(false);
     }
-    return rows;
-  }, [currentSystemDate]);
+  }, []);
 
-  const handleSave = () => {
-    setSaveStatus('success');
-    setTimeout(() => setSaveStatus('idle'), 2500);
+  useEffect(() => { load(); }, [load]);
+
+  const run = async (key: string, fn: () => Promise<void>, okMsg: string) => {
+    setBusy(key);
+    try { await fn(); notify(okMsg); await load(); }
+    catch (e: any) { notify(e?.message || 'Action failed', 'error'); }
+    finally { setBusy(null); }
   };
+
+  const cards = [
+    { title: 'Total Backups', value: stats?.total_backups ?? jobs.length, icon: Archive, tone: 'accent' as const },
+    { title: 'Successful', value: stats?.successful_backups ?? '—', icon: CheckCircle2, tone: 'success' as const },
+    { title: 'Failed', value: stats?.failed_backups ?? '—', icon: XCircle, tone: 'danger' as const },
+    { title: 'Storage Used', value: fmtBytes(stats?.total_size_bytes), icon: HardDrive, tone: 'info' as const },
+    { title: 'Last Backup', value: stats?.last_backup_time ? new Date(stats.last_backup_time).toLocaleDateString() : 'Never', icon: Clock, tone: 'warning' as const },
+    { title: 'Active Schedules', value: schedules.filter(s => s.is_active).length, icon: Calendar, tone: 'neutral' as const },
+  ];
 
   return (
     <div className="space-y-6 animate-fade-in pt-4">
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        {[
-          { label: 'Storage Used', value: '42.2 GB', icon: HardDrive, color: 'indigo' },
-          { label: 'Backup Health', value: '100%', icon: ShieldCheck, color: 'emerald' },
-          { label: 'Next Backup', value: 'Tonight 02:00', icon: Clock, color: 'amber' },
-        ].map((s, i) => (
-          <div key={i} className="bg-white border border-slate-200 p-5 rounded-3xl shadow-sm flex items-center gap-4">
-            <div className={`p-3 rounded-2xl bg-${s.color}-500/10 text-${s.color}-600`}><s.icon size={20} /></div>
-            <div>
-              <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest block">{s.label}</span>
-              <h4 className="text-xl font-black text-slate-900">{s.value}</h4>
-            </div>
-          </div>
-        ))}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
+        {cards.map(c => <StatCard key={c.title} title={c.title} value={c.value} icon={c.icon} tone={c.tone} />)}
       </div>
 
-      <div className="bg-white border border-slate-200 rounded-3xl p-6 shadow-sm">
-        <h2 className="text-base font-sans font-black text-slate-900 tracking-tight flex items-center gap-2 mb-4">
-          <Settings size={18} className="text-indigo-500" /> Backup Schedule
-        </h2>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-5 mb-4">
-          <div className="space-y-1.5">
-            <label className="text-xs font-mono uppercase text-slate-400 font-bold">Frequency</label>
-            <select value={schedule.frequency} onChange={e => setSchedule(f => ({ ...f, frequency: e.target.value as any }))}
-              className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs outline-none">
-              <option value="daily">Daily</option>
-              <option value="weekly">Weekly</option>
-              <option value="manual">Manual Only</option>
-            </select>
-          </div>
-          <div className="space-y-1.5">
-            <label className="text-xs font-mono uppercase text-slate-400 font-bold">Backup Time</label>
-            <input type="time" value={schedule.time} onChange={e => setSchedule(f => ({ ...f, time: e.target.value }))}
-              className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs outline-none" />
-          </div>
-        </div>
-        <div className="flex gap-6">
-          <label className="flex items-center gap-2 text-xs font-bold text-slate-700 cursor-pointer">
-            <input type="checkbox" checked={schedule.cloudEnabled} onChange={e => setSchedule(f => ({ ...f, cloudEnabled: e.target.checked }))} />
-            Cloud Backup
-          </label>
-          <label className="flex items-center gap-2 text-xs font-bold text-slate-700 cursor-pointer">
-            <input type="checkbox" checked={schedule.localEnabled} onChange={e => setSchedule(f => ({ ...f, localEnabled: e.target.checked }))} />
-            Local Mirror
-          </label>
-        </div>
-      </div>
-
-      {saveToast.show && (
-        <div className={`fixed top-4 right-4 z-50 p-4 rounded-2xl shadow-xl flex items-center gap-3 text-xs font-sans font-bold border ${
-          saveToast.type === 'success' ? 'bg-emerald-50 text-emerald-800 border-emerald-100' :
-          saveToast.type === 'error' ? 'bg-rose-50 text-rose-800 border-rose-100' : 'bg-indigo-50 text-indigo-800 border-indigo-100'
+      {toast && (
+        <div className={`p-4 rounded-xl text-sm font-bold flex items-center gap-2 border ${
+          toast.type === 'success'
+            ? 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border-emerald-100 dark:border-emerald-500/20'
+            : 'bg-rose-50 dark:bg-rose-500/10 text-rose-700 dark:text-rose-400 border-rose-100 dark:border-rose-500/20'
         }`}>
-          <CheckCircle size={16} className={saveToast.type === 'success' ? "text-emerald-600" : "text-indigo-600"} />
-          <span>{saveToast.msg}</span>
+          {toast.type === 'success' ? <CheckCircle2 size={16} /> : <AlertTriangle size={16} />} {toast.msg}
         </div>
       )}
 
-      <div className="bg-white border border-slate-200 rounded-3xl shadow-sm overflow-hidden">
-        <div className="p-4 border-b border-slate-100 flex justify-between items-center">
-          <h3 className="text-sm font-black text-slate-900 uppercase tracking-wider">Recent Snapshots</h3>
-          <button onClick={() => triggerToast('Manual snapshot triggered successfully.', 'success')} className="px-3 py-1.5 bg-indigo-600 text-white rounded-xl text-[10px] font-bold flex items-center gap-1.5 hover:bg-indigo-700">
-            <RefreshCw size={12} /> Trigger Now
-          </button>
-        </div>
-        <div className="divide-y divide-slate-50">
-          {snapshots.map(row => (
-            <div key={row.id} className="flex items-center justify-between p-4 px-6 hover:bg-slate-50 transition">
-              <div className="flex gap-4 items-center">
-                <div className="w-10 h-10 rounded-xl border-2 border-slate-100 flex items-center justify-center font-black text-slate-400 font-mono text-[10px]">
-                  {row.type === 'Full' ? 'F' : 'D'}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* Schedules */}
+        <SectionCard
+          title="Backup Schedules"
+          subtitle={`${schedules.length} configured schedules`}
+          icon={Calendar}
+          tone="info"
+          pad="md"
+          actions={
+            <button onClick={() => setShowSchedForm(v => !v)} className={button.secondary}>
+              <Plus size={14} /> New
+            </button>
+          }
+        >
+          {showSchedForm && (
+            <div className="mb-4 p-4 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <input placeholder="Schedule name" value={schedForm.scheduleName}
+                onChange={e => setSchedForm(f => ({ ...f, scheduleName: e.target.value }))}
+                className="px-3 py-2 text-sm rounded-xl border border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-gray-900 dark:text-white outline-none" />
+              <select value={schedForm.backupType} onChange={e => setSchedForm(f => ({ ...f, backupType: e.target.value }))}
+                className="px-3 py-2 text-sm rounded-xl border border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-gray-900 dark:text-white outline-none">
+                <option value="full">Full</option>
+                <option value="incremental">Incremental</option>
+                <option value="schema_only">Schema Only</option>
+              </select>
+              <select value={schedForm.cronSchedule} onChange={e => setSchedForm(f => ({ ...f, cronSchedule: e.target.value }))}
+                className="px-3 py-2 text-sm rounded-xl border border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-gray-900 dark:text-white outline-none">
+                {CRON_PRESETS.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
+              </select>
+              <input type="number" min={1} placeholder="Retention (days)" value={schedForm.retentionDays}
+                onChange={e => setSchedForm(f => ({ ...f, retentionDays: Number(e.target.value) }))}
+                className="px-3 py-2 text-sm rounded-xl border border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-gray-900 dark:text-white outline-none" />
+              <div className="sm:col-span-2 flex gap-2">
+                <button className={button.primary} disabled={busy === 'sched-create' || !schedForm.scheduleName.trim()}
+                  onClick={() => run('sched-create', async () => {
+                    await api('/backup-schedules', { method: 'POST', body: JSON.stringify(schedForm) });
+                    setShowSchedForm(false);
+                    setSchedForm(f => ({ ...f, scheduleName: '' }));
+                  }, 'Schedule created')}>
+                  {busy === 'sched-create' ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} Create Schedule
+                </button>
+                <button className={button.ghost} onClick={() => setShowSchedForm(false)}>Cancel</button>
+              </div>
+            </div>
+          )}
+          <div className="divide-y divide-gray-100 dark:divide-slate-700 max-h-80 overflow-y-auto">
+            {schedules.length === 0 && !loading && (
+              <div className="py-8 text-center text-sm text-gray-400">No backup schedules configured</div>
+            )}
+            {schedules.map(sc => (
+              <div key={sc.id} className="flex items-center justify-between gap-3 py-3">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-bold text-gray-900 dark:text-white truncate">{sc.schedule_name}</span>
+                    <Badge tone={sc.is_active ? 'success' : 'neutral'}>{sc.is_active ? 'Active' : 'Paused'}</Badge>
+                  </div>
+                  <div className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                    {sc.backup_type} · cron <code className="font-mono">{sc.cron_schedule}</code> · retain {sc.retention_days}d · {sc.storage_location}
+                    {sc.next_run_at && <> · next {fmtDate(sc.next_run_at)}</>}
+                  </div>
                 </div>
-                <div>
-                  <div className="text-xs font-black text-slate-900">{row.id} • {row.size}</div>
-                  <div className="text-[10px] text-slate-400 font-mono">{row.date} @ {row.time}</div>
+                <div className="flex items-center gap-1 shrink-0">
+                  <button title={sc.is_active ? 'Pause' : 'Resume'}
+                    onClick={() => run(`sched-toggle-${sc.id}`, () => api(`/backup-schedules/${sc.id}`, { method: 'PATCH', body: JSON.stringify({ isActive: !sc.is_active }) }).then(() => {}), sc.is_active ? 'Schedule paused' : 'Schedule resumed')}
+                    className={button.ghost}>
+                    <PowerIcon active={sc.is_active} />
+                  </button>
+                  <button title="Delete"
+                    onClick={() => run(`sched-del-${sc.id}`, () => api(`/backup-schedules/${sc.id}`, { method: 'DELETE' }), 'Schedule deleted')}
+                    className={`${button.ghost} hover:text-rose-600`}>
+                    <Trash2 size={14} />
+                  </button>
                 </div>
               </div>
-              <div className="flex gap-3 items-center">
-                <span className="text-[9px] font-black text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full uppercase tracking-widest">{row.status}</span>
-                <button onClick={() => triggerToast(`Snapshot ${row.id} download started.`, 'info')} className="p-2 border border-slate-100 rounded-xl text-slate-400 hover:bg-slate-100 hover:text-indigo-600 transition">
-                  <Download size={16} />
+            ))}
+          </div>
+        </SectionCard>
+
+        {/* Trigger + Jobs */}
+        <SectionCard
+          title="Backup Jobs"
+          subtitle={`${jobs.length} recent jobs`}
+          icon={Archive}
+          tone="accent"
+          pad="md"
+          actions={
+            <div className="flex items-center gap-2">
+              <select value={backupType} onChange={e => setBackupType(e.target.value)}
+                className="px-2 py-1.5 text-xs rounded-lg border border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-gray-900 dark:text-white outline-none">
+                <option value="full">Full</option>
+                <option value="incremental">Incremental</option>
+                <option value="schema_only">Schema Only</option>
+              </select>
+              <button className={button.primary} disabled={busy === 'backup-create'}
+                onClick={() => run('backup-create', async () => {
+                  await api('/backups/create', { method: 'POST', body: JSON.stringify({ backupType, storageLocation }) });
+                }, 'Backup job queued')}>
+                {busy === 'backup-create' ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />} Run Now
+              </button>
+            </div>
+          }
+        >
+          <div className="divide-y divide-gray-100 dark:divide-slate-700 max-h-96 overflow-y-auto">
+            {jobs.length === 0 && !loading && (
+              <div className="py-8 text-center text-sm text-gray-400">No backup jobs yet — run your first backup</div>
+            )}
+            {jobs.map(job => (
+              <div key={job.id} className="flex items-center justify-between gap-3 py-3">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-bold text-gray-900 dark:text-white capitalize">{job.backup_type?.replace('_', ' ')}</span>
+                    <Badge tone={statusTone(job.status)}>{job.status}</Badge>
+                  </div>
+                  <div className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                    {fmtBytes(job.backup_size_bytes)} · {job.storage_location} · started {fmtDate(job.initiated_at)}
+                    {job.completed_at && <> · finished {fmtDate(job.completed_at)}</>}
+                  </div>
+                  {job.error_message && <div className="text-xs text-rose-500 mt-0.5 truncate">{job.error_message}</div>}
+                </div>
+                {job.status === 'completed' && job.storage_path && (
+                  <button title="Download backup manifest"
+                    disabled={busy === `dl-${job.id}`}
+                    onClick={() => run(`dl-${job.id}`, async () => {
+                      const res = await api(`/backups/${job.id}/download`);
+                      window.open(res.url, '_blank');
+                    }, 'Download ready')}
+                    className={button.ghost}>
+                    {busy === `dl-${job.id}` ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
+                  </button>
+                )}
+                <button title="Restore this backup"
+                  disabled={job.status !== 'completed' || busy === `restore-${job.id}`}
+                  onClick={() => run(`restore-${job.id}`, async () => {
+                    await api(`/backups/${job.id}/restore`, { method: 'POST', body: JSON.stringify({}) });
+                  }, 'Restore requested')}
+                  className={`${button.ghost} disabled:opacity-40`}>
+                  {busy === `restore-${job.id}` ? <Loader2 size={14} className="animate-spin" /> : <RotateCcw size={14} />}
                 </button>
+              </div>
+            ))}
+          </div>
+        </SectionCard>
+      </div>
+
+      {/* Restore history */}
+      <SectionCard title="Restore History" subtitle={`${restorations.length} restoration records`} icon={History} tone="warning" pad="md">
+        <div className="divide-y divide-gray-100 dark:divide-slate-700 max-h-64 overflow-y-auto">
+          {restorations.length === 0 && !loading && (
+            <div className="py-8 text-center text-sm text-gray-400">No restorations recorded</div>
+          )}
+          {restorations.map(r => (
+            <div key={r.id} className="flex items-center justify-between gap-3 py-3">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-bold text-gray-900 dark:text-white capitalize">{r.backup_jobs?.backup_type?.replace('_', ' ') || 'Backup'}</span>
+                  <Badge tone={statusTone(r.status)}>{r.status}</Badge>
+                </div>
+                <div className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                  requested {fmtDate(r.initiated_at)}
+                  {r.rows_restored != null && <> · {r.rows_restored.toLocaleString()} rows restored</>}
+                </div>
+                {r.error_message && <div className="text-xs text-rose-500 mt-0.5 truncate">{r.error_message}</div>}
               </div>
             </div>
           ))}
         </div>
-      </div>
+      </SectionCard>
 
+      {/* Cleanup */}
       <div className="flex justify-end">
-        <button onClick={handleSave}
-          className="flex items-center gap-2 px-5 py-2.5 rounded-xl text-xs font-sans font-bold text-white bg-indigo-600 hover:bg-indigo-700 transition">
-          {saveStatus === 'success' ? <CheckCircle2 size={16} /> : <Save size={16} />}
-          {saveStatus === 'success' ? 'Saved' : 'Save Backup Settings'}
+        <button className={button.secondary}
+          disabled={busy === 'cleanup'}
+          onClick={() => run('cleanup', async () => {
+            const days = prompt('Delete completed backups older than how many days?', '30');
+            if (!days) return;
+            const res = await api('/backups/cleanup', { method: 'POST', body: JSON.stringify({ retentionDays: Number(days) }) });
+            notify(`Cleanup complete — ${res.deletedCount ?? 0} backup records removed`);
+          }, 'Cleanup done')}>
+          {busy === 'cleanup' ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />} Cleanup Old Backups
         </button>
       </div>
     </div>
   );
+}
+
+function PowerIcon({ active }: { active: boolean }) {
+  return active ? <CheckCircle size={14} className="text-emerald-500" /> : <XCircle size={14} className="text-gray-400" />;
+}
+
+// ─────────────────────────── Data Retention ───────────────────────────
+
+interface RetentionPolicy {
+  id: string;
+  table_name: string;
+  retention_days: number;
+  action: string;
+  enabled: boolean;
+  property_id?: string | null;
 }
 
 function RetentionModule() {
-  const [policy, setPolicy] = useState({
-    guestDataRetentionMonths: 24,
-    auditLogRetentionMonths: 60,
-    autoAnonymize: true,
-    archiveBeforeDelete: true,
-  });
-  const [saveStatus, setSaveStatus] = useState<'idle' | 'success'>('idle');
+  const [policies, setPolicies] = useState<RetentionPolicy[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [toast, setToast] = useState<{ msg: string; type: 'success' | 'error' } | null>(null);
 
-  const handleSave = () => {
-    setSaveStatus('success');
-    setTimeout(() => setSaveStatus('idle'), 2500);
+  const notify = (msg: string, type: 'success' | 'error' = 'success') => {
+    setToast({ msg, type });
+    setTimeout(() => setToast(null), 4000);
+  };
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await api('/compliance/retention-policies').catch(() => ({ policies: [] }));
+      setPolicies(res.policies || []);
+    } finally { setLoading(false); }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const save = async (p: RetentionPolicy, updates: Partial<RetentionPolicy>) => {
+    setBusyId(p.id);
+    try {
+      await api(`/compliance/retention-policies/${p.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          retentionDays: updates.retention_days,
+          action: updates.action,
+          enabled: updates.enabled,
+        }),
+      });
+      setPolicies(prev => prev.map(x => x.id === p.id ? { ...x, ...updates } : x));
+    } catch (e: any) { notify(e?.message || 'Save failed', 'error'); }
+    finally { setBusyId(null); }
   };
 
   return (
-    <div className="space-y-6 animate-fade-in pt-4 max-w-5xl mx-auto">
-      <div className="bg-amber-50 border border-amber-200 rounded-2xl px-5 py-3 flex items-center gap-2 text-sm text-amber-700 font-medium">
-        <AlertTriangle size={16} /> Configure retention carefully — deleted data cannot be recovered.
+    <div className="space-y-6 animate-fade-in pt-4 max-w-6xl mx-auto">
+      <div className="flex items-start gap-3 p-4 rounded-xl bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/20 text-amber-800 dark:text-amber-300 text-sm">
+        <AlertTriangle size={16} className="shrink-0 mt-0.5" />
+        <span>Retention policies are enforced per table. Shorter windows free storage; longer windows preserve audit history. Changes apply to future retention runs.</span>
       </div>
 
-      <div className="bg-white border border-slate-200 rounded-3xl p-6 shadow-sm">
-        <h2 className="text-base font-sans font-black text-slate-900 tracking-tight flex items-center gap-2 mb-4">
-          <Clock size={18} className="text-indigo-500" /> Data Retention Policies
-        </h2>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-5 mb-4">
-          <div className="space-y-1.5">
-            <label className="text-xs font-mono uppercase text-slate-400 font-bold">Guest Data Retention (months)</label>
-            <input type="number" min={1} max={120} value={policy.guestDataRetentionMonths}
-              onChange={e => setPolicy(f => ({ ...f, guestDataRetentionMonths: Number(e.target.value) }))}
-              className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs outline-none" />
-          </div>
-          <div className="space-y-1.5">
-            <label className="text-xs font-mono uppercase text-slate-400 font-bold">Audit Log Retention (months)</label>
-            <input type="number" min={1} max={120} value={policy.auditLogRetentionMonths}
-              onChange={e => setPolicy(f => ({ ...f, auditLogRetentionMonths: Number(e.target.value) }))}
-              className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs outline-none" />
-          </div>
+      {toast && (
+        <div className={`p-4 rounded-xl text-sm font-bold flex items-center gap-2 border ${
+          toast.type === 'success'
+            ? 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border-emerald-100'
+            : 'bg-rose-50 dark:bg-rose-500/10 text-rose-700 dark:text-rose-400 border-rose-100'
+        }`}>
+          {toast.type === 'success' ? <CheckCircle2 size={16} /> : <AlertTriangle size={16} />} {toast.msg}
         </div>
-        <div className="space-y-3">
-          <ToggleRow label="Auto-anonymize expired guest data" description="Replace PII with anonymized tokens before deletion."
-            enabled={policy.autoAnonymize} onChange={v => setPolicy(f => ({ ...f, autoAnonymize: v }))} />
-          <ToggleRow label="Archive to cold storage before deletion" description="Move expired records to long-term archive before purging."
-            enabled={policy.archiveBeforeDelete} onChange={v => setPolicy(f => ({ ...f, archiveBeforeDelete: v }))} />
-        </div>
-      </div>
+      )}
 
-      <div className="flex justify-end">
-        <button onClick={handleSave}
-          className="flex items-center gap-2 px-5 py-2.5 rounded-xl text-xs font-sans font-bold text-white bg-indigo-600 hover:bg-indigo-700 transition">
-          {saveStatus === 'success' ? <CheckCircle2 size={16} /> : <Save size={16} />}
-          {saveStatus === 'success' ? 'Saved' : 'Save Retention Policy'}
-        </button>
-      </div>
+      <SectionCard title="Per-Table Retention Policies" subtitle={`${policies.filter(p => p.enabled).length} of ${policies.length} policies enabled`} icon={ShieldCheck} tone="warning" pad="none">
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-left text-xs font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 border-b border-gray-200 dark:border-slate-700">
+                <th className="px-5 py-3">Table</th>
+                <th className="px-5 py-3">Retention (days)</th>
+                <th className="px-5 py-3">Action</th>
+                <th className="px-5 py-3">Enabled</th>
+                <th className="px-5 py-3 text-right">Save</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100 dark:divide-slate-700">
+              {policies.map(p => (
+                <PolicyRow key={p.id} policy={p} busy={busyId === p.id} onSave={save} />
+              ))}
+              {policies.length === 0 && !loading && (
+                <tr><td colSpan={5} className="px-5 py-8 text-center text-sm text-gray-400">No retention policies configured</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </SectionCard>
     </div>
   );
 }
 
-function ExportsModule() {
-  const { guests, rooms, inventoryItems, reservations } = useERP();
+function PolicyRow({ policy, busy, onSave }: { policy: RetentionPolicy; busy: boolean; onSave: (p: RetentionPolicy, u: Partial<RetentionPolicy>) => void }) {
+  const [days, setDays] = useState(policy.retention_days);
+  const [action, setAction] = useState(policy.action);
+  const [enabled, setEnabled] = useState(policy.enabled);
+  const dirty = days !== policy.retention_days || action !== policy.action || enabled !== policy.enabled;
 
-  const exportData = (label: string, data: any[], type: 'csv' | 'json') => {
-    if (type === 'json') {
-      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `${label.toLowerCase().replace(/\s+/g, '_')}_export.json`;
-      a.click();
-      URL.revokeObjectURL(url);
-    } else {
-      const headers = Object.keys(data[0] || {}).join(',');
-      const rows = data.map(row => Object.values(row).map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n');
-      const blob = new Blob([headers + '\n' + rows], { type: 'text/csv' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `${label.toLowerCase().replace(/\s+/g, '_')}_export.csv`;
-      a.click();
-      URL.revokeObjectURL(url);
-    }
+  return (
+    <tr className="hover:bg-slate-50 dark:hover:bg-slate-700/30">
+      <td className="px-5 py-3">
+        <span className="font-mono text-xs font-bold text-gray-800 dark:text-gray-200">{policy.table_name}</span>
+      </td>
+      <td className="px-5 py-3">
+        <input type="number" min={1} value={days} onChange={e => setDays(Number(e.target.value))}
+          className="w-24 px-2 py-1 text-sm rounded-lg border border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-gray-900 dark:text-white outline-none" />
+      </td>
+      <td className="px-5 py-3">
+        <select value={action} onChange={e => setAction(e.target.value)}
+          className="px-2 py-1 text-sm rounded-lg border border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-gray-900 dark:text-white outline-none capitalize">
+          <option value="archive">Archive</option>
+          <option value="delete">Delete</option>
+          <option value="anonymize">Anonymize</option>
+        </select>
+      </td>
+      <td className="px-5 py-3">
+        <button role="switch" aria-checked={enabled} onClick={() => setEnabled(v => !v)}
+          className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${enabled ? 'bg-emerald-500' : 'bg-slate-300 dark:bg-slate-600'}`}>
+          <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${enabled ? 'translate-x-4' : 'translate-x-0.5'}`} />
+        </button>
+      </td>
+      <td className="px-5 py-3 text-right">
+        <button disabled={!dirty || busy} onClick={() => onSave(policy, { retention_days: days, action, enabled })}
+          className={`${button.ghost} disabled:opacity-40`}>
+          {busy ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} Save
+        </button>
+      </td>
+    </tr>
+  );
+}
+
+// ─────────────────────────── Manual Exports ───────────────────────────
+
+interface ExportDataset { label: string; table: string; count: number }
+
+function ExportsModule() {
+  const [datasets, setDatasets] = useState<Record<string, ExportDataset>>({});
+  const [loading, setLoading] = useState(true);
+  const [exporting, setExporting] = useState<string | null>(null);
+  const [toast, setToast] = useState<{ msg: string; type: 'success' | 'error' } | null>(null);
+
+  const notify = (msg: string, type: 'success' | 'error' = 'success') => {
+    setToast({ msg, type });
+    setTimeout(() => setToast(null), 4000);
   };
+
+  useEffect(() => {
+    (async () => {
+      setLoading(true);
+      try {
+        const res = await api('/exports/summary').catch(() => ({ datasets: {} }));
+        setDatasets(res.datasets || {});
+      } finally { setLoading(false); }
+    })();
+  }, []);
+
+  const download = async (key: string, format: 'csv' | 'json') => {
+    setExporting(`${key}-${format}`);
+    try {
+      const res = await api(`/exports/${key}?limit=20000`);
+      const rows: any[] = res.rows || [];
+      const label = datasets[key]?.label || key;
+      if (format === 'json') {
+        const blob = new Blob([JSON.stringify({ dataset: label, table: res.table, exportedAt: res.exportedAt, rows }, null, 2)], { type: 'application/json' });
+        triggerDownload(blob, `${label.toLowerCase().replace(/\s+/g, '_')}_export.json`);
+      } else {
+        const headers = rows.length ? Object.keys(rows[0]) : [];
+        const csvRows = rows.map(r => headers.map(h => `"${String(r[h] ?? '').replace(/"/g, '""')}"`).join(','));
+        const blob = new Blob([[headers.join(','), ...csvRows].join('\n')], { type: 'text/csv' });
+        triggerDownload(blob, `${label.toLowerCase().replace(/\s+/g, '_')}_export.csv`);
+      }
+      notify(res.truncated ? `Exported ${rows.length.toLocaleString()} of ${res.count.toLocaleString()} rows (truncated)` : `Exported ${rows.length.toLocaleString()} rows`, res.truncated ? 'error' : 'success');
+    } catch (e: any) { notify(e?.message || 'Export failed', 'error'); }
+    finally { setExporting(null); }
+  };
+
+  const triggerDownload = (blob: Blob, filename: string) => {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename; a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const entries = Object.entries(datasets);
 
   return (
     <div className="space-y-6 animate-fade-in pt-4">
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        {[
-          { label: 'Guests', count: guests.length, icon: Database },
-          { label: 'Rooms', count: rooms.length, icon: Archive },
-          { label: 'Inventory', count: inventoryItems.length, icon: Database },
-          { label: 'Reservations', count: reservations.length, icon: Calendar },
-        ].map((s, i) => (
-          <div key={i} className="bg-white border border-slate-200 p-5 rounded-3xl shadow-sm flex items-center gap-4">
-            <div className="p-3 rounded-2xl bg-sky-500/10 text-sky-600"><s.icon size={20} /></div>
-            <div>
-              <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest block">{s.label}</span>
-              <h4 className="text-xl font-black text-slate-900">{s.count}</h4>
-            </div>
-          </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+        {entries.map(([key, ds]) => (
+          <StatCard key={key} title={ds.label} value={ds.count.toLocaleString()} icon={Table2} tone="info" />
         ))}
+        {loading && entries.length === 0 && (
+          <div className="col-span-full py-8 text-center text-sm text-gray-400">Loading datasets…</div>
+        )}
       </div>
 
-      <div className="bg-white border border-slate-200 rounded-3xl p-6 shadow-sm">
-        <h2 className="text-base font-sans font-black text-slate-900 tracking-tight flex items-center gap-2 mb-4">
-          <Download size={18} className="text-indigo-500" /> Manual Data Export
-        </h2>
+      {toast && (
+        <div className={`p-4 rounded-xl text-sm font-bold flex items-center gap-2 border ${
+          toast.type === 'success'
+            ? 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border-emerald-100'
+            : 'bg-rose-50 dark:bg-rose-500/10 text-rose-700 dark:text-rose-400 border-rose-100'
+        }`}>
+          {toast.type === 'success' ? <CheckCircle2 size={16} /> : <AlertTriangle size={16} />} {toast.msg}
+        </div>
+      )}
+
+      <SectionCard title="Manual Data Export" subtitle="Download live table data as CSV or JSON" icon={Download} tone="info" pad="md">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {[
-            { name: 'Guest Profiles', desc: 'CSV/JSON export of all guest records', records: guests.length, data: guests },
-            { name: 'Room Inventory', desc: 'CSV/JSON export of room master data', records: rooms.length, data: rooms },
-            { name: 'Inventory SKUs', desc: 'CSV/JSON export of inventory items', records: inventoryItems.length, data: inventoryItems },
-            { name: 'Reservations', desc: 'CSV/JSON export of booking history', records: reservations.length, data: reservations },
-          ].map((item, i) => (
-            <div key={i} className="p-4 bg-slate-50 border border-slate-200 rounded-xl flex items-center justify-between">
-              <div>
-                <span className="text-xs font-bold text-slate-900">{item.name}</span>
-                <span className="text-[10px] text-slate-400 block">{item.desc}</span>
-                <span className="text-[10px] font-mono text-slate-400">{item.records.toLocaleString()} records</span>
+          {entries.map(([key, ds]) => (
+            <div key={key} className="p-4 bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 rounded-xl flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <span className="text-xs font-bold text-gray-900 dark:text-white">{ds.label}</span>
+                <span className="text-[10px] font-mono text-gray-400 block">{ds.table} · {ds.count.toLocaleString()} records</span>
               </div>
-              <div className="flex gap-2">
-                <button onClick={() => exportData(item.name, item.data, 'csv')}
-                  className="px-3 py-1.5 border border-slate-200 rounded-lg text-[10px] font-bold text-slate-600 hover:bg-white transition flex items-center gap-1">
-                  <FileSpreadsheet size={12} /> CSV
+              <div className="flex gap-2 shrink-0">
+                <button onClick={() => download(key, 'csv')} disabled={exporting !== null}
+                  className="px-3 py-1.5 border border-gray-200 dark:border-slate-600 rounded-lg text-[10px] font-bold text-gray-600 dark:text-gray-300 hover:bg-white dark:hover:bg-slate-700 transition flex items-center gap-1 disabled:opacity-40">
+                  {exporting === `${key}-csv` ? <Loader2 size={12} className="animate-spin" /> : <FileSpreadsheet size={12} />} CSV
                 </button>
-                <button onClick={() => exportData(item.name, item.data, 'json')}
-                  className="px-3 py-1.5 border border-slate-200 rounded-lg text-[10px] font-bold text-slate-600 hover:bg-white transition flex items-center gap-1">
-                  <FileJson size={12} /> JSON
+                <button onClick={() => download(key, 'json')} disabled={exporting !== null}
+                  className="px-3 py-1.5 border border-gray-200 dark:border-slate-600 rounded-lg text-[10px] font-bold text-gray-600 dark:text-gray-300 hover:bg-white dark:hover:bg-slate-700 transition flex items-center gap-1 disabled:opacity-40">
+                  {exporting === `${key}-json` ? <Loader2 size={12} className="animate-spin" /> : <FileJson size={12} />} JSON
                 </button>
               </div>
             </div>
           ))}
         </div>
-      </div>
-    </div>
-  );
-}
-
-function ToggleRow({ label, description, enabled, onChange }: { label: string; description?: string; enabled: boolean; onChange: (v: boolean) => void }) {
-  return (
-    <div className="flex items-center justify-between gap-4 py-2">
-      <div className="min-w-0">
-        <p className="text-sm font-bold text-slate-800">{label}</p>
-        {description && <p className="text-xs text-slate-500 mt-0.5">{description}</p>}
-      </div>
-      <button type="button" role="switch" aria-checked={enabled} onClick={() => onChange(!enabled)}
-        className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${enabled ? 'bg-emerald-500' : 'bg-slate-300'}`}>
-        <span className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ${enabled ? 'translate-x-5' : 'translate-x-0.5'}`} />
-      </button>
+      </SectionCard>
     </div>
   );
 }

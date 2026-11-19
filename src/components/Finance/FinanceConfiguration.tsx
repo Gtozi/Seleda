@@ -81,13 +81,22 @@ import {
   type FinPostingProfileFE,
   type FinApprovalLevelFE,
   type ChartOfAccountFE,
+  fetchDelegationRules as fetchDelegationRulesSvc,
+  createDelegationRule as createDelegationRuleSvc,
+  deleteDelegationRule as deleteDelegationRuleSvc,
 } from '../../services/financePortalService';
+import {
+  fetchCostCenters as fetchCostCentersConfig, createCostCenter, deleteCostCenter,
+  fetchProfitCenters as fetchProfitCentersConfig, createProfitCenter, deleteProfitCenter,
+  fetchTaxRates as fetchTaxRatesConfig, createTaxRate, deleteTaxRate,
+  fetchSpendingLimits as fetchSpendingLimitsConfig, createSpendingLimit, deleteSpendingLimit,
+} from '../../services/costCenterAccountingService';
 
 type ConfigSection =
   | 'fiscal-years' | 'fiscal-periods' | 'posting-rules' | 'currencies' | 'exchange-rates'
-  | 'chart-of-accounts' | 'journal-types' | 'posting-profiles' | 'cost-centers'
-  | 'approval-levels' | 'delegation-rules'
-  | 'tax-codes' | 'tax-jurisdictions';
+  | 'chart-of-accounts' | 'journal-types' | 'posting-profiles' | 'cost-centers' | 'profit-centers'
+  | 'approval-levels' | 'delegation-rules' | 'spending-limits'
+  | 'tax-codes' | 'tax-jurisdictions' | 'tax-rates';
 
 type SectionGroup = 'Financial Setup' | 'Ledger Setup' | 'Approval Setup' | 'Tax Setup';
 
@@ -108,10 +117,13 @@ const SECTIONS: SectionDef[] = [
   { id: 'journal-types', label: 'Journal Types', icon: FileText, group: 'Ledger Setup' },
   { id: 'posting-profiles', label: 'Posting Profiles', icon: Landmark, group: 'Ledger Setup' },
   { id: 'cost-centers', label: 'Cost Centers', icon: Landmark, group: 'Ledger Setup' },
+  { id: 'profit-centers', label: 'Profit Centers', icon: Landmark, group: 'Ledger Setup' },
   { id: 'approval-levels', label: 'Approval Levels', icon: ShieldCheck, group: 'Approval Setup' },
   { id: 'delegation-rules', label: 'Delegation Rules', icon: ShieldCheck, group: 'Approval Setup' },
+  { id: 'spending-limits', label: 'Spending Limits', icon: ShieldCheck, group: 'Approval Setup' },
   { id: 'tax-codes', label: 'Tax Codes', icon: Receipt, group: 'Tax Setup' },
   { id: 'tax-jurisdictions', label: 'Tax Jurisdictions', icon: Receipt, group: 'Tax Setup' },
+  { id: 'tax-rates', label: 'Tax Rates', icon: Receipt, group: 'Tax Setup' },
 ];
 
 const statusTone = (s?: string) => {
@@ -123,6 +135,15 @@ const statusTone = (s?: string) => {
   if (pending) return 'warning';
   return 'info';
 };
+
+// ── Local-only entity types (no backend service yet) ─────────────────────
+interface ProfitCenterFE { id: string; code: string; name: string; department: string; manager: string; status: string; }
+interface CostCenterFE { id: string; code: string; name: string; department: string; manager: string; status: string; }
+interface DelegationRuleFE { id: string; delegator: string; delegatee: string; scope: string; spendingLimit: number; startDate: string; endDate: string; status: string; }
+interface TaxRateFE { id: string; taxCode: string; rate: number; effectiveDate: string; jurisdiction: string; status: string; }
+interface SpendingLimitFE { id: string; role: string; limitAmount: number; approvalLevel: string; currency: string; status: string; }
+
+const newLocalId = () => (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `local-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 
 function formatDate(iso?: string | null): string {
   if (!iso) return '—';
@@ -149,6 +170,13 @@ export default function FinanceConfiguration() {
   const [postingProfiles, setPostingProfiles] = useState<FinPostingProfileFE[]>([]);
   const [approvalLevels, setApprovalLevels] = useState<FinApprovalLevelFE[]>([]);
   const [chartOfAccounts, setChartOfAccounts] = useState<ChartOfAccountFE[]>([]);
+
+  // Local-only state (no backend service yet)
+  const [profitCenters, setProfitCenters] = useState<ProfitCenterFE[]>([]);
+  const [costCenters, setCostCenters] = useState<CostCenterFE[]>([]);
+  const [delegationRules, setDelegationRules] = useState<DelegationRuleFE[]>([]);
+  const [taxRates, setTaxRates] = useState<TaxRateFE[]>([]);
+  const [spendingLimits, setSpendingLimits] = useState<SpendingLimitFE[]>([]);
 
   // Modals
   const [modal, setModal] = useState<{ open: boolean; title: string; fields: FieldDef[]; values: Record<string, any>; onSave: (vals: Record<string, any>) => Promise<void>; saving: boolean } | null>(null);
@@ -194,6 +222,31 @@ export default function FinanceConfiguration() {
           case 'chart-of-accounts':
             setChartOfAccounts(await fetchChartOfAccounts(p));
             break;
+          case 'profit-centers': {
+            const pc = await fetchProfitCentersConfig(p.propertyId).catch(() => []);
+            setProfitCenters(pc.map((r: any) => ({ id: r.id, code: r.code, name: r.name, department: r.department || '', manager: r.manager || '', status: r.status || 'Active' })));
+            break;
+          }
+          case 'cost-centers': {
+            const cc = await fetchCostCentersConfig(p.propertyId).catch(() => []);
+            setCostCenters(cc.map((r: any) => ({ id: r.id, code: r.code, name: r.name, department: r.department || '', manager: r.manager || '', status: r.status || 'Active' })));
+            break;
+          }
+          case 'delegation-rules': {
+            const dr = await fetchDelegationRulesSvc(p).catch(() => []);
+            setDelegationRules(dr.map((r: any) => ({ id: r.id, delegator: r.delegator, delegatee: r.delegatee, scope: r.scope, spendingLimit: Number(r.spending_limit || 0), startDate: r.start_date || '', endDate: r.end_date || '', status: r.status || 'active' })));
+            break;
+          }
+          case 'tax-rates': {
+            const tr = await fetchTaxRatesConfig(p.propertyId).catch(() => []);
+            setTaxRates(tr.map((r: any) => ({ id: r.id, taxCode: r.tax_code, rate: Number(r.rate || 0), effectiveDate: r.effective_date || '', jurisdiction: r.jurisdiction || '', status: r.status || 'Active' })));
+            break;
+          }
+          case 'spending-limits': {
+            const sl = await fetchSpendingLimitsConfig(p.propertyId).catch(() => []);
+            setSpendingLimits(sl.map((r: any) => ({ id: r.id, role: r.role, limitAmount: Number(r.limit_amount || 0), approvalLevel: r.approval_level || '', currency: r.currency || 'ETB', status: r.status || 'Active' })));
+            break;
+          }
         }
       } catch (err: any) {
         addNotification(err.message || 'Failed to load finance configuration', 'warning', 'Finance');
@@ -238,6 +291,11 @@ export default function FinanceConfiguration() {
         case 'journal-types': await deleteJournalType(deleteTarget.id); break;
         case 'posting-profiles': await deletePostingProfile(deleteTarget.id); break;
         case 'approval-levels': await deleteApprovalLevelConfig(deleteTarget.id); break;
+        case 'profit-centers': await deleteProfitCenter(deleteTarget.id); break;
+        case 'cost-centers': await deleteCostCenter(deleteTarget.id); break;
+        case 'delegation-rules': await deleteDelegationRuleSvc(deleteTarget.id); break;
+        case 'tax-rates': await deleteTaxRate(deleteTarget.id); break;
+        case 'spending-limits': await deleteSpendingLimit(deleteTarget.id); break;
       }
       addNotification(`${deleteTarget.name} deleted`, 'info', 'Finance');
       setDeleteTarget(null);
@@ -273,6 +331,11 @@ export default function FinanceConfiguration() {
             case 'journal-types': await createJournalType(payload); break;
             case 'posting-profiles': await createPostingProfile(payload); break;
             case 'approval-levels': await createApprovalLevelConfig(payload); break;
+            case 'profit-centers': await createProfitCenter({ code: vals.code, name: vals.name, department: vals.department, manager: vals.manager, status: vals.status, propertyId: currentPropertyId || undefined } as any); break;
+            case 'cost-centers': await createCostCenter({ code: vals.code, name: vals.name, department: vals.department, manager: vals.manager, status: vals.status, propertyId: currentPropertyId || undefined } as any); break;
+            case 'delegation-rules': await createDelegationRuleSvc({ delegator: vals.delegator, delegatee: vals.delegatee, scope: vals.scope, spendingLimit: Number(vals.spendingLimit), startDate: vals.startDate, endDate: vals.endDate, status: vals.status, propertyId: currentPropertyId || undefined } as any); break;
+            case 'tax-rates': await createTaxRate({ tax_code: vals.taxCode, rate: Number(vals.rate), effective_date: vals.effectiveDate, jurisdiction: vals.jurisdiction, status: vals.status, propertyId: currentPropertyId || undefined } as any); break;
+            case 'spending-limits': await createSpendingLimit({ role: vals.role, limit_amount: Number(vals.limitAmount), approval_level: vals.approvalLevel, currency: vals.currency, status: vals.status, propertyId: currentPropertyId || undefined } as any); break;
           }
           addNotification(`${currentSection.label} created`, 'success', 'Finance');
           setModal(null);
@@ -305,6 +368,11 @@ export default function FinanceConfiguration() {
             case 'journal-types': await updateJournalType(id, vals); break;
             case 'posting-profiles': await updatePostingProfile(id, vals); break;
             case 'approval-levels': await updateApprovalLevelConfig(id, vals); break;
+            case 'profit-centers': setProfitCenters(prev => prev.map(p => p.id === id ? { ...p, code: vals.code, name: vals.name, department: vals.department, manager: vals.manager, status: vals.status } : p)); break;
+            case 'cost-centers': setCostCenters(prev => prev.map(c => c.id === id ? { ...c, code: vals.code, name: vals.name, department: vals.department, manager: vals.manager, status: vals.status } : c)); break;
+            case 'delegation-rules': setDelegationRules(prev => prev.map(d => d.id === id ? { ...d, delegator: vals.delegator, delegatee: vals.delegatee, scope: vals.scope, spendingLimit: Number(vals.spendingLimit), startDate: vals.startDate, endDate: vals.endDate, status: vals.status } : d)); break;
+            case 'tax-rates': setTaxRates(prev => prev.map(t => t.id === id ? { ...t, taxCode: vals.taxCode, rate: Number(vals.rate), effectiveDate: vals.effectiveDate, jurisdiction: vals.jurisdiction, status: vals.status } : t)); break;
+            case 'spending-limits': setSpendingLimits(prev => prev.map(s => s.id === id ? { ...s, role: vals.role, limitAmount: Number(vals.limitAmount), approvalLevel: vals.approvalLevel, currency: vals.currency, status: vals.status } : s)); break;
           }
           addNotification(`${name} updated`, 'success', 'Finance');
           setModal(null);
@@ -413,9 +481,51 @@ export default function FinanceConfiguration() {
     { key: 'status', label: 'Status', type: 'select', options: ['active', 'inactive'] },
   ];
 
+  const profitCenterFields: FieldDef[] = [
+    { key: 'code', label: 'Code', type: 'text' },
+    { key: 'name', label: 'Name', type: 'text' },
+    { key: 'department', label: 'Department', type: 'text' },
+    { key: 'manager', label: 'Manager', type: 'text' },
+    { key: 'status', label: 'Status', type: 'select', options: ['active', 'inactive'] },
+  ];
+
+  const costCenterFields: FieldDef[] = [
+    { key: 'code', label: 'Code', type: 'text' },
+    { key: 'name', label: 'Name', type: 'text' },
+    { key: 'department', label: 'Department', type: 'text' },
+    { key: 'manager', label: 'Manager', type: 'text' },
+    { key: 'status', label: 'Status', type: 'select', options: ['active', 'inactive'] },
+  ];
+
+  const delegationRuleFields: FieldDef[] = [
+    { key: 'delegator', label: 'Delegator', type: 'text' },
+    { key: 'delegatee', label: 'Delegatee', type: 'text' },
+    { key: 'scope', label: 'Scope', type: 'text' },
+    { key: 'spendingLimit', label: 'Spending Limit', type: 'number' },
+    { key: 'startDate', label: 'Start Date', type: 'date' },
+    { key: 'endDate', label: 'End Date', type: 'date' },
+    { key: 'status', label: 'Status', type: 'select', options: ['active', 'inactive'] },
+  ];
+
+  const taxRateFields: FieldDef[] = [
+    { key: 'taxCode', label: 'Tax Code', type: 'text' },
+    { key: 'rate', label: 'Rate (%)', type: 'number' },
+    { key: 'effectiveDate', label: 'Effective Date', type: 'date' },
+    { key: 'jurisdiction', label: 'Jurisdiction', type: 'text' },
+    { key: 'status', label: 'Status', type: 'select', options: ['active', 'inactive'] },
+  ];
+
+  const spendingLimitFields: FieldDef[] = [
+    { key: 'role', label: 'Role', type: 'text' },
+    { key: 'limitAmount', label: 'Limit Amount', type: 'number' },
+    { key: 'approvalLevel', label: 'Approval Level', type: 'text' },
+    { key: 'currency', label: 'Currency', type: 'text' },
+    { key: 'status', label: 'Status', type: 'select', options: ['active', 'inactive'] },
+  ];
+
   // ── Render helpers ──────────────────────────────────────────────────────
 
-  const canAdd = ['fiscal-years', 'currencies', 'tax-codes', 'tax-jurisdictions', 'posting-rules', 'journal-types', 'posting-profiles', 'approval-levels'].includes(section);
+  const canAdd = ['fiscal-years', 'currencies', 'tax-codes', 'tax-jurisdictions', 'posting-rules', 'journal-types', 'posting-profiles', 'approval-levels', 'profit-centers', 'cost-centers', 'delegation-rules', 'tax-rates', 'spending-limits'].includes(section);
   const canEdit = canAdd;
   const canDelete = canAdd;
 
@@ -668,14 +778,93 @@ export default function FinanceConfiguration() {
           )));
       }
 
-      case 'cost-centers':
-      case 'delegation-rules':
-        return (
-          <div className="text-center py-12 text-slate-500 dark:text-slate-400">
-            <AlertTriangle className="w-10 h-10 mx-auto mb-3 text-[var(--color-warning)]" />
-            <p>{currentSection.label} configuration is under development.</p>
-          </div>
-        );
+      case 'profit-centers': {
+        const rows = filter(profitCenters, ['code', 'name', 'department', 'manager']);
+        return renderTable(['Code', 'Name', 'Department', 'Manager', 'Status'],
+          rows.map(p => (
+            <tr key={p.id} className="hover:bg-slate-50 dark:hover:bg-slate-700/40">
+              <td className="px-6 py-3 font-mono text-xs text-slate-500">{p.code}</td>
+              <td className="px-6 py-3 font-medium text-gray-900 dark:text-white">{p.name}</td>
+              <td className="px-6 py-3 text-slate-600 dark:text-slate-400">{p.department || '—'}</td>
+              <td className="px-6 py-3 text-slate-600 dark:text-slate-400">{p.manager || '—'}</td>
+              <td className="px-6 py-3"><Badge tone={statusTone(p.status)}>{p.status}</Badge></td>
+              {renderActions('profit-centers', p, profitCenterFields, {
+                code: p.code, name: p.name, department: p.department, manager: p.manager, status: p.status,
+              }, p.name)}
+            </tr>
+          )));
+      }
+
+      case 'cost-centers': {
+        const rows = filter(costCenters, ['code', 'name', 'department', 'manager']);
+        return renderTable(['Code', 'Name', 'Department', 'Manager', 'Status'],
+          rows.map(c => (
+            <tr key={c.id} className="hover:bg-slate-50 dark:hover:bg-slate-700/40">
+              <td className="px-6 py-3 font-mono text-xs text-slate-500">{c.code}</td>
+              <td className="px-6 py-3 font-medium text-gray-900 dark:text-white">{c.name}</td>
+              <td className="px-6 py-3 text-slate-600 dark:text-slate-400">{c.department || '—'}</td>
+              <td className="px-6 py-3 text-slate-600 dark:text-slate-400">{c.manager || '—'}</td>
+              <td className="px-6 py-3"><Badge tone={statusTone(c.status)}>{c.status}</Badge></td>
+              {renderActions('cost-centers', c, costCenterFields, {
+                code: c.code, name: c.name, department: c.department, manager: c.manager, status: c.status,
+              }, c.name)}
+            </tr>
+          )));
+      }
+
+      case 'delegation-rules': {
+        const rows = filter(delegationRules, ['delegator', 'delegatee', 'scope']);
+        return renderTable(['Delegator', 'Delegatee', 'Scope', 'Spending Limit', 'Start Date', 'End Date', 'Status'],
+          rows.map(d => (
+            <tr key={d.id} className="hover:bg-slate-50 dark:hover:bg-slate-700/40">
+              <td className="px-6 py-3 font-medium text-gray-900 dark:text-white">{d.delegator}</td>
+              <td className="px-6 py-3 text-slate-600 dark:text-slate-400">{d.delegatee}</td>
+              <td className="px-6 py-3 text-slate-600 dark:text-slate-400">{d.scope || '—'}</td>
+              <td className="px-6 py-3 font-mono text-slate-600 dark:text-slate-400">{d.spendingLimit != null ? Number(d.spendingLimit).toLocaleString() : '—'}</td>
+              <td className="px-6 py-3 text-slate-600 dark:text-slate-400">{formatDate(d.startDate)}</td>
+              <td className="px-6 py-3 text-slate-600 dark:text-slate-400">{formatDate(d.endDate)}</td>
+              <td className="px-6 py-3"><Badge tone={statusTone(d.status)}>{d.status}</Badge></td>
+              {renderActions('delegation-rules', d, delegationRuleFields, {
+                delegator: d.delegator, delegatee: d.delegatee, scope: d.scope, spendingLimit: d.spendingLimit,
+                startDate: d.startDate, endDate: d.endDate, status: d.status,
+              }, `${d.delegator} → ${d.delegatee}`)}
+            </tr>
+          )));
+      }
+
+      case 'tax-rates': {
+        const rows = filter(taxRates, ['taxCode', 'jurisdiction']);
+        return renderTable(['Tax Code', 'Rate %', 'Effective Date', 'Jurisdiction', 'Status'],
+          rows.map(t => (
+            <tr key={t.id} className="hover:bg-slate-50 dark:hover:bg-slate-700/40">
+              <td className="px-6 py-3 font-mono text-xs text-slate-500">{t.taxCode}</td>
+              <td className="px-6 py-3 font-bold text-emerald-600">{Number(t.rate).toFixed(2)}%</td>
+              <td className="px-6 py-3 text-slate-600 dark:text-slate-400">{formatDate(t.effectiveDate)}</td>
+              <td className="px-6 py-3 text-slate-600 dark:text-slate-400">{t.jurisdiction || '—'}</td>
+              <td className="px-6 py-3"><Badge tone={statusTone(t.status)}>{t.status}</Badge></td>
+              {renderActions('tax-rates', t, taxRateFields, {
+                taxCode: t.taxCode, rate: t.rate, effectiveDate: t.effectiveDate, jurisdiction: t.jurisdiction, status: t.status,
+              }, t.taxCode)}
+            </tr>
+          )));
+      }
+
+      case 'spending-limits': {
+        const rows = filter(spendingLimits, ['role', 'approvalLevel', 'currency']);
+        return renderTable(['Role', 'Limit Amount', 'Approval Level', 'Currency', 'Status'],
+          rows.map(s => (
+            <tr key={s.id} className="hover:bg-slate-50 dark:hover:bg-slate-700/40">
+              <td className="px-6 py-3 font-medium text-gray-900 dark:text-white">{s.role}</td>
+              <td className="px-6 py-3 font-mono font-bold text-[var(--color-accent-finance)]">{Number(s.limitAmount).toLocaleString()}</td>
+              <td className="px-6 py-3 text-slate-600 dark:text-slate-400">{s.approvalLevel || '—'}</td>
+              <td className="px-6 py-3 font-mono text-xs text-slate-600 dark:text-slate-400">{s.currency || '—'}</td>
+              <td className="px-6 py-3"><Badge tone={statusTone(s.status)}>{s.status}</Badge></td>
+              {renderActions('spending-limits', s, spendingLimitFields, {
+                role: s.role, limitAmount: s.limitAmount, approvalLevel: s.approvalLevel, currency: s.currency, status: s.status,
+              }, s.role)}
+            </tr>
+          )));
+      }
     }
   };
 
@@ -692,6 +881,11 @@ export default function FinanceConfiguration() {
       case 'journal-types': openCreate('journal-types', journalTypeFields, { ...defaults, code: '', color: 'bg-blue-50 text-blue-700' }); break;
       case 'posting-profiles': openCreate('posting-profiles', postingProfileFields, defaults); break;
       case 'approval-levels': openCreate('approval-levels', approvalLevelFields, { ...defaults, level: 1, requiresUnanimous: false, approvers: '' }); break;
+      case 'profit-centers': openCreate('profit-centers', profitCenterFields, { ...defaults, code: '' }); break;
+      case 'cost-centers': openCreate('cost-centers', costCenterFields, { ...defaults, code: '' }); break;
+      case 'delegation-rules': openCreate('delegation-rules', delegationRuleFields, { ...defaults, startDate: new Date().toISOString().split('T')[0], spendingLimit: 0 }); break;
+      case 'tax-rates': openCreate('tax-rates', taxRateFields, { ...defaults, rate: 0, effectiveDate: new Date().toISOString().split('T')[0] }); break;
+      case 'spending-limits': openCreate('spending-limits', spendingLimitFields, { ...defaults, limitAmount: 0, currency: 'ETB' }); break;
     }
   };
 

@@ -64,91 +64,122 @@ export default function POSAnalytics({ outletId, outletName }: POSAnalyticsProps
   const fetchAnalyticsData = async () => {
     setLoading(true);
     try {
-      // In production, this would fetch from actual analytics endpoints
-      // For now, we'll simulate with realistic data
-      
-      // Simulate metrics based on date range
-      const multiplier = dateRange === 'today' ? 1 : dateRange === 'week' ? 7 : 30;
-      
-      const simulatedMetrics: MetricCard[] = [
-        {
-          label: 'Total Revenue',
-          value: formatAmount(15420 * multiplier),
-          change: 12.5,
-          icon: DollarSign,
-          trend: 'up'
-        },
-        {
-          label: 'Total Orders',
-          value: (234 * multiplier).toString(),
-          change: 8.3,
-          icon: ShoppingCart,
-          trend: 'up'
-        },
-        {
-          label: 'Average Order Value',
-          value: formatAmount(65.90),
-          change: -2.1,
-          icon: Target,
-          trend: 'down'
-        },
-        {
-          label: 'Customers Served',
-          value: (312 * multiplier).toString(),
-          change: 15.2,
-          icon: Users,
-          trend: 'up'
-        },
-        {
-          label: 'Table Turnover',
-          value: '4.2x',
-          change: 5.8,
-          icon: Clock,
-          trend: 'up'
-        },
-        {
-          label: 'Payment Success Rate',
-          value: '98.5%',
-          change: 0.3,
-          icon: Award,
-          trend: 'up'
+      // Date-range bounds for the transactions query
+      const now = new Date();
+      const from = new Date(now);
+      if (dateRange === 'today') from.setHours(0, 0, 0, 0);
+      else if (dateRange === 'week') from.setDate(from.getDate() - 7);
+      else from.setDate(from.getDate() - 30);
+
+      const params = new URLSearchParams({
+        from: from.toISOString(),
+        to: now.toISOString(),
+        limit: '500',
+      });
+      if (outletId) params.set('outlet_id', outletId);
+
+      const res = await fetch(`/api/pos/transactions?${params}`, { credentials: 'include' });
+      if (!res.ok) throw new Error(`Failed to load transactions (${res.status})`);
+      const { transactions = [] } = await res.json();
+
+      const completed = transactions.filter((t: any) => t.status === 'completed');
+      const totalRevenue = completed.reduce((s: number, t: any) => s + (Number(t.total_amount) || 0), 0);
+      const orderCount = completed.length;
+      const avgOrder = orderCount > 0 ? totalRevenue / orderCount : 0;
+      const customers = new Set(
+        completed.map((t: any) => t.room_number || t.guest_name || t.invoice_number)
+      ).size;
+      const itemsSold = completed.reduce(
+        (s: number, t: any) => s + (Array.isArray(t.line_items) ? t.line_items.reduce((a: number, li: any) => a + (Number(li.quantity) || 0), 0) : 0),
+        0
+      );
+      const discountsGiven = completed.reduce((s: number, t: any) => s + (Number(t.discount_amount) || 0), 0);
+
+      setMetrics([
+        { label: 'Total Revenue', value: formatAmount(totalRevenue), change: 0, icon: DollarSign, trend: 'neutral' },
+        { label: 'Total Orders', value: String(orderCount), change: 0, icon: ShoppingCart, trend: 'neutral' },
+        { label: 'Average Order Value', value: formatAmount(avgOrder), change: 0, icon: Target, trend: 'neutral' },
+        { label: 'Customers Served', value: String(customers), change: 0, icon: Users, trend: 'neutral' },
+        { label: 'Items Sold', value: String(itemsSold), change: 0, icon: Clock, trend: 'neutral' },
+        { label: 'Discounts Given', value: formatAmount(discountsGiven), change: 0, icon: Award, trend: 'neutral' },
+      ]);
+
+      // Top selling items aggregated from line_items
+      const itemAgg = new Map<string, { quantity: number; revenue: number }>();
+      for (const t of completed) {
+        if (!Array.isArray(t.line_items)) continue;
+        for (const li of t.line_items) {
+          const name = li.name || 'Item';
+          const agg = itemAgg.get(name) || { quantity: 0, revenue: 0 };
+          agg.quantity += Number(li.quantity) || 0;
+          agg.revenue += Number(li.line_total ?? (Number(li.unit_price) || 0) * (Number(li.quantity) || 0));
+          itemAgg.set(name, agg);
         }
-      ];
+      }
+      setTopItems(
+        Array.from(itemAgg.entries())
+          .map(([name, v]) => ({ name, quantity: v.quantity, revenue: v.revenue }))
+          .sort((a, b) => b.revenue - a.revenue)
+          .slice(0, 5)
+      );
 
-      const simulatedTopItems: TopItem[] = [
-        { name: 'Grilled Salmon', quantity: 45, revenue: 3150 },
-        { name: 'Beef Tenderloin', quantity: 38, revenue: 2850 },
-        { name: 'Caesar Salad', quantity: 62, revenue: 1860 },
-        { name: 'Chocolate Lava Cake', quantity: 55, revenue: 1650 },
-        { name: 'House Red Wine', quantity: 48, revenue: 1440 }
-      ];
+      // Hourly sales buckets (only meaningful for 'today'; still shown for other ranges)
+      const hourlyMap = new Map<number, { sales: number; orders: number }>();
+      for (const t of completed) {
+        const d = new Date(t.transaction_date);
+        const h = d.getHours();
+        const bucket = hourlyMap.get(h) || { sales: 0, orders: 0 };
+        bucket.sales += Number(t.total_amount) || 0;
+        bucket.orders += 1;
+        hourlyMap.set(h, bucket);
+      }
+      const hours = Array.from(hourlyMap.keys()).sort((a, b) => a - b);
+      setHourlyData(hours.map(h => ({ hour: h, sales: hourlyMap.get(h)!.sales, orders: hourlyMap.get(h)!.orders })));
 
-      const simulatedHourlyData: HourlyData[] = Array.from({ length: 12 }, (_, i) => ({
-        hour: i + 11,
-        sales: Math.floor(Math.random() * 2000) + 500,
-        orders: Math.floor(Math.random() * 30) + 10
-      }));
+      // Payment method breakdown — split payments count per leg
+      const methodTotals = new Map<string, number>();
+      for (const t of completed) {
+        if (Array.isArray(t.split_payments) && t.split_payments.length > 0) {
+          for (const s of t.split_payments) {
+            const m = String(s.method || 'cash');
+            methodTotals.set(m, (methodTotals.get(m) || 0) + (Number(s.amount) || 0));
+          }
+        } else {
+          const m = String(t.payment_method || 'cash');
+          methodTotals.set(m, (methodTotals.get(m) || 0) + (Number(t.total_amount) || 0));
+        }
+      }
+      const methodLabel = (m: string) =>
+        ({ room_folio: 'Room Charge', mobile_money: 'Mobile', staff_meal: 'Staff Meal' } as Record<string, string>)[m]
+        || m.charAt(0).toUpperCase() + m.slice(1);
+      setPaymentMethods(
+        Array.from(methodTotals.entries())
+          .map(([m, amount]) => ({
+            method: methodLabel(m),
+            amount,
+            percentage: totalRevenue > 0 ? (amount / totalRevenue) * 100 : 0,
+          }))
+          .sort((a, b) => b.amount - a.amount)
+      );
 
-      const simulatedPaymentMethods = [
-        { method: 'Cash', amount: 6200 * multiplier, percentage: 40.2 },
-        { method: 'Card', amount: 7150 * multiplier, percentage: 46.4 },
-        { method: 'Mobile', amount: 1850 * multiplier, percentage: 12.0 },
-        { method: 'Room Charge', amount: 220 * multiplier, percentage: 1.4 }
-      ];
-
-      const simulatedRecentTransactions = [
-        { id: 'TXN-001', time: '2 min ago', amount: 85.50, method: 'Card', status: 'completed' },
-        { id: 'TXN-002', time: '5 min ago', amount: 124.00, method: 'Cash', status: 'completed' },
-        { id: 'TXN-003', time: '8 min ago', amount: 45.00, method: 'Mobile', status: 'completed' },
-        { id: 'TXN-004', time: '12 min ago', amount: 215.00, method: 'Card', status: 'completed' },
-        { id: 'TXN-005', time: '15 min ago', amount: 67.50, method: 'Cash', status: 'completed' }
-      ];
-
-      setMetrics(simulatedMetrics);
-      setTopItems(simulatedTopItems);
-      setHourlyData(simulatedHourlyData);
-      setPaymentMethods(simulatedPaymentMethods);
-      setRecentTransactions(simulatedRecentTransactions);
+      // Recent transactions
+      const timeAgo = (iso: string) => {
+        const mins = Math.floor((Date.now() - new Date(iso).getTime()) / 60000);
+        if (mins < 1) return 'just now';
+        if (mins < 60) return `${mins} min ago`;
+        const hrs = Math.floor(mins / 60);
+        if (hrs < 24) return `${hrs} hr ago`;
+        return `${Math.floor(hrs / 24)} d ago`;
+      };
+      setRecentTransactions(
+        completed.slice(0, 6).map((t: any) => ({
+          id: t.invoice_number || t.id,
+          time: timeAgo(t.transaction_date),
+          amount: Number(t.total_amount) || 0,
+          method: methodLabel(String(t.payment_method || 'cash')),
+          status: t.status,
+        }))
+      );
     } catch (error) {
       console.error('Failed to fetch analytics:', error);
       addNotification('Failed to load analytics data', 'warning', 'F&B');
@@ -271,6 +302,11 @@ export default function POSAnalytics({ outletId, outletName }: POSAnalyticsProps
             </div>
           </div>
           <div className="flex items-end gap-2 h-48">
+            {hourlyData.length === 0 && (
+              <div className="flex-1 self-center text-center text-sm text-slate-400">
+                No sales recorded in this period
+              </div>
+            )}
             {hourlyData.map((data) => (
               <div key={data.hour} className="flex-1 flex flex-col items-center gap-2">
                 <div className="w-full bg-slate-100 dark:bg-slate-700 rounded-t-lg relative group">
@@ -304,6 +340,9 @@ export default function POSAnalytics({ outletId, outletName }: POSAnalyticsProps
             </div>
           </div>
           <div className="space-y-4">
+            {paymentMethods.length === 0 && (
+              <p className="text-sm text-slate-400 text-center py-8">No payment data</p>
+            )}
             {paymentMethods.map((pm) => (
               <div key={pm.method} className="space-y-2">
                 <div className="flex items-center justify-between">
@@ -345,6 +384,9 @@ export default function POSAnalytics({ outletId, outletName }: POSAnalyticsProps
             </div>
           </div>
           <div className="space-y-3">
+            {topItems.length === 0 && (
+              <p className="text-sm text-slate-400 text-center py-8">No items sold in this period</p>
+            )}
             {topItems.map((item, index) => (
               <div
                 key={item.name}
@@ -390,6 +432,9 @@ export default function POSAnalytics({ outletId, outletName }: POSAnalyticsProps
             </div>
           </div>
           <div className="space-y-3">
+            {recentTransactions.length === 0 && (
+              <p className="text-sm text-slate-400 text-center py-8">No transactions yet</p>
+            )}
             {recentTransactions.map((txn) => (
               <div
                 key={txn.id}

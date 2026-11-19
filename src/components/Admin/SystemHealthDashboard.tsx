@@ -1,5 +1,9 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { Activity, Server, Database, Wifi, RefreshCw, AlertTriangle, Bug, HardDrive, XCircle } from 'lucide-react';
+import { Activity, Server, Database, Wifi, RefreshCw, AlertTriangle, Bug, HardDrive, XCircle, Shield, Clock, CheckCircle2 } from 'lucide-react';
+import StatCard from '../FrontOffice/StatCard';
+import { PageHeader, SectionCard, Badge } from '../FrontOffice/ui';
+import { button } from '../FrontOffice/brandTheme';
+import { adminAuthHeaders } from './shared/ResourceManager';
 
 interface HealthResponse {
   status: string;
@@ -41,6 +45,9 @@ export default function SystemHealthDashboard() {
   const [errorLogs, setErrorLogs] = useState<ErrorLog[]>([]);
   const [failedJobs, setFailedJobs] = useState<FailedJob[]>([]);
   const [tableCounts, setTableCounts] = useState<Record<string, number>>({});
+  const [totalTables, setTotalTables] = useState<number>(0);
+  const [countedTables, setCountedTables] = useState<number>(0);
+  const [dbStatsPartial, setDbStatsPartial] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [lastChecked, setLastChecked] = useState<Date | null>(null);
@@ -74,18 +81,18 @@ export default function SystemHealthDashboard() {
       setEvents([]);
     }
 
-    const token = localStorage.getItem('erp_token');
-    const authHeaders = { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) };
-
     try {
       const [errRes, jobRes, dbRes] = await Promise.all([
-        fetch('/api/admin/health/error-logs', { headers: authHeaders }).then(r => r.json()).catch(() => ({ logs: [] })),
-        fetch('/api/admin/health/job-failures', { headers: authHeaders }).then(r => r.json()).catch(() => ({ failedJobs: [] })),
-        fetch('/api/admin/health/db-stats', { headers: authHeaders }).then(r => r.json()).catch(() => ({ tableCounts: {} })),
+        fetch('/api/admin/health/error-logs', { headers: adminAuthHeaders() }).then(r => r.json()).catch(() => ({ logs: [] })),
+        fetch('/api/admin/health/job-failures', { headers: adminAuthHeaders() }).then(r => r.json()).catch(() => ({ failedJobs: [] })),
+        fetch('/api/admin/health/db-stats', { headers: adminAuthHeaders() }).then(r => r.json()).catch(() => ({ tableCounts: {} })),
       ]);
       setErrorLogs(errRes.logs || []);
       setFailedJobs(jobRes.failedJobs || []);
       setTableCounts(dbRes.tableCounts || {});
+      setTotalTables(typeof dbRes.totalTables === 'number' ? dbRes.totalTables : Object.keys(dbRes.tableCounts || {}).length);
+      setCountedTables(typeof dbRes.countedTables === 'number' ? dbRes.countedTables : Object.keys(dbRes.tableCounts || {}).length);
+      setDbStatsPartial(Boolean(dbRes.partial));
     } catch {
       // non-critical
     }
@@ -99,6 +106,9 @@ export default function SystemHealthDashboard() {
     return () => clearInterval(id);
   }, [load]);
 
+  const tableEntries = Object.entries(tableCounts).sort((a, b) => b[1] - a[1]);
+  const visibleTables = tableEntries.slice(0, 60);
+
   const apiUp = Boolean(health) && !error;
   const errorEvents = events.filter(e => {
     const a = (e.action || '').toLowerCase();
@@ -107,168 +117,184 @@ export default function SystemHealthDashboard() {
 
   const cards = [
     {
-      icon: <Server size={20} className={apiUp ? 'text-emerald-600' : 'text-rose-600'} />,
-      label: 'API Status',
+      icon: Server,
+      title: 'API Status',
       value: apiUp ? (health?.status === 'operational' ? 'Operational' : health?.status || 'Up') : 'Down',
+      tone: apiUp ? 'success' as const : 'danger' as const,
     },
     {
-      icon: <Activity size={20} className={latencyMs != null && latencyMs < 500 ? 'text-emerald-600' : 'text-amber-600'} />,
-      label: 'API Latency',
+      icon: Activity,
+      title: 'API Latency',
       value: latencyMs != null ? `${latencyMs}ms` : '--',
+      tone: latencyMs != null && latencyMs < 500 ? 'success' as const : 'warning' as const,
     },
     {
-      icon: <Database size={20} className={health?.authStore === 'database' ? 'text-emerald-600' : 'text-amber-600'} />,
-      label: 'Auth Store',
+      icon: Database,
+      title: 'Auth Store',
       value: health?.authStore === 'database' ? 'Database' : health?.authStore === 'development-fallback' ? 'Dev Fallback' : '--',
+      tone: health?.authStore === 'database' ? 'success' as const : 'warning' as const,
     },
     {
-      icon: <AlertTriangle size={20} className={errorEvents.length === 0 ? 'text-emerald-600' : 'text-rose-600'} />,
-      label: 'Recent Errors',
+      icon: AlertTriangle,
+      title: 'Recent Errors',
       value: errorEvents.length,
+      tone: errorEvents.length === 0 ? 'success' as const : 'danger' as const,
+    },
+    {
+      icon: HardDrive,
+      title: 'DB Tables',
+      value: totalTables || Object.keys(tableCounts).length,
+      tone: 'info' as const,
+    },
+    {
+      icon: XCircle,
+      title: 'Failed Jobs',
+      value: failedJobs.length,
+      tone: failedJobs.length === 0 ? 'success' as const : 'danger' as const,
     },
   ];
 
   return (
-    <div className="h-full flex flex-col bg-slate-50 space-y-4">
-      <div className="bg-white px-6 py-4 border-b border-slate-200 flex items-center justify-between gap-3 shadow-sm z-10">
-        <div className="flex items-center gap-3">
-          <div className="p-2 bg-indigo-600 rounded-xl">
-            <Activity size={24} className="text-white" />
-          </div>
-          <div>
-            <h1 className="text-2xl font-sans font-black text-slate-900 tracking-tight leading-none">System Health</h1>
-            <p className="text-xs text-slate-500 font-sans mt-1">Live API status, auth store, latency, and recent audit events</p>
-          </div>
+    <div className="space-y-6 animate-fade-in pt-4">
+      <PageHeader
+        title="System Health & Monitoring"
+        subtitle="Live API status, database health, error logs, and scheduler monitoring"
+        icon={Activity}
+        actions={
+          <>
+            {lastChecked && (
+              <span className="text-xs text-gray-500 dark:text-gray-400 flex items-center gap-1">
+                <Clock size={12} /> Last checked {lastChecked.toLocaleTimeString()}
+              </span>
+            )}
+            <button onClick={load} disabled={loading} className={button.secondary}>
+              <RefreshCw size={16} className={loading ? 'animate-spin' : ''} /> Refresh
+            </button>
+          </>
+        }
+      />
+
+      {error && (
+        <div className="p-4 rounded-xl text-sm font-bold flex items-center gap-2 bg-rose-50 dark:bg-rose-500/10 text-rose-700 dark:text-rose-400 border border-rose-100 dark:border-rose-500/20">
+          <AlertTriangle size={16} /> {error}
         </div>
-        <button
-          onClick={load}
-          disabled={loading}
-          className="flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-sans font-bold text-slate-600 border border-slate-200 hover:bg-slate-50 transition disabled:opacity-50"
-        >
-          <RefreshCw size={14} className={loading ? 'animate-spin' : ''} /> Refresh
-        </button>
+      )}
+
+      {/* KPI Cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
+        {cards.map((card, i) => (
+          <StatCard
+            key={card.title}
+            title={card.title}
+            value={card.value}
+            icon={card.icon}
+            tone={card.tone}
+          />
+        ))}
       </div>
 
-      <div className="flex-1 overflow-y-auto px-6 pb-6 space-y-6">
-        {error && (
-          <div className="bg-rose-50 border border-rose-200 rounded-2xl px-5 py-3 flex items-center gap-2 text-sm text-rose-700 font-medium">
-            <AlertTriangle size={16} /> {error}
-          </div>
-        )}
-
-        <div className="grid grid-cols-4 gap-4">
-          {cards.map((item, i) => (
-            <div key={i} className="bg-white border border-slate-200 rounded-3xl p-6 shadow-sm flex items-center gap-4">
-              <div className="p-3 bg-slate-50 rounded-xl">{item.icon}</div>
-              <div>
-                <p className="text-3xs font-mono uppercase text-slate-500 font-bold">{item.label}</p>
-                <h3 className="text-xl font-sans font-black text-slate-900">{item.value}</h3>
-              </div>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* Node Information */}
+        <SectionCard title="Node Information" subtitle="API node status and configuration" icon={Server} tone="accent" pad="md">
+          <div className="space-y-3">
+            <div className="flex items-center justify-between py-2 border-b border-gray-100 dark:border-slate-700">
+              <span className="text-sm text-gray-600 dark:text-gray-400">System</span>
+              <span className="text-sm font-mono font-bold text-gray-900 dark:text-white">{health?.system || '--'}</span>
             </div>
-          ))}
-        </div>
-
-        <div className="bg-white border border-slate-200 rounded-3xl p-6 shadow-sm">
-          <div className="flex items-center justify-between mb-4">
-            <h3 className="text-base font-sans font-black text-slate-900 tracking-tight flex items-center gap-2">
-              <Wifi size={18} /> Node Information
-            </h3>
-            {lastChecked && (
-              <span className="text-3xs font-mono text-slate-400">Last checked {lastChecked.toLocaleTimeString()}</span>
-            )}
-          </div>
-          <div className="grid grid-cols-2 gap-4 text-sm">
-            <div className="flex justify-between border-b border-slate-100 py-2">
-              <span className="text-slate-500 font-medium">System</span>
-              <span className="font-mono text-slate-900">{health?.system || '--'}</span>
+            <div className="flex items-center justify-between py-2 border-b border-gray-100 dark:border-slate-700">
+              <span className="text-sm text-gray-600 dark:text-gray-400">Server Time</span>
+              <span className="text-sm font-mono font-bold text-gray-900 dark:text-white">{health?.timestamp ? new Date(health.timestamp).toLocaleString() : '--'}</span>
             </div>
-            <div className="flex justify-between border-b border-slate-100 py-2">
-              <span className="text-slate-500 font-medium">Server Time</span>
-              <span className="font-mono text-slate-900">{health?.timestamp ? new Date(health.timestamp).toLocaleString() : '--'}</span>
+            <div className="flex items-center justify-between py-2">
+              <span className="text-sm text-gray-600 dark:text-gray-400">Status</span>
+              <Badge tone={apiUp ? 'success' : 'danger'}>
+                {apiUp ? <CheckCircle2 size={12} /> : <XCircle size={12} />} {apiUp ? 'Operational' : 'Down'}
+              </Badge>
             </div>
           </div>
-        </div>
+        </SectionCard>
 
-        <div className="bg-white border border-slate-200 rounded-3xl p-6 shadow-sm">
-          <h3 className="text-base font-sans font-black text-slate-900 tracking-tight mb-4 flex items-center gap-2">
-            <Activity size={18} /> Recent Audit Events
-          </h3>
+        {/* Database Table Counts */}
+        <SectionCard title="Database Table Counts" subtitle={`${totalTables || Object.keys(tableCounts).length} relations in schema · ${countedTables || Object.keys(tableCounts).length} counted${dbStatsPartial ? ' (partial)' : ''}`} icon={Database} tone="info" pad="md">
+          {tableEntries.length === 0 ? (
+            <div className="h-32 bg-slate-50 dark:bg-slate-800/50 rounded-xl flex items-center justify-center text-sm text-gray-400">
+              No data available
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 max-h-48 overflow-y-auto">
+              {visibleTables.map(([table, count]) => (
+                <div key={table} className="flex items-center justify-between px-3 py-2 bg-slate-50 dark:bg-slate-800/50 rounded-lg">
+                  <span className="text-xs font-mono font-bold text-gray-600 dark:text-gray-400 truncate">{table}</span>
+                  <span className="text-xs font-black text-indigo-600 dark:text-indigo-400">{count.toLocaleString()}</span>
+                </div>
+              ))}
+              {tableEntries.length > visibleTables.length && (
+                <div className="col-span-full text-center text-xs text-gray-400 pt-1">+{(tableEntries.length - visibleTables.length).toLocaleString()} more relations not shown</div>
+              )}
+            </div>
+          )}
+        </SectionCard>
+      </div>
+
+      {/* Recent Audit Events */}
+      <SectionCard title="Recent Audit Events" subtitle="Latest system audit trail" icon={Activity} tone="accent" pad="none">
+        <div className="divide-y divide-gray-100 dark:divide-slate-700">
           {events.length === 0 ? (
-            <div className="h-32 bg-slate-50 border border-slate-100 rounded-xl flex items-center justify-center text-xs text-slate-400 font-mono">
+            <div className="p-8 text-center text-sm text-gray-400">
               {loading ? 'Loading events...' : 'No audit events available (requires audit:view permission)'}
             </div>
           ) : (
-            <div className="space-y-1">
-              {events.map((e, i) => {
-                const isError = errorEvents.includes(e);
-                return (
-                  <div key={e.id || i} className="flex items-center gap-3 px-3 py-2 rounded-xl hover:bg-slate-50 text-xs">
-                    <span className={`w-2 h-2 rounded-full shrink-0 ${isError ? 'bg-rose-500' : 'bg-emerald-500'}`} />
-                    <span className="font-mono text-slate-400 w-40 shrink-0">{e.timestamp ? new Date(e.timestamp).toLocaleString() : '--'}</span>
-                    <span className="font-bold text-slate-700 w-44 shrink-0 truncate">{e.action}</span>
-                    <span className="text-slate-500 truncate">{e.module || 'system'}{e.user_name ? ` · ${e.user_name}` : ''}</span>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-        <div className="bg-white border border-slate-200 rounded-3xl p-6 shadow-sm">
-          <h3 className="text-base font-sans font-black text-slate-900 tracking-tight mb-4 flex items-center gap-2">
-            <HardDrive size={18} /> Database Table Counts
-          </h3>
-          {Object.keys(tableCounts).length === 0 ? (
-            <div className="h-20 bg-slate-50 border border-slate-100 rounded-xl flex items-center justify-center text-xs text-slate-400 font-mono">No data available</div>
-          ) : (
-            <div className="grid grid-cols-3 gap-3">
-              {Object.entries(tableCounts).map(([table, count]) => (
-                <div key={table} className="flex items-center justify-between px-3 py-2 bg-slate-50 rounded-xl">
-                  <span className="text-xs font-mono font-bold text-slate-600">{table}</span>
-                  <span className="text-xs font-black text-indigo-600">{count.toLocaleString()}</span>
+            events.map((e, i) => {
+              const isError = errorEvents.includes(e);
+              return (
+                <div key={e.id || i} className="flex items-center gap-3 px-4 py-3 hover:bg-slate-50 dark:hover:bg-slate-700/30 transition">
+                  <span className={`w-2 h-2 rounded-full shrink-0 ${isError ? 'bg-rose-500' : 'bg-emerald-500'}`} />
+                  <span className="text-xs font-mono text-gray-400 w-40 shrink-0">{e.timestamp ? new Date(e.timestamp).toLocaleString() : '--'}</span>
+                  <span className="text-xs font-bold text-gray-700 dark:text-gray-300 w-44 shrink-0 truncate">{e.action}</span>
+                  <span className="text-xs text-gray-500 dark:text-gray-400 truncate">{e.module || 'system'}{e.user_name ? ` · ${e.user_name}` : ''}</span>
+                  {isError && <Badge tone="danger">Error</Badge>}
                 </div>
-              ))}
-            </div>
+              );
+            })
           )}
         </div>
+      </SectionCard>
 
-        <div className="bg-white border border-slate-200 rounded-3xl p-6 shadow-sm">
-          <h3 className="text-base font-sans font-black text-slate-900 tracking-tight mb-4 flex items-center gap-2">
-            <Bug size={18} /> Error Logs ({errorLogs.length})
-          </h3>
-          {errorLogs.length === 0 ? (
-            <div className="h-20 bg-slate-50 border border-slate-100 rounded-xl flex items-center justify-center text-xs text-slate-400 font-mono">No error logs recorded</div>
-          ) : (
-            <div className="space-y-1 max-h-48 overflow-y-auto">
-              {errorLogs.slice(0, 20).map((log) => (
-                <div key={log.id} className="flex items-start gap-3 px-3 py-2 rounded-xl hover:bg-slate-50 text-xs">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* Error Logs */}
+        <SectionCard title="Error Logs" subtitle={`${errorLogs.length} recent errors`} icon={Bug} tone="danger" pad="none">
+          <div className="divide-y divide-gray-100 dark:divide-slate-700 max-h-64 overflow-y-auto">
+            {errorLogs.length === 0 ? (
+              <div className="p-8 text-center text-sm text-gray-400">No error logs recorded</div>
+            ) : (
+              errorLogs.slice(0, 20).map((log) => (
+                <div key={log.id} className="flex items-start gap-3 px-4 py-3 hover:bg-slate-50 dark:hover:bg-slate-700/30 transition">
                   <span className={`w-2 h-2 rounded-full shrink-0 mt-1.5 ${log.level === 'error' ? 'bg-rose-500' : 'bg-amber-500'}`} />
-                  <span className="font-mono text-slate-400 w-36 shrink-0">{new Date(log.timestamp).toLocaleString()}</span>
-                  <span className="font-bold text-slate-700 truncate">{log.message}</span>
+                  <span className="text-xs font-mono text-gray-400 w-36 shrink-0">{new Date(log.timestamp).toLocaleString()}</span>
+                  <span className="text-xs font-bold text-gray-700 dark:text-gray-300 truncate">{log.message}</span>
                 </div>
-              ))}
-            </div>
-          )}
-        </div>
+              ))
+            )}
+          </div>
+        </SectionCard>
 
-        <div className="bg-white border border-slate-200 rounded-3xl p-6 shadow-sm">
-          <h3 className="text-base font-sans font-black text-slate-900 tracking-tight mb-4 flex items-center gap-2">
-            <XCircle size={18} className="text-rose-500" /> Failed Jobs ({failedJobs.length})
-          </h3>
-          {failedJobs.length === 0 ? (
-            <div className="h-20 bg-slate-50 border border-slate-100 rounded-xl flex items-center justify-center text-xs text-slate-400 font-mono">No failed jobs</div>
-          ) : (
-            <div className="space-y-1">
-              {failedJobs.map((job) => (
-                <div key={job.id} className="flex items-start gap-3 px-3 py-2 rounded-xl hover:bg-slate-50 text-xs">
+        {/* Failed Jobs */}
+        <SectionCard title="Failed Jobs" subtitle={`${failedJobs.length} failed scheduler jobs`} icon={XCircle} tone="danger" pad="none">
+          <div className="divide-y divide-gray-100 dark:divide-slate-700 max-h-64 overflow-y-auto">
+            {failedJobs.length === 0 ? (
+              <div className="p-8 text-center text-sm text-gray-400">No failed jobs</div>
+            ) : (
+              failedJobs.map((job) => (
+                <div key={job.id} className="flex items-start gap-3 px-4 py-3 hover:bg-slate-50 dark:hover:bg-slate-700/30 transition">
                   <XCircle size={14} className="text-rose-500 shrink-0 mt-0.5" />
-                  <span className="font-mono text-slate-400 w-36 shrink-0">{new Date(job.created_at).toLocaleString()}</span>
-                  <span className="font-bold text-slate-700 w-32 shrink-0 truncate">{job.scheduled_jobs?.name || 'Unknown'}</span>
-                  <span className="text-rose-600 truncate">{job.error}</span>
+                  <span className="text-xs font-mono text-gray-400 w-36 shrink-0">{new Date(job.created_at).toLocaleString()}</span>
+                  <span className="text-xs font-bold text-gray-700 dark:text-gray-300 w-32 shrink-0 truncate">{job.scheduled_jobs?.name || 'Unknown'}</span>
+                  <span className="text-xs text-rose-600 dark:text-rose-400 truncate">{job.error}</span>
                 </div>
-              ))}
-            </div>
-          )}
-        </div>
+              ))
+            )}
+          </div>
+        </SectionCard>
       </div>
     </div>
   );

@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.5
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   Package,
   Search,
@@ -35,39 +35,73 @@ import StockCountModal from './StockCountModal';
 import { useERP } from '../../context/ERPContext';
 import { ModalSystem } from '../Shared/ModalSystem';
 import { InventoryItem } from './FoodBeveragePortal';
+import DepartmentDynamicParPanel from '../Inventory/DepartmentDynamicParPanel';
+import DepartmentParOverridesPanel from '../Inventory/DepartmentParOverridesPanel';
 import {
-  fetchIngredients,
-  createIngredient,
-  updateIngredient,
-  fetchStockLocations,
-  fetchStockTransactions,
-  createStockTransaction,
-  fetchRequisitions,
-  createRequisition,
-  type Ingredient,
-  type StockLocation,
-  type StockTransaction,
-  type Requisition
-} from '../../services/foodBeverageService';
+  fetchStockByDepartment,
+  createItem,
+  createWaste,
+  fetchWaste,
+  fetchStores,
+  createStore as createUinvStore,
+  updateStore as updateUinvStore,
+  deleteStore as deleteUinvStore,
+  isConsumableItem,
+  isFixedAssetItem,
+  type UinvStockBalance,
+  type UinvStore,
+  type UinvWaste,
+} from '../../services/inventoryService';
+
+// ── Display-item shape derived from unified stock balances ─────────────
+// Maps a UinvStockBalance (with nested item + store) into the InventoryItem
+// shape the existing table JSX expects, so the table renders from the
+// unified single source of truth instead of ERPContext.inventoryItems.
+interface DisplayItem extends InventoryItem {
+  balanceId: string;
+  storeId: string;
+  storeName: string;
+  rawItemType: string;
+}
+
+function toDisplayItem(b: UinvStockBalance): DisplayItem {
+  const item = b.item;
+  const store = b.store;
+  const itemType = item?.item_type || 'Consumable';
+  const isFixedAsset = isFixedAssetItem({ item_type: itemType });
+  return {
+    id: b.item_id || item?.id || b.id,
+    balanceId: b.id,
+    storeId: b.store_id,
+    storeName: store?.store_name || b.store_id || '—',
+    rawItemType: itemType,
+    code: item?.item_code || '',
+    name: item?.item_name || 'Unknown',
+    category: isFixedAsset ? 'Fixed Assets' as any : 'Food & Beverage' as any,
+    subcategory: (item?.subcategory as any) || (item?.category === 'Food & Beverage' ? 'Food' : 'Consumables'),
+    unit: item?.unit_of_measure || 'Pcs',
+    supplierId: '',
+    minStock: Number(item?.min_stock || 0),
+    maxStock: Number(item?.max_stock || 0),
+    reorderLevel: Number(item?.reorder_point || 0),
+    lastCost: Number(b.unit_cost || item?.last_cost || 0),
+    avgCost: Number(item?.avg_cost || 0),
+    currentStock: Number(b.on_hand || 0),
+    location: store?.store_name || b.store_id || '—',
+  };
+}
 
 export default function InventoryModule({ forcedStore }: { forcedStore?: string }) {
   const {
     formatAmount,
     addNotification,
-    inventoryItems,
-    inventoryStores,
-    addInventoryItem,
-    updateInventoryItem,
-    addInventoryStore,
-    updateInventoryStore,
-    deleteInventoryStore,
-    logAudit,
     auditLogs,
-    globalHotelSettings
+    globalHotelSettings,
+    currentPropertyId
   } = useERP();
 
   const [activeType, setActiveType] = useState<'Consumable' | 'Fixed Asset'>('Consumable');
-  const [activeTab, setActiveTab] = useState<'inventory' | 'transactions' | 'cost-control'>('inventory');
+  const [activeTab, setActiveTab] = useState<'inventory' | 'transactions' | 'cost-control' | 'dynamic-par' | 'par-overrides'>('inventory');
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedStore, setSelectedStore] = useState<string>(forcedStore || 'All');
   const [showAudit, setShowAudit] = useState(false);
@@ -82,12 +116,15 @@ export default function InventoryModule({ forcedStore }: { forcedStore?: string 
   const [editingStoreId, setEditingStoreId] = useState<string | null>(null);
   const [newStore, setNewStore] = useState({ name: '', type: 'Departmental' as 'Main' | 'Departmental' | 'Virtual', manager: '' });
 
-  // API data state
+  // API data state — unified uinv_* system (single source of truth)
   const [loading, setLoading] = useState(true);
-  const [apiIngredients, setApiIngredients] = useState<Ingredient[]>([]);
-  const [apiStockLocations, setApiStockLocations] = useState<StockLocation[]>([]);
-  const [apiStockTransactions, setApiStockTransactions] = useState<StockTransaction[]>([]);
-  const [apiRequisitions, setApiRequisitions] = useState<Requisition[]>([]);
+  const [unifiedStock, setUnifiedStock] = useState<UinvStockBalance[]>([]);
+  // Unified F&B stores (persisted to uinv_stores, not ERPContext memory)
+  const [unifiedStores, setUnifiedStores] = useState<UinvStore[]>([]);
+  // Waste records from the unified ledger (replaces the string-parsed lossRegistry)
+  const [wasteRecords, setWasteRecords] = useState<UinvWaste[]>([]);
+  const [lossSubmitting, setLossSubmitting] = useState(false);
+  const [storeSubmitting, setStoreSubmitting] = useState(false);
 
   const [newItem, setNewItem] = useState<Partial<InventoryItem>>({
     name: '',
@@ -100,120 +137,154 @@ export default function InventoryModule({ forcedStore }: { forcedStore?: string 
     location: forcedStore || 'All'
   });
 
-  // Load F&B inventory data from API
+  // Load F&B inventory data from unified uinv_* system (single source of truth)
+  // and unified F&B stores + waste records.
+  const reloadUnifiedData = async () => {
+    setLoading(true);
+    try {
+      const [stockBalances, stores, waste] = await Promise.all([
+        fetchStockByDepartment('Food & Beverage', currentPropertyId),
+        fetchStores({ active: 'true' }).then((all: UinvStore[]) =>
+          (all || []).filter(s => s.department === 'Food & Beverage' || s.store_code === 'UINV-ST-FOOD' || s.store_code === 'UINV-ST-BEV'),
+        ).catch(() => [] as UinvStore[]),
+        fetchWaste().catch(() => [] as UinvWaste[]),
+      ]);
+      setUnifiedStock(stockBalances);
+      setUnifiedStores(stores);
+      setWasteRecords(waste);
+    } catch (error) {
+      console.error('Failed to load unified inventory data:', error);
+      addNotification('Failed to load inventory data from server', 'error', 'Inventory');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   useEffect(() => {
-    const loadFBData = async () => {
-      setLoading(true);
-      try {
-        const [ingredientsData, locationsData, transactionsData, requisitionsData] = await Promise.all([
-          fetchIngredients(),
-          fetchStockLocations(),
-          fetchStockTransactions(),
-          fetchRequisitions()
-        ]);
-        setApiIngredients(ingredientsData);
-        setApiStockLocations(locationsData);
-        setApiStockTransactions(transactionsData);
-        setApiRequisitions(requisitionsData);
-      } catch (error) {
-        console.error('Failed to load F&B inventory data:', error);
-        addNotification('Failed to load inventory data from server', 'error', 'Inventory');
-      } finally {
-        setLoading(false);
-      }
-    };
-    loadFBData();
-  }, []);
+    reloadUnifiedData();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentPropertyId]);
 
   const handleAddItem = async () => {
     if (!newItem.name) return;
 
     try {
-      // Create ingredient via API
-      const ingredient: Omit<Ingredient, 'id' | 'created_at' | 'updated_at'> = {
-        name: newItem.name!,
-        category: newItem.stockCategory as any || 'Food',
-        unit_of_measure: newItem.unit || 'Pcs',
-        par_level: newItem.minLevel || 5,
-        reorder_point: 10,
-        current_cost: newItem.cost || 0,
-        suppliers: [],
-        is_active: true
-      };
-
-      await createIngredient(ingredient);
-
-      // Reload data
-      const updatedIngredients = await fetchIngredients();
-      setApiIngredients(updatedIngredients);
-
-      // Also add to legacy inventory for compatibility
-      addInventoryItem({
-        code: `FB-${Math.random().toString(36).substring(7).toUpperCase()}`,
-        name: newItem.name!,
+      // Create item via unified inventory service (single source of truth)
+      await createItem({
+        property_id: currentPropertyId || null,
+        item_code: `FB-${Math.random().toString(36).substring(7).toUpperCase()}`,
+        item_name: newItem.name!,
         category: 'Food & Beverage',
-        subcategory: newItem.stockCategory as any,
-        unit: newItem.unit || 'Pcs',
-        supplierId: 'S-001',
-        minStock: newItem.minLevel || 5,
-        maxStock: 100,
-        reorderLevel: 10,
-        lastCost: newItem.cost || 0,
-        avgCost: newItem.cost || 0,
-        currentStock: newItem.quantity || 0,
-        location: newItem.location || 'Restaurant Store'
+        subcategory: newItem.stockCategory as string || 'Food',
+        item_type: 'Consumable',
+        unit_of_measure: newItem.unit || 'Pcs',
+        min_stock: newItem.minLevel || 5,
+        max_stock: 100,
+        reorder_point: 10,
+        safety_stock: 0,
+        par_level: newItem.minLevel || 5,
+        last_cost: newItem.cost || 0,
+        avg_cost: newItem.cost || 0,
+        standard_cost: newItem.cost || 0,
+        is_active: true,
       });
+
+      // Reload unified stock so the table reflects the new item
+      await reloadUnifiedData();
 
       setIsAddingItem(false);
       addNotification(`Added ${newItem.name} to inventory.`, 'success', 'Inventory');
     } catch (error) {
-      console.error('Failed to add ingredient:', error);
-      addNotification('Failed to add ingredient to inventory', 'error', 'Inventory');
+      console.error('Failed to add item:', error);
+      addNotification('Failed to add item to inventory', 'error', 'Inventory');
     }
   };
 
-  const fbStores = Array.isArray(inventoryStores) ? inventoryStores : [];
+  // ── Display items derived from unified stock balances ───────────────
+  // The table now renders from the unified uinv_* system (single source of
+  // truth) instead of ERPContext.inventoryItems (legacy in-memory state).
+  const displayItems: DisplayItem[] = useMemo(
+    () => (Array.isArray(unifiedStock) ? unifiedStock.map(toDisplayItem) : []),
+    [unifiedStock],
+  );
 
-  const handleAddStore = () => {
+  // F&B stores from the unified uinv_stores table (persisted, not ERPContext memory).
+  // Mapped to the { id, name, type, manager } shape the dropdown/cards expect.
+  const fbStores = useMemo(() => unifiedStores.map(s => ({
+    id: s.id,
+    name: s.store_name,
+    type: (s.store_type === 'Warehouse' ? 'Main' : s.store_type === 'Virtual' ? 'Virtual' : 'Departmental') as 'Main' | 'Departmental' | 'Virtual',
+    manager: s.manager || '',
+  })), [unifiedStores]);
+
+  const handleAddStore = async () => {
     if (!newStore.name.trim() || !newStore.manager.trim()) {
       addNotification('Please fill in store name and manager.', 'warning', 'F&B');
       return;
     }
-    addInventoryStore({
-      name: newStore.name.trim(),
-      type: newStore.type,
-      manager: newStore.manager.trim()
-    });
-    addNotification(`Store "${newStore.name.trim()}" created successfully.`, 'success', 'F&B');
-    setNewStore({ name: '', type: 'Departmental', manager: '' });
-    setIsAddingStore(false);
+    setStoreSubmitting(true);
+    try {
+      await createUinvStore({
+        store_code: `FB-ST-${Date.now().toString().slice(-6)}`,
+        store_name: newStore.name.trim(),
+        store_type: newStore.type === 'Main' ? 'Warehouse' : newStore.type === 'Virtual' ? 'Virtual' : 'Department',
+        manager: newStore.manager.trim(),
+        department: 'Food & Beverage',
+        is_active: true,
+        property_id: currentPropertyId || null,
+      });
+      await reloadUnifiedData();
+      addNotification(`Store "${newStore.name.trim()}" created successfully.`, 'success', 'F&B');
+      setNewStore({ name: '', type: 'Departmental', manager: '' });
+      setIsAddingStore(false);
+    } catch (e: any) {
+      addNotification(e?.message || 'Failed to create store', 'error', 'F&B');
+    } finally {
+      setStoreSubmitting(false);
+    }
   };
 
-  const handleUpdateStore = () => {
+  const handleUpdateStore = async () => {
     if (!editingStoreId || !newStore.name.trim() || !newStore.manager.trim()) {
       addNotification('Please fill in store name and manager.', 'warning', 'F&B');
       return;
     }
-    updateInventoryStore(editingStoreId, {
-      name: newStore.name.trim(),
-      type: newStore.type,
-      manager: newStore.manager.trim()
-    });
-    addNotification(`Store "${newStore.name.trim()}" updated successfully.`, 'success', 'F&B');
-    setNewStore({ name: '', type: 'Departmental', manager: '' });
-    setEditingStoreId(null);
-    setIsAddingStore(false);
+    setStoreSubmitting(true);
+    try {
+      await updateUinvStore(editingStoreId, {
+        store_name: newStore.name.trim(),
+        store_type: newStore.type === 'Main' ? 'Warehouse' : newStore.type === 'Virtual' ? 'Virtual' : 'Department',
+        manager: newStore.manager.trim(),
+      });
+      await reloadUnifiedData();
+      addNotification(`Store "${newStore.name.trim()}" updated successfully.`, 'success', 'F&B');
+      setNewStore({ name: '', type: 'Departmental', manager: '' });
+      setEditingStoreId(null);
+      setIsAddingStore(false);
+    } catch (e: any) {
+      addNotification(e?.message || 'Failed to update store', 'error', 'F&B');
+    } finally {
+      setStoreSubmitting(false);
+    }
   };
 
-  const handleDeleteStore = (storeId: string, storeName: string) => {
-    const itemCount = Array.isArray(inventoryItems) ? inventoryItems.filter(i => i.location === storeName).length : 0;
+  const handleDeleteStore = async (storeId: string, storeName: string) => {
+    const itemCount = displayItems.filter(i => i.storeName === storeName).length;
     if (itemCount > 0) {
       addNotification(`Cannot delete "${storeName}" — it still has ${itemCount} item(s). Transfer or remove them first.`, 'warning', 'F&B');
       return;
     }
-    deleteInventoryStore(storeId);
-    addNotification(`Store "${storeName}" deleted.`, 'warning', 'F&B');
-    if (selectedStore === storeName) setSelectedStore('All');
+    setStoreSubmitting(true);
+    try {
+      await deleteUinvStore(storeId);
+      await reloadUnifiedData();
+      addNotification(`Store "${storeName}" deleted.`, 'warning', 'F&B');
+      if (selectedStore === storeName) setSelectedStore('All');
+    } catch (e: any) {
+      addNotification(e?.message || 'Failed to delete store', 'error', 'F&B');
+    } finally {
+      setStoreSubmitting(false);
+    }
   };
 
   const startEditStore = (store: typeof fbStores[0]) => {
@@ -223,69 +294,79 @@ export default function InventoryModule({ forcedStore }: { forcedStore?: string 
   };
 
   const getStoreItemCount = (storeName: string) =>
-    Array.isArray(inventoryItems) ? inventoryItems.filter(i => i.location === storeName).length : 0;
+    displayItems.filter(i => i.storeName === storeName).length;
 
   const getStoreValue = (storeName: string) =>
-    Array.isArray(inventoryItems) ? inventoryItems
-      .filter(i => i.location === storeName)
-      .reduce((acc, item) => acc + (item.lastCost * (item.currentStock || 0)), 0) : 0;
+    displayItems
+      .filter(i => i.storeName === storeName)
+      .reduce((acc, item) => acc + (item.lastCost * (item.currentStock || 0)), 0);
 
-  const filteredInventory = Array.isArray(inventoryItems) ? inventoryItems.filter(item => {
+  const filteredInventory = displayItems.filter(item => {
     const matchesSearch = item.name.toLowerCase().includes(searchTerm.toLowerCase()) || item.id.toLowerCase().includes(searchTerm.toLowerCase());
-    const matchesStore = selectedStore === 'All' || item.location === selectedStore;
+    const matchesStore = selectedStore === 'All' || item.storeName === selectedStore;
 
-    // Type matching logic
-    const isFixedAsset = item.category === 'Fixed Asset';
-    const isConsumable = item.category === 'Food & Beverage' || item.subcategory === 'Beverages' || item.subcategory === 'Food';
+    // Type matching logic — uses the unified item_type via rawItemType
+    const isFixedAsset = isFixedAssetItem({ item_type: item.rawItemType });
+    const isConsumable = isConsumableItem({ item_type: item.rawItemType });
 
     if (activeType === 'Fixed Asset' && !isFixedAsset) return false;
     if (activeType === 'Consumable' && !isConsumable) return false;
 
     return matchesSearch && matchesStore;
-  }) : [];
+  });
 
   const [isRecordingLoss, setIsRecordingLoss] = useState(false);
-  const [selectedItemForLoss, setSelectedItemForLoss] = useState<InventoryItem | null>(null);
+  const [selectedItemForLoss, setSelectedItemForLoss] = useState<DisplayItem | null>(null);
   const [lossData, setLossData] = useState({ qty: 0, reason: '', type: 'Spoilage' as 'Spoilage' | 'Damage' | 'Broken' | 'Lost' | 'Theft' | 'Expired' | 'Contamination' | 'Discarded' });
 
-  const handleRecordLoss = () => {
+  const handleRecordLoss = async () => {
     if (!selectedItemForLoss || lossData.qty <= 0) return;
 
-    const newStock = Math.max(0, selectedItemForLoss.currentStock - lossData.qty);
-    updateInventoryItem(selectedItemForLoss.id, { currentStock: newStock });
-    
-    addNotification(
-      `Recorded ${lossData.qty} ${selectedItemForLoss.unit} as ${lossData.type} for ${selectedItemForLoss.name}.`,
-      'warning',
-      'Inventory'
-    );
+    setLossSubmitting(true);
+    try {
+      // Route the loss through the unified waste endpoint so it hits the
+      // uinv_stock_ledger and is visible to valuation + dynamic par.
+      await createWaste({
+        property_id: currentPropertyId || null,
+        item_id: selectedItemForLoss.id,
+        store_id: selectedItemForLoss.storeId,
+        quantity: lossData.qty,
+        unit_cost: selectedItemForLoss.lastCost,
+        total_cost: lossData.qty * selectedItemForLoss.lastCost,
+        waste_type: lossData.type,
+        reason: lossData.reason || 'Not specified',
+        department: 'Food & Beverage',
+        status: 'Approved',
+      });
 
-    // Save loss record to a simulated registry (logged under audit logs with specific tag)
-    logAudit(`[LOSS_REGISTRY] Type: ${lossData.type} | Item: ${selectedItemForLoss.name} | Qty: ${lossData.qty} | Reason: ${lossData.reason || 'Not specified'}`);
+      // Reload unified data so stock + waste registry reflect the loss
+      await reloadUnifiedData();
 
-    setIsRecordingLoss(false);
-    setSelectedItemForLoss(null);
-    setLossData({ qty: 0, reason: '', type: 'Spoilage' });
+      addNotification(
+        `Recorded ${lossData.qty} ${selectedItemForLoss.unit} as ${lossData.type} for ${selectedItemForLoss.name}.`,
+        'warning',
+        'Inventory',
+      );
+
+      setIsRecordingLoss(false);
+      setSelectedItemForLoss(null);
+      setLossData({ qty: 0, reason: '', type: 'Spoilage' });
+    } catch (e: any) {
+      addNotification(e?.message || 'Failed to record loss', 'error', 'Inventory');
+    } finally {
+      setLossSubmitting(false);
+    }
   };
 
-  const lossRegistry = auditLogs
-    .filter(log => log?.includes('[LOSS_REGISTRY]'))
-    .map(log => {
-      // log format: "YYYY-MM-DD HH:mm - message"
-      const messageStartIdx = log.indexOf(' - ') + 3;
-      const timestamp = log.substring(0, messageStartIdx - 3);
-      const message = log.substring(messageStartIdx);
-      
-      const lossPart = message.split('[LOSS_REGISTRY] ')[1];
-      const parts = lossPart.split(' | ');
-      return {
-        timestamp,
-        type: parts[0]?.split(': ')[1] || 'Unknown',
-        item: parts[1]?.split(': ')[1] || 'Unknown',
-        qty: parts[2]?.split(': ')[1] || '0',
-        reason: parts[3]?.split(': ')[1] || 'Not specified'
-      };
-    });
+  // Waste registry from the unified uinv_waste table (replaces the fragile
+  // string-parsed lossRegistry that read from audit log entries).
+  const lossRegistry = useMemo(() => wasteRecords.map(w => ({
+    timestamp: w.created_at,
+    type: w.waste_type || 'Unknown',
+    item: w.item?.item_name || w.item_id || 'Unknown',
+    qty: String(w.quantity || 0),
+    reason: w.reason || 'Not specified',
+  })), [wasteRecords]);
 
   const stats = {
     totalValue: filteredInventory.reduce((acc, item) => acc + (item.lastCost * (item.currentStock || 0)), 0),
@@ -301,76 +382,128 @@ export default function InventoryModule({ forcedStore }: { forcedStore?: string 
           <p className="text-[10px] text-slate-400 font-mono italic">Dedicated sub-store management for consumables and fixed assets.</p>
         </div>
 
+        {/* View mode toggle: Inventory / Dynamic Par */}
         <div className="flex bg-slate-100 dark:bg-slate-800 p-1 rounded-2xl gap-1">
-            <button
-              onClick={() => setActiveType('Consumable')}
-              className={`px-5 py-2 rounded-xl text-[10px] font-black transition-all flex items-center gap-2 ${
-                activeType === 'Consumable' 
-                ? 'bg-white dark:bg-slate-700 text-slate-950 dark:text-white shadow-sm' 
+          <button
+            onClick={() => setActiveTab('inventory')}
+            className={`px-4 py-2 rounded-xl text-[10px] font-black transition-all ${
+              activeTab === 'inventory'
+                ? 'bg-white dark:bg-slate-700 text-slate-950 dark:text-white shadow-sm'
                 : 'text-slate-400 hover:text-slate-600'
-              }`}
-            >
-              <Box size={14} /> CONSUMABLES
-            </button>
-            <button
-              onClick={() => setActiveType('Fixed Asset')}
-              className={`px-5 py-2 rounded-xl text-[10px] font-black transition-all flex items-center gap-2 ${
-                activeType === 'Fixed Asset' 
-                ? 'bg-white dark:bg-slate-700 text-slate-950 dark:text-white shadow-sm' 
-                : 'text-slate-400 hover:text-slate-600'
-              }`}
-            >
-              <ShieldCheck size={14} /> FIXED ASSETS
-            </button>
-            <div className="w-px bg-slate-200 dark:bg-slate-600 mx-1 my-1" />
-            <select 
-              value={selectedStore} 
-              onChange={(e) => setSelectedStore(e.target.value)}
-              className="bg-transparent text-[10px] font-black uppercase tracking-widest text-slate-500 outline-none px-4 py-2"
-            >
-              <option value="All">All Stores</option>
-              {fbStores.map(s => <option key={s.id} value={s.name}>{s.name}</option>)}
-            </select>
-          </div>
-
-        <div className="flex items-center gap-2">
-           <button 
-             onClick={() => setShowStoreManager(true)}
-             className="flex items-center gap-2 px-5 py-2.5 bg-indigo-600 text-white rounded-2xl text-[10px] font-black uppercase tracking-tight shadow-lg shadow-indigo-600/10 hover:bg-indigo-700 transition-all"
-           >
-              <StoreIcon size={14} /> MANAGE STORES
-           </button>
-           <button 
-             onClick={() => setIsCreatingStockCount(true)}
-             className="flex items-center gap-2 px-5 py-2.5 bg-emerald-600 text-white rounded-2xl text-[10px] font-black uppercase tracking-tight shadow-lg shadow-emerald-600/10 hover:bg-emerald-700 transition-all"
-           >
-              <ClipboardCheck size={14} /> STOCK COUNT
-           </button>
-           <button 
-             onClick={() => setIsAddingItem(true)}
-             className="flex items-center gap-2 px-5 py-2.5 bg-slate-900 dark:bg-white dark:text-slate-950 text-white rounded-2xl text-[10px] font-black uppercase tracking-tight shadow-lg shadow-slate-900/10 hover:bg-indigo-600 transition-all"
-           >
-              <Plus size={14} /> NEW ITEM
-           </button>
-          <div className="relative">
-            <Search className="absolute left-3 top-3 text-slate-400" size={14} />
-            <input
-              type="text"
-              placeholder="Filter by ID/Name..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              className="w-full md:w-52 bg-slate-50 dark:bg-slate-850 border dark:border-slate-800 p-2.5 pl-10 rounded-2xl text-xs outline-none focus:ring-1 focus:ring-indigo-500 font-medium"
-            />
-          </div>
-          <button 
-            onClick={() => addNotification('Opening inventory filters...', 'info', 'Sub-Store')}
-            className="p-2.5 border dark:border-slate-800 rounded-2xl hover:bg-slate-50 text-slate-400 transition-colors"
+            }`}
           >
-            <Filter size={16} />
+            INVENTORY
+          </button>
+          <button
+            onClick={() => setActiveTab('dynamic-par')}
+            className={`px-4 py-2 rounded-xl text-[10px] font-black transition-all ${
+              activeTab === 'dynamic-par'
+                ? 'bg-white dark:bg-slate-700 text-slate-950 dark:text-white shadow-sm'
+                : 'text-slate-400 hover:text-slate-600'
+            }`}
+          >
+            DYNAMIC PAR
+          </button>
+          <button
+            onClick={() => setActiveTab('par-overrides')}
+            className={`px-4 py-2 rounded-xl text-[10px] font-black transition-all ${
+              activeTab === 'par-overrides'
+                ? 'bg-white dark:bg-slate-700 text-slate-950 dark:text-white shadow-sm'
+                : 'text-slate-400 hover:text-slate-600'
+            }`}
+          >
+            PAR OVERRIDES
           </button>
         </div>
+
+        {/* Inventory view controls (only shown in inventory mode) */}
+        {activeTab === 'inventory' && (
+          <>
+            <div className="flex bg-slate-100 dark:bg-slate-800 p-1 rounded-2xl gap-1">
+              <button
+                onClick={() => setActiveType('Consumable')}
+                className={`px-5 py-2 rounded-xl text-[10px] font-black transition-all flex items-center gap-2 ${
+                  activeType === 'Consumable'
+                  ? 'bg-white dark:bg-slate-700 text-slate-950 dark:text-white shadow-sm'
+                  : 'text-slate-400 hover:text-slate-600'
+                }`}
+              >
+                <Box size={14} /> CONSUMABLES
+              </button>
+              <button
+                onClick={() => setActiveType('Fixed Asset')}
+                className={`px-5 py-2 rounded-xl text-[10px] font-black transition-all flex items-center gap-2 ${
+                  activeType === 'Fixed Asset'
+                  ? 'bg-white dark:bg-slate-700 text-slate-950 dark:text-white shadow-sm'
+                  : 'text-slate-400 hover:text-slate-600'
+                }`}
+              >
+                <ShieldCheck size={14} /> FIXED ASSETS
+              </button>
+              <div className="w-px bg-slate-200 dark:bg-slate-600 mx-1 my-1" />
+              <select
+                value={selectedStore}
+                onChange={(e) => setSelectedStore(e.target.value)}
+                className="bg-transparent text-[10px] font-black uppercase tracking-widest text-slate-500 outline-none px-4 py-2"
+              >
+                <option value="All">All Stores</option>
+                {fbStores.map(s => <option key={s.id} value={s.name}>{s.name}</option>)}
+              </select>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setShowStoreManager(true)}
+                className="flex items-center gap-2 px-5 py-2.5 bg-indigo-600 text-white rounded-2xl text-[10px] font-black uppercase tracking-tight shadow-lg shadow-indigo-600/10 hover:bg-indigo-700 transition-all"
+              >
+                <StoreIcon size={14} /> MANAGE STORES
+              </button>
+              <button
+                onClick={() => setIsCreatingStockCount(true)}
+                className="flex items-center gap-2 px-5 py-2.5 bg-emerald-600 text-white rounded-2xl text-[10px] font-black uppercase tracking-tight shadow-lg shadow-emerald-600/10 hover:bg-emerald-700 transition-all"
+              >
+                <ClipboardCheck size={14} /> STOCK COUNT
+              </button>
+              <button
+                onClick={() => setIsAddingItem(true)}
+                className="flex items-center gap-2 px-5 py-2.5 bg-slate-900 dark:bg-white dark:text-slate-950 text-white rounded-2xl text-[10px] font-black uppercase tracking-tight shadow-lg shadow-slate-900/10 hover:bg-indigo-600 transition-all"
+              >
+                <Plus size={14} /> NEW ITEM
+              </button>
+              <div className="relative">
+                <Search className="absolute left-3 top-3 text-slate-400" size={14} />
+                <input
+                  type="text"
+                  placeholder="Filter by ID/Name..."
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  className="w-full md:w-52 bg-slate-50 dark:bg-slate-850 border dark:border-slate-800 p-2.5 pl-10 rounded-2xl text-xs outline-none focus:ring-1 focus:ring-indigo-500 font-medium"
+                />
+              </div>
+              <button
+                onClick={() => addNotification('Opening inventory filters...', 'info', 'Sub-Store')}
+                className="p-2.5 border dark:border-slate-800 rounded-2xl hover:bg-slate-50 text-slate-400 transition-colors"
+              >
+                <Filter size={16} />
+              </button>
+            </div>
+          </>
+        )}
       </div>
 
+      {/* Dynamic Par view */}
+      {activeTab === 'dynamic-par' && (
+        <DepartmentDynamicParPanel department="Food & Beverage" />
+      )}
+
+      {/* Manual Par Overrides view */}
+      {activeTab === 'par-overrides' && (
+        <DepartmentParOverridesPanel department="Food & Beverage" />
+      )}
+
+      {/* Inventory view (table + side panel) */}
+      {activeTab === 'inventory' && (
+      <>
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-6 items-start">
         <div className="lg:col-span-3 space-y-4">
           <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-[2.5rem] shadow-3xs overflow-hidden">
@@ -423,7 +556,7 @@ export default function InventoryModule({ forcedStore }: { forcedStore?: string 
                       </td>
                       <td className="px-8 py-6">
                         <span className="text-[10px] font-black text-slate-500 bg-slate-50 dark:bg-slate-800 border dark:border-slate-700 px-3 py-1.5 rounded-2xl uppercase tracking-tighter">
-                          {item.location}
+                          {item.storeName}
                         </span>
                       </td>
                       <td className="px-8 py-6 text-right">
@@ -432,7 +565,7 @@ export default function InventoryModule({ forcedStore }: { forcedStore?: string 
                             onClick={() => {
                               setSelectedItemForLoss(item);
                               setIsRecordingLoss(true);
-                              setLossData({ ...lossData, type: item.category === 'Fixed Asset' ? 'Damage' : 'Spoilage' });
+                              setLossData({ ...lossData, type: isFixedAssetItem({ item_type: item.rawItemType }) ? 'Damage' : 'Spoilage' });
                             }}
                             className="p-2.5 text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-900/20 rounded-2xl transition-all opacity-0 group-hover:opacity-100"
                             title="Record Loss/Damage"
@@ -536,7 +669,7 @@ export default function InventoryModule({ forcedStore }: { forcedStore?: string 
               </button>
             </div>
             <div className="max-h-[400px] overflow-y-auto custom-scrollbar">
-              {auditLogs.filter(log => log && !log.includes('[LOSS_REGISTRY]')).slice(0, 50).map((log, idx) => {
+              {auditLogs.filter(log => log).slice(0, 50).map((log, idx) => {
                 const messageStartIdx = log.indexOf(' - ') + 3;
                 const timestamp = log.substring(0, messageStartIdx - 3);
                 const message = log.substring(messageStartIdx);
@@ -586,6 +719,8 @@ export default function InventoryModule({ forcedStore }: { forcedStore?: string 
           </div>
         </div>
       )}
+      </>
+      )}
 
       {/* Record Loss Modal */}
       <ModalSystem
@@ -601,7 +736,7 @@ export default function InventoryModule({ forcedStore }: { forcedStore?: string 
                 <div>
                    <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-3 block">Loss Classification</label>
                    <div className="grid grid-cols-2 gap-2">
-                      {(selectedItemForLoss?.category === 'Fixed Asset' ? ['Damage', 'Broken', 'Lost', 'Theft'] : ['Spoilage', 'Expired', 'Contamination', 'Discarded']).map(t => (
+                      {(selectedItemForLoss && isFixedAssetItem({ item_type: selectedItemForLoss.rawItemType }) ? ['Damage', 'Broken', 'Lost', 'Theft'] : ['Spoilage', 'Expired', 'Contamination', 'Discarded']).map(t => (
                         <button
                           key={t}
                           onClick={() => setLossData({...lossData, type: t as any})}
@@ -652,12 +787,12 @@ export default function InventoryModule({ forcedStore }: { forcedStore?: string 
                  >
                    Discard Adjustments
                  </button>
-                 <button 
+                 <button
                   onClick={handleRecordLoss}
-                  disabled={!lossData.qty || !lossData.reason || (selectedItemForLoss && lossData.qty > selectedItemForLoss.currentStock)}
+                  disabled={lossSubmitting || !lossData.qty || !lossData.reason || (selectedItemForLoss && lossData.qty > selectedItemForLoss.currentStock)}
                   className="flex-1 py-4 bg-rose-600 text-white rounded-2xl text-[10px] font-black uppercase tracking-[0.2em] shadow-xl shadow-rose-200 dark:shadow-none hover:bg-rose-700 transition-all disabled:opacity-30 disabled:grayscale"
                  >
-                   Confirm Record
+                   {lossSubmitting ? 'Recording…' : 'Confirm Record'}
                  </button>
               </div>
       </ModalSystem>
@@ -909,9 +1044,10 @@ export default function InventoryModule({ forcedStore }: { forcedStore?: string 
                 </button>
                 <button
                   onClick={editingStoreId ? handleUpdateStore : handleAddStore}
-                  className="flex-1 py-3.5 bg-indigo-600 text-white rounded-2xl text-[10px] font-black uppercase tracking-[0.2em] shadow-lg shadow-indigo-600/20 hover:bg-indigo-700 transition-all"
+                  disabled={storeSubmitting}
+                  className="flex-1 py-3.5 bg-indigo-600 text-white rounded-2xl text-[10px] font-black uppercase tracking-[0.2em] shadow-lg shadow-indigo-600/20 hover:bg-indigo-700 transition-all disabled:opacity-50"
                 >
-                  {editingStoreId ? 'Update Store' : 'Create Store'}
+                  {storeSubmitting ? 'Saving…' : editingStoreId ? 'Update Store' : 'Create Store'}
                 </button>
               </div>
             </div>

@@ -4,6 +4,7 @@
  */
 
 import { Building, Briefcase, Users, Handshake } from 'lucide-react';
+import { ModuleHeader } from '../shared';
 
 const CorporateTravelPartnersModule: React.FC = () => {
   const partnerTypes = [
@@ -15,20 +16,17 @@ const CorporateTravelPartnersModule: React.FC = () => {
 
   return (
     <div className="space-y-6">
-      <div className="bg-gradient-to-r from-blue-600 to-cyan-600 rounded-xl p-8 text-white">
-        <h1 className="text-3xl font-bold mb-2">Corporate & Travel Partners</h1>
-        <p className="text-lg opacity-90">Partner with us for exclusive benefits and rates</p>
-      </div>
+      <ModuleHeader title="Corporate & Travel Partners" subtitle="Partner with us for exclusive benefits and rates" gradient="from-blue-600 to-cyan-600" />
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         {partnerTypes.map((partner) => (
-          <div key={partner.id} className="bg-white dark:bg-slate-800 rounded-xl p-6 shadow-lg">
+          <div key={partner.id} className="bg-white dark:bg-stone-800 rounded-3xl p-6 shadow-sm border border-stone-200/70 hover:shadow-xl hover:-translate-y-1 transition-all duration-300">
             <div className="flex items-center gap-3 mb-4 text-blue-600">
               {partner.icon}
-              <h3 className="text-xl font-bold text-slate-900 dark:text-white">{partner.name}</h3>
+              <h3 className="text-xl font-bold text-stone-900 dark:text-white">{partner.name}</h3>
             </div>
-            <p className="text-slate-600 dark:text-slate-400 mb-4">{partner.description}</p>
-            <button className="w-full bg-blue-600 hover:bg-blue-700 text-white py-2 rounded-lg font-semibold transition-colors">
+            <p className="text-stone-600 dark:text-stone-400 mb-4">{partner.description}</p>
+            <button className="w-full bg-blue-600 hover:bg-blue-700 text-white py-2 rounded-full font-semibold transition-colors">
               Apply Now
             </button>
           </div>

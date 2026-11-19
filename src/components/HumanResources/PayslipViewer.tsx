@@ -164,6 +164,74 @@ const PayslipViewer = ({ payslip, onClose }: { payslip: Payslip; onClose: () => 
             </div>
           </div>
 
+          {/* Calculation Breakdown (attendance / overtime / leave / loans) */}
+          {payslip.calc_details && (
+            <div>
+              <h4 className="text-xs font-bold text-slate-900 dark:text-white uppercase mb-3">Calculation Breakdown</h4>
+              <div className="grid grid-cols-2 gap-3">
+                {payslip.calc_details.unpaidLeaveDays !== undefined && (
+                  <div className="p-3 bg-slate-50 dark:bg-slate-950 rounded-xl">
+                    <span className="text-xs font-medium text-slate-400 uppercase block">Unpaid Leave Days</span>
+                    <span className="text-sm font-semibold font-mono text-slate-900 dark:text-white">{payslip.calc_details.unpaidLeaveDays}</span>
+                  </div>
+                )}
+                {payslip.calc_details.absentDays !== undefined && (
+                  <div className="p-3 bg-slate-50 dark:bg-slate-950 rounded-xl">
+                    <span className="text-xs font-medium text-slate-400 uppercase block">Absent Days</span>
+                    <span className="text-sm font-semibold font-mono text-slate-900 dark:text-white">{payslip.calc_details.absentDays}</span>
+                  </div>
+                )}
+                {payslip.calc_details.unpaidDays !== undefined && (
+                  <div className="p-3 bg-slate-50 dark:bg-slate-950 rounded-xl">
+                    <span className="text-xs font-medium text-slate-400 uppercase block">Total Unpaid Days</span>
+                    <span className="text-sm font-semibold font-mono text-rose-600">{payslip.calc_details.unpaidDays}</span>
+                  </div>
+                )}
+                {payslip.calc_details.overtimeHours !== undefined && (
+                  <div className="p-3 bg-slate-50 dark:bg-slate-950 rounded-xl">
+                    <span className="text-xs font-medium text-slate-400 uppercase block">Overtime Hours</span>
+                    <span className="text-sm font-semibold font-mono text-indigo-600">{payslip.calc_details.overtimeHours}</span>
+                  </div>
+                )}
+                {payslip.calc_details.absenceDeduction !== undefined && Number(payslip.calc_details.absenceDeduction) > 0 && (
+                  <div className="p-3 bg-slate-50 dark:bg-slate-950 rounded-xl">
+                    <span className="text-xs font-medium text-slate-400 uppercase block">Absence Deduction</span>
+                    <span className="text-sm font-semibold font-mono text-rose-600">${fmt(Number(payslip.calc_details.absenceDeduction))}</span>
+                  </div>
+                )}
+                {payslip.calc_details.overtimePay !== undefined && Number(payslip.calc_details.overtimePay) > 0 && (
+                  <div className="p-3 bg-slate-50 dark:bg-slate-950 rounded-xl">
+                    <span className="text-xs font-medium text-slate-400 uppercase block">Overtime Pay</span>
+                    <span className="text-sm font-semibold font-mono text-indigo-600">${fmt(Number(payslip.calc_details.overtimePay))}</span>
+                  </div>
+                )}
+                {payslip.calc_details.dailyRate !== undefined && (
+                  <div className="p-3 bg-slate-50 dark:bg-slate-950 rounded-xl">
+                    <span className="text-xs font-medium text-slate-400 uppercase block">Daily Rate</span>
+                    <span className="text-sm font-semibold font-mono text-slate-900 dark:text-white">${fmt(Number(payslip.calc_details.dailyRate))}</span>
+                  </div>
+                )}
+                {payslip.calc_details.hourlyRate !== undefined && (
+                  <div className="p-3 bg-slate-50 dark:bg-slate-950 rounded-xl">
+                    <span className="text-xs font-medium text-slate-400 uppercase block">Hourly Rate</span>
+                    <span className="text-sm font-semibold font-mono text-slate-900 dark:text-white">${fmt(Number(payslip.calc_details.hourlyRate))}</span>
+                  </div>
+                )}
+              </div>
+              {payslip.calc_details.loans && payslip.calc_details.loans.length > 0 && (
+                <div className="mt-3 space-y-2">
+                  <span className="text-xs font-medium text-slate-400 uppercase">Loan Deductions</span>
+                  {payslip.calc_details.loans.map((loan, idx) => (
+                    <div key={idx} className="flex justify-between p-2 bg-slate-50 dark:bg-slate-950 rounded-xl">
+                      <span className="text-xs font-mono text-slate-500">{loan.loanId}</span>
+                      <span className="text-xs font-mono font-semibold text-rose-600">${fmt(Number(loan.amount))}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
           {/* YTD */}
           {(Number(payslip.ytd_gross) > 0 || Number(payslip.ytd_net) > 0) && (
             <div>

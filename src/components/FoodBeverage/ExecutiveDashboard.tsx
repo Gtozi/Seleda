@@ -1,9 +1,19 @@
 /**
  * @license
  * SPDX-License-Identifier: Apache-2.5
+ *
+ * F&B Executive Dashboard — centralized operational view across all F&B outlets.
+ *
+ * All data is served from the single aggregated endpoint
+ *   GET /api/fb/analytics/executive-dashboard
+ * (see src/server/routes/fbAnalytics.routes.ts). The endpoint pulls from the
+ * pre-aggregated analytics snapshots (fb_outlet_analytics, fb_cost_analytics,
+ * fb_menu_engineering) plus today's transactional data (orders, wastage_logs,
+ * fb_purchase_orders, fb_staff_productivity, fb_guest_feedback, stock_transactions)
+ * and the last 7 days of orders for the weekly revenue trend.
  */
 
-import { useState } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import {
   TrendingUp,
   DollarSign,
@@ -12,11 +22,6 @@ import {
   Package,
   AlertTriangle,
   CheckCircle2,
-  Wifi,
-  WifiOff,
-  Printer,
-  CreditCard,
-  Activity,
   Clock,
   Star,
   ChefHat,
@@ -29,383 +34,435 @@ import {
   Wine,
   Cake,
   Flame,
-  Soup,
-  Leaf,
-  Building2,
-  Calendar,
-  TrendingDown
+  type LucideIcon,
 } from 'lucide-react';
 import { useERP } from '../../context/ERPContext';
+import {
+  AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip,
+  ResponsiveContainer, Legend,
+} from 'recharts';
+import StatCard from '../FrontOffice/StatCard';
+import { PageHeader, SectionCard, Badge } from '../FrontOffice/ui';
+import { button, layout, statusTone, type StatusTone } from '../FrontOffice/brandTheme';
+
+const API = '/api/fb/analytics';
+
+type TrendView = 'total' | 'outlet' | 'mealPeriod';
+const SERIES_COLORS = ['#6366f1', '#10b981', '#f59e0b', '#ec4899', '#06b6d4', '#8b5cf6', '#ef4444', '#14b8a6'];
+
+interface ExecutiveDashboardData {
+  period: string;
+  generatedAt: string;
+  kpis: {
+    todayRevenue: number;
+    coversServed: number;
+    averageCheck: number;
+    grossMarginPct: number;
+    foodCostPct: number;
+    bevCostPct: number;
+    inventoryValue: number;
+    wasteCost: number;
+    purchaseCommitments: number;
+    banquetRevenue: number;
+    roomServiceRevenue: number;
+    guestSatisfaction: number;
+    guestSatisfactionCount: number;
+  };
+  revenueByOutlet: { outletName: string; revenue: number; percentage: string }[];
+  revenueByMealPeriod: { mealPeriod: string; revenue: number; percentage: string }[];
+  weekly: {
+    totalRevenue: number;
+    revenueTrend: { date: string; label: string; revenue: number; [key: string]: any }[];
+    outletNames: string[];
+    mealPeriods: string[];
+    revenueByOutlet: { outletName: string; revenue: number; percentage: string }[];
+    revenueByMealPeriod: { mealPeriod: string; revenue: number; percentage: string }[];
+  };
+  inventoryAlerts: { lowStock: number; expiring: number; stockouts: number };
+  productionStatus: { pendingOrders: number; inProgress: number; ready: number };
+  staffProductivity: { activeStaff: number; ordersPerStaff: number; avgServiceTimeMin: number };
+  topSellingItems: { name: string; quantity: number; revenue: number }[];
+  slowMovingItems: { name: string; quantity: number; revenue: number }[];
+  exceptions: {
+    voidRatePct: number;
+    voidThresholdPct: number;
+    lowInventoryCount: number;
+    serviceDelays: number;
+  };
+}
+
+/** Render <linearGradient> defs for the area chart based on the selected view. */
+function renderGradientDefs(view: TrendView, outletNames: string[], mealPeriods: string[]) {
+  if (view === 'total') {
+    return (
+      <linearGradient id="grad-revenue" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="5%" stopColor="#6366f1" stopOpacity={0.3} />
+        <stop offset="95%" stopColor="#6366f1" stopOpacity={0} />
+      </linearGradient>
+    );
+  }
+  const names = view === 'outlet' ? outletNames : mealPeriods;
+  const prefix = view === 'outlet' ? 'grad-outlet' : 'grad-mp';
+  return names.map((name, i) => {
+    const color = SERIES_COLORS[i % SERIES_COLORS.length];
+    return (
+      <linearGradient key={name} id={`${prefix}-${i}`} x1="0" y1="0" x2="0" y2="1">
+        <stop offset="5%" stopColor={color} stopOpacity={0.3} />
+        <stop offset="95%" stopColor={color} stopOpacity={0} />
+      </linearGradient>
+    );
+  });
+}
 
 export default function ExecutiveDashboard() {
-  const { formatAmount } = useERP();
-  const [refreshing, setRefreshing] = useState(false);
+  const { formatAmount, addNotification } = useERP();
+  const [data, setData] = useState<ExecutiveDashboardData | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [trendView, setTrendView] = useState<TrendView>('total');
+
+  const fetchData = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const r = await fetch(`${API}/executive-dashboard?period=Today`, {
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+      });
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({}));
+        throw new Error(err.error || `Request failed (${r.status})`);
+      }
+      const json = await r.json();
+      setData(json as ExecutiveDashboardData);
+    } catch (e: any) {
+      setError(e.message || 'Failed to load executive dashboard');
+      addNotification(e.message || 'Failed to load executive dashboard', 'warning', 'F&B');
+    } finally {
+      setLoading(false);
+    }
+  }, [addNotification]);
+
+  useEffect(() => {
+    fetchData();
+  }, [fetchData]);
 
   const handleRefresh = () => {
-    setRefreshing(true);
-    setTimeout(() => setRefreshing(false), 1000);
+    fetchData();
+    addNotification('Executive dashboard refreshed', 'info', 'F&B');
   };
 
+  const k = data?.kpis;
+
   return (
-    <div className="space-y-6">
+    <div className={layout.sectionStack}>
       {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-slate-900 dark:text-white">Executive Dashboard</h1>
-          <p className="text-sm text-slate-600 dark:text-slate-400 mt-1">Centralized operational view across all F&B outlets</p>
+      <PageHeader
+        title="Executive Dashboard"
+        subtitle={
+          data
+            ? `Today's operational view across all F&B outlets · Updated ${new Date(data.generatedAt).toLocaleTimeString()}`
+            : "Today's operational view across all F&B outlets"
+        }
+        icon={BarChart3}
+        actions={
+          <button onClick={handleRefresh} disabled={loading} className={button.secondary}>
+            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+            Refresh
+          </button>
+        }
+      />
+
+      {error && (
+        <div className="rounded-xl border-l-4 border-red-400 bg-red-50 dark:bg-red-900/20 p-4 text-sm text-red-700 dark:text-red-400">
+          {error}
         </div>
-        <button
-          onClick={handleRefresh}
-          disabled={refreshing}
-          className="flex items-center gap-2 px-4 py-2 border border-slate-300 dark:border-slate-600 rounded-lg text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-700 disabled:opacity-50"
-        >
-          <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} />
-          <span>Refresh</span>
-        </button>
-      </div>
+      )}
 
-      {/* Executive KPIs - Row 1 */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-        <KPICard
-          label="Today's Revenue"
-          value={formatAmount(12500)}
-          trend="+8.5%"
-          isPositive
-          icon={DollarSign}
-          color="indigo"
-        />
-        <KPICard
-          label="Covers Served"
-          value="284"
-          trend="+12.3%"
-          isPositive
-          icon={Users}
-          color="emerald"
-        />
-        <KPICard
-          label="Average Check"
-          value={formatAmount(44)}
-          trend="+5.1%"
-          isPositive
-          icon={TrendingUp}
-          color="amber"
-        />
-        <KPICard
-          label="Gross Margin"
-          value="66.4%"
-          trend="+1.2%"
-          isPositive
-          icon={BarChart3}
-          color="purple"
-        />
-      </div>
+      {loading && !data && (
+        <div className="flex items-center justify-center py-20">
+          <RefreshCw className="w-6 h-6 animate-spin text-[var(--color-accent-operations)]" />
+          <span className="ml-3 text-gray-600 dark:text-gray-400">Loading executive dashboard…</span>
+        </div>
+      )}
 
-      {/* Executive KPIs - Row 2 */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-        <KPICard
-          label="Food Cost %"
-          value="32.5%"
-          trend="-1.2%"
-          isPositive
-          icon={Utensils}
-          color="rose"
-        />
-        <KPICard
-          label="Beverage Cost %"
-          value="28.5%"
-          trend="-0.8%"
-          isPositive
-          icon={Wine}
-          color="blue"
-        />
-        <KPICard
-          label="Inventory Value"
-          value={formatAmount(45200)}
-          trend="+2.3%"
-          isPositive
-          icon={Package}
-          color="cyan"
-        />
-        <KPICard
-          label="Waste Cost"
-          value={formatAmount(450)}
-          trend="-5.4%"
-          isPositive
-          icon={AlertTriangle}
-          color="orange"
-        />
-      </div>
-
-      {/* Executive KPIs - Row 3 */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-        <KPICard
-          label="Purchase Commitments"
-          value={formatAmount(8200)}
-          trend="+3.1%"
-          isPositive={false}
-          icon={ShoppingCart}
-          color="slate"
-        />
-        <KPICard
-          label="Banquet Revenue"
-          value={formatAmount(3200)}
-          trend="+15.2%"
-          isPositive
-          icon={Cake}
-          color="pink"
-        />
-        <KPICard
-          label="Room Service Revenue"
-          value={formatAmount(1800)}
-          trend="+7.8%"
-          isPositive
-          icon={Coffee}
-          color="amber"
-        />
-        <KPICard
-          label="Guest Satisfaction"
-          value="4.6/5"
-          trend="+0.2"
-          isPositive
-          icon={Star}
-          color="yellow"
-        />
-      </div>
-
-      {/* Revenue Breakdown */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <div className="bg-white dark:bg-slate-800 rounded-xl p-6 border border-slate-200 dark:border-slate-700">
-          <h3 className="text-lg font-semibold text-slate-900 dark:text-white mb-4">Revenue by Outlet</h3>
-          <div className="space-y-3">
-            <RevenueRow label="Main Restaurant" value={formatAmount(5200)} percentage="41.6%" />
-            <RevenueRow label="Bar Lounge" value={formatAmount(2800)} percentage="22.4%" />
-            <RevenueRow label="Room Service" value={formatAmount(1800)} percentage="14.4%" />
-            <RevenueRow label="Pool Bar" value={formatAmount(1500)} percentage="12.0%" />
-            <RevenueRow label="Coffee Shop" value={formatAmount(1200)} percentage="9.6%" />
+      {data && k && (
+        <>
+          {/* KPI Cards */}
+          <div className={layout.kpiGrid}>
+            <StatCard title="Today's Revenue" value={formatAmount(k.todayRevenue)} icon={DollarSign} tone="accent" />
+            <StatCard title="Covers Served" value={String(k.coversServed)} icon={Users} tone="success" />
+            <StatCard title="Average Check" value={formatAmount(k.averageCheck)} icon={TrendingUp} tone="info" />
+            <StatCard title="Gross Margin" value={`${k.grossMarginPct}%`} icon={BarChart3} tone="warning" />
           </div>
-        </div>
-
-        <div className="bg-white dark:bg-slate-800 rounded-xl p-6 border border-slate-200 dark:border-slate-700">
-          <h3 className="text-lg font-semibold text-slate-900 dark:text-white mb-4">Revenue by Meal Period</h3>
-          <div className="space-y-3">
-            <RevenueRow label="Breakfast" value={formatAmount(2200)} percentage="17.6%" />
-            <RevenueRow label="Lunch" value={formatAmount(3800)} percentage="30.4%" />
-            <RevenueRow label="Dinner" value={formatAmount(5200)} percentage="41.6%" />
-            <RevenueRow label="Bar Service" value={formatAmount(1300)} percentage="10.4%" />
+          <div className={layout.kpiGrid}>
+            <StatCard title="Food Cost %" value={`${k.foodCostPct}%`} icon={Utensils} tone="danger" />
+            <StatCard title="Beverage Cost %" value={`${k.bevCostPct}%`} icon={Wine} tone="info" />
+            <StatCard title="Inventory Value" value={formatAmount(k.inventoryValue)} icon={Package} tone="neutral" />
+            <StatCard title="Waste Cost" value={formatAmount(k.wasteCost)} icon={AlertTriangle} tone="danger" />
           </div>
-        </div>
-      </div>
-
-      {/* Alerts & Status */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div className="bg-white dark:bg-slate-800 rounded-xl p-6 border border-slate-200 dark:border-slate-700">
-          <h3 className="text-lg font-semibold text-slate-900 dark:text-white mb-4">Inventory Alerts</h3>
-          <div className="space-y-3">
-            <AlertRow label="Low Stock Items" count={12} icon={AlertTriangle} color="amber" />
-            <AlertRow label="Expiring Inventory" count={8} icon={Clock} color="red" />
-            <AlertRow label="Stockouts" count={3} icon={XCircle} color="red" />
+          <div className={layout.kpiGrid}>
+            <StatCard title="Purchase Commitments" value={formatAmount(k.purchaseCommitments)} icon={ShoppingCart} tone="neutral" />
+            <StatCard title="Banquet Revenue" value={formatAmount(k.banquetRevenue)} icon={Cake} tone="accent" />
+            <StatCard title="Room Service Revenue" value={formatAmount(k.roomServiceRevenue)} icon={Coffee} tone="info" />
+            <StatCard
+              title={`Guest Satisfaction (${k.guestSatisfactionCount})`}
+              value={k.guestSatisfaction > 0 ? `${k.guestSatisfaction}/5` : '—'}
+              icon={Star}
+              tone="success"
+            />
           </div>
-        </div>
 
-        <div className="bg-white dark:bg-slate-800 rounded-xl p-6 border border-slate-200 dark:border-slate-700">
-          <h3 className="text-lg font-semibold text-slate-900 dark:text-white mb-4">Production Status</h3>
-          <div className="space-y-3">
-            <StatusRow label="Pending Orders" count={8} icon={ChefHat} color="blue" />
-            <StatusRow label="In Progress" count={12} icon={Flame} color="amber" />
-            <StatusRow label="Ready" count={5} icon={CheckCircle2} color="green" />
+          {/* Weekly Revenue Trend (with Total / By Outlet / By Meal Period toggle) */}
+          <SectionCard
+            title="Weekly Revenue Trend"
+            subtitle="Last 7 days"
+            icon={TrendingUp}
+            tone="accent"
+            actions={
+              <div className="flex items-center gap-3">
+                <div className="flex rounded-lg overflow-hidden border border-gray-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/40">
+                  {(['total', 'outlet', 'mealPeriod'] as const).map((v) => (
+                    <button
+                      key={v}
+                      onClick={() => setTrendView(v)}
+                      className={`px-3 py-1.5 text-xs font-medium transition-colors ${
+                        trendView === v
+                          ? 'bg-[var(--color-accent-operations)] text-white'
+                          : 'text-gray-600 dark:text-gray-300 hover:bg-slate-100 dark:hover:bg-slate-700'
+                      }`}
+                    >
+                      {v === 'total' ? 'Total' : v === 'outlet' ? 'By Outlet' : 'By Meal Period'}
+                    </button>
+                  ))}
+                </div>
+                <div className="text-right">
+                  <p className="text-xs text-gray-500 dark:text-gray-500">Total (7 days)</p>
+                  <p className="text-lg font-bold text-[var(--color-accent-operations)]">
+                    {formatAmount(data.weekly.totalRevenue)}
+                  </p>
+                </div>
+              </div>
+            }
+            pad="md"
+          >
+            <ResponsiveContainer width="100%" height={280}>
+              <AreaChart data={data.weekly.revenueTrend} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+                <defs>
+                  {renderGradientDefs(trendView, data.weekly.outletNames, data.weekly.mealPeriods)}
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" strokeOpacity={0.3} />
+                <XAxis dataKey="label" tick={{ fontSize: 12, fill: '#64748b' }} />
+                <YAxis tick={{ fontSize: 12, fill: '#64748b' }} tickFormatter={(v) => formatAmount(v)} width={90} />
+                <Tooltip
+                  formatter={(v: number) => formatAmount(v)}
+                  labelFormatter={(l) => `Day: ${l}`}
+                  contentStyle={{ borderRadius: '8px', border: '1px solid #e2e8f0', fontSize: '13px' }}
+                />
+                {trendView !== 'total' && <Legend wrapperStyle={{ fontSize: '12px' }} />}
+                {trendView === 'total' && (
+                  <Area type="monotone" dataKey="revenue" stroke="#6366f1" strokeWidth={2} fill="url(#grad-revenue)" name="Revenue" />
+                )}
+                {trendView === 'outlet' && data.weekly.outletNames.map((name, i) => (
+                  <Area
+                    key={name}
+                    type="monotone"
+                    dataKey={name}
+                    stackId="1"
+                    stroke={SERIES_COLORS[i % SERIES_COLORS.length]}
+                    strokeWidth={1.5}
+                    fill={`url(#grad-outlet-${i})`}
+                    name={name}
+                  />
+                ))}
+                {trendView === 'mealPeriod' && data.weekly.mealPeriods.map((mp, i) => (
+                  <Area
+                    key={mp}
+                    type="monotone"
+                    dataKey={mp}
+                    stackId="1"
+                    stroke={SERIES_COLORS[i % SERIES_COLORS.length]}
+                    strokeWidth={1.5}
+                    fill={`url(#grad-mp-${i})`}
+                    name={mp}
+                  />
+                ))}
+              </AreaChart>
+            </ResponsiveContainer>
+
+            {/* Summary rows under the chart */}
+            {trendView !== 'total' && (
+              <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-2">
+                {trendView === 'outlet' && data.weekly.revenueByOutlet.map((r) => (
+                  <SummaryRow key={r.outletName} label={r.outletName} value={formatAmount(r.revenue)} percentage={r.percentage} />
+                ))}
+                {trendView === 'mealPeriod' && data.weekly.revenueByMealPeriod.map((r) => (
+                  <SummaryRow key={r.mealPeriod} label={r.mealPeriod} value={formatAmount(r.revenue)} percentage={r.percentage} />
+                ))}
+              </div>
+            )}
+          </SectionCard>
+
+          {/* Today's Revenue Breakdown */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <SectionCard title="Today's Revenue by Outlet" icon={Utensils} tone="accent" pad="md">
+              <div className="space-y-3">
+                {data.revenueByOutlet.length === 0 && (
+                  <p className="text-sm text-gray-500 dark:text-gray-500">No outlet revenue for this period.</p>
+                )}
+                {data.revenueByOutlet.map((r) => (
+                  <SummaryRow key={r.outletName} label={r.outletName} value={formatAmount(r.revenue)} percentage={r.percentage} />
+                ))}
+              </div>
+            </SectionCard>
+
+            <SectionCard title="Today's Revenue by Meal Period" icon={Coffee} tone="info" pad="md">
+              <div className="space-y-3">
+                {data.revenueByMealPeriod.length === 0 && (
+                  <p className="text-sm text-gray-500 dark:text-gray-500">No meal-period revenue for this period.</p>
+                )}
+                {data.revenueByMealPeriod.map((r) => (
+                  <SummaryRow key={r.mealPeriod} label={r.mealPeriod} value={formatAmount(r.revenue)} percentage={r.percentage} />
+                ))}
+              </div>
+            </SectionCard>
           </div>
-        </div>
 
-        <div className="bg-white dark:bg-slate-800 rounded-xl p-6 border border-slate-200 dark:border-slate-700">
-          <h3 className="text-lg font-semibold text-slate-900 dark:text-white mb-4">Staff Productivity</h3>
-          <div className="space-y-3">
-            <StatusRow label="Active Staff" count={24} icon={Users} color="green" />
-            <StatusRow label="Orders per Staff" count="11.8" icon={Utensils} color="blue" />
-            <StatusRow label="Avg Service Time" count="18 min" icon={Clock} color="amber" />
+          {/* Alerts & Status */}
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <SectionCard title="Inventory Alerts" icon={AlertTriangle} tone="warning" pad="md">
+              <div className="space-y-3">
+                <StatusTile label="Low Stock Items" count={data.inventoryAlerts.lowStock} icon={AlertTriangle} tone="warning" />
+                <StatusTile label="Expiring Inventory" count={data.inventoryAlerts.expiring} icon={Clock} tone="danger" />
+                <StatusTile label="Stockouts" count={data.inventoryAlerts.stockouts} icon={XCircle} tone="danger" />
+              </div>
+            </SectionCard>
+
+            <SectionCard title="Production Status" icon={ChefHat} tone="info" pad="md">
+              <div className="space-y-3">
+                <StatusTile label="Pending Orders" count={data.productionStatus.pendingOrders} icon={ChefHat} tone="info" />
+                <StatusTile label="In Progress" count={data.productionStatus.inProgress} icon={Flame} tone="warning" />
+                <StatusTile label="Ready" count={data.productionStatus.ready} icon={CheckCircle2} tone="success" />
+              </div>
+            </SectionCard>
+
+            <SectionCard title="Staff Productivity" icon={Users} tone="success" pad="md">
+              <div className="space-y-3">
+                <StatusTile label="Active Staff" count={data.staffProductivity.activeStaff} icon={Users} tone="success" />
+                <StatusTile label="Orders per Staff" count={data.staffProductivity.ordersPerStaff} icon={Utensils} tone="info" />
+                <StatusTile label="Avg Service Time" count={`${data.staffProductivity.avgServiceTimeMin} min`} icon={Clock} tone="warning" />
+              </div>
+            </SectionCard>
           </div>
-        </div>
-      </div>
 
-      {/* Live Operations */}
-      <div className="bg-gradient-to-r from-slate-50 to-slate-100 dark:from-slate-800 dark:to-slate-900 rounded-xl p-6 border border-slate-200 dark:border-slate-700">
-        <h3 className="text-lg font-semibold text-slate-900 dark:text-white mb-4 flex items-center gap-2">
-          <Activity className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
-          Live Operations
-        </h3>
-        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-4">
-          <LiveStatus label="POS Status" status="online" icon={Wifi} />
-          <LiveStatus label="Kitchen (KDS)" status="online" icon={ChefHat} />
-          <LiveStatus label="Integration" status="online" icon={Activity} />
-          <LiveStatus label="Payment Gateway" status="online" icon={CreditCard} />
-          <LiveStatus label="Printers" status="warning" icon={Printer} />
-          <LiveStatus label="Offline POS" count={0} icon={WifiOff} />
-          <LiveStatus label="Outlet Status" status="online" icon={Building2} />
-        </div>
-      </div>
+          {/* Top Selling & Slow Moving */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <SectionCard title="Top Selling Items" icon={TrendingUp} tone="success" pad="md">
+              <div className="space-y-3">
+                {data.topSellingItems.length === 0 && (
+                  <p className="text-sm text-gray-500 dark:text-gray-500">No menu data for this period.</p>
+                )}
+                {data.topSellingItems.map((item, idx) => (
+                  <ItemRow key={`${item.name}-${idx}`} name={item.name} quantity={item.quantity} revenue={formatAmount(item.revenue)} />
+                ))}
+              </div>
+            </SectionCard>
 
-      {/* Top Selling & Slow Moving */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <div className="bg-white dark:bg-slate-800 rounded-xl p-6 border border-slate-200 dark:border-slate-700">
-          <h3 className="text-lg font-semibold text-slate-900 dark:text-white mb-4">Top Selling Items</h3>
-          <div className="space-y-3">
-            <ItemRow name="Grilled Salmon" quantity={45} revenue={formatAmount(2250)} />
-            <ItemRow name="Beef Tenderloin" quantity={38} revenue={formatAmount(2660)} />
-            <ItemRow name="Caesar Salad" quantity={52} revenue={formatAmount(1560)} />
-            <ItemRow name="Signature Cocktail" quantity={64} revenue={formatAmount(1920)} />
-            <ItemRow name="Chocolate Lava Cake" quantity={41} revenue={formatAmount(1230)} />
+            <SectionCard title="Slow Moving Items" icon={Clock} tone="warning" pad="md">
+              <div className="space-y-3">
+                {data.slowMovingItems.length === 0 && (
+                  <p className="text-sm text-gray-500 dark:text-gray-500">No menu data for this period.</p>
+                )}
+                {data.slowMovingItems.map((item, idx) => (
+                  <ItemRow key={`${item.name}-${idx}`} name={item.name} quantity={item.quantity} revenue={formatAmount(item.revenue)} />
+                ))}
+              </div>
+            </SectionCard>
           </div>
-        </div>
 
-        <div className="bg-white dark:bg-slate-800 rounded-xl p-6 border border-slate-200 dark:border-slate-700">
-          <h3 className="text-lg font-semibold text-slate-900 dark:text-white mb-4">Slow Moving Items</h3>
-          <div className="space-y-3">
-            <ItemRow name="Lamb Shank" quantity={5} revenue={formatAmount(350)} />
-            <ItemRow name="Seafood Platter" quantity={3} revenue={formatAmount(240)} />
-            <ItemRow name="Vegetarian Curry" quantity={4} revenue={formatAmount(160)} />
-            <ItemRow name="Premium Wine (2018)" quantity={2} revenue={formatAmount(180)} />
-            <ItemRow name="Artisan Cheese Board" quantity={6} revenue={formatAmount(240)} />
-          </div>
-        </div>
-      </div>
-
-      {/* Daily Exceptions */}
-      <div className="bg-white dark:bg-slate-800 rounded-xl p-6 border border-slate-200 dark:border-slate-700">
-        <h3 className="text-lg font-semibold text-slate-900 dark:text-white mb-4 flex items-center gap-2">
-          <AlertCircle className="w-5 h-5 text-amber-600 dark:text-amber-400" />
-          Daily Exceptions
-        </h3>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <ExceptionCard title="High Void Rate" value="3.2%" threshold="2.0%" status="warning" />
-          <ExceptionCard title="Low Inventory" items="12" status="warning" />
-          <ExceptionCard title="Service Delays" count={4} status="warning" />
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// Helper Components
-function KPICard({ label, value, trend, isPositive, icon: Icon, color }: any) {
-  const colorClasses = {
-    indigo: 'bg-indigo-100 dark:bg-indigo-900/20 text-indigo-600 dark:text-indigo-400',
-    emerald: 'bg-emerald-100 dark:bg-emerald-900/20 text-emerald-600 dark:text-emerald-400',
-    amber: 'bg-amber-100 dark:bg-amber-900/20 text-amber-600 dark:text-amber-400',
-    purple: 'bg-purple-100 dark:bg-purple-900/20 text-purple-600 dark:text-purple-400',
-    rose: 'bg-rose-100 dark:bg-rose-900/20 text-rose-600 dark:text-rose-400',
-    blue: 'bg-blue-100 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400',
-    cyan: 'bg-cyan-100 dark:bg-cyan-900/20 text-cyan-600 dark:text-cyan-400',
-    orange: 'bg-orange-100 dark:bg-orange-900/20 text-orange-600 dark:text-orange-400',
-    slate: 'bg-slate-100 dark:bg-slate-900/20 text-slate-600 dark:text-slate-400',
-    pink: 'bg-pink-100 dark:bg-pink-900/20 text-pink-600 dark:text-pink-400',
-    yellow: 'bg-yellow-100 dark:bg-yellow-900/20 text-yellow-600 dark:text-yellow-400',
-  };
-
-  return (
-    <div className="bg-white dark:bg-slate-800 rounded-xl p-4 border border-slate-200 dark:border-slate-700">
-      <div className="flex items-center justify-between">
-        <div>
-          <p className="text-sm text-slate-600 dark:text-slate-400">{label}</p>
-          <p className="text-2xl font-bold text-slate-900 dark:text-white mt-1">{value}</p>
-          <p className={`text-xs mt-1 ${isPositive ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
-            {trend}
-          </p>
-        </div>
-        <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${colorClasses[color as keyof typeof colorClasses]}`}>
-          <Icon className="w-5 h-5" />
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function RevenueRow({ label, value, percentage }: any) {
-  return (
-    <div className="flex items-center justify-between">
-      <span className="text-sm text-slate-600 dark:text-slate-400">{label}</span>
-      <div className="flex items-center gap-4">
-        <span className="text-sm font-medium text-slate-900 dark:text-white">{value}</span>
-        <span className="text-xs text-slate-500">{percentage}</span>
-      </div>
-    </div>
-  );
-}
-
-function AlertRow({ label, count, icon: Icon, color }: any) {
-  const colorClasses = {
-    amber: 'bg-amber-100 dark:bg-amber-900/20 text-amber-600 dark:text-amber-400',
-    red: 'bg-red-100 dark:bg-red-900/20 text-red-600 dark:text-red-400',
-  };
-
-  return (
-    <div className="flex items-center justify-between p-3 bg-slate-50 dark:bg-slate-700 rounded-lg">
-      <div className="flex items-center gap-3">
-        <Icon className={`w-4 h-4 ${colorClasses[color as keyof typeof colorClasses]}`} />
-        <span className="text-sm text-slate-700 dark:text-slate-300">{label}</span>
-      </div>
-      <span className="text-sm font-bold text-slate-900 dark:text-white">{count}</span>
-    </div>
-  );
-}
-
-function StatusRow({ label, count, icon: Icon, color }: any) {
-  const colorClasses = {
-    green: 'bg-green-100 dark:bg-green-900/20 text-green-600 dark:text-green-400',
-    blue: 'bg-blue-100 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400',
-    amber: 'bg-amber-100 dark:bg-amber-900/20 text-amber-600 dark:text-amber-400',
-  };
-
-  return (
-    <div className="flex items-center justify-between p-3 bg-slate-50 dark:bg-slate-700 rounded-lg">
-      <div className="flex items-center gap-3">
-        <Icon className={`w-4 h-4 ${colorClasses[color as keyof typeof colorClasses]}`} />
-        <span className="text-sm text-slate-700 dark:text-slate-300">{label}</span>
-      </div>
-      <span className="text-sm font-bold text-slate-900 dark:text-white">{count}</span>
-    </div>
-  );
-}
-
-function LiveStatus({ label, status, count, icon: Icon }: any) {
-  const statusColor = status === 'online' ? 'text-green-600 dark:text-green-400' : 
-                      status === 'warning' ? 'text-amber-600 dark:text-amber-400' : 
-                      'text-red-600 dark:text-red-400';
-
-  return (
-    <div className="flex flex-col items-center p-3 bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700">
-      <Icon className={`w-5 h-5 ${statusColor} mb-2`} />
-      <span className="text-xs text-slate-600 dark:text-slate-400 text-center">{label}</span>
-      {count !== undefined ? (
-        <span className="text-sm font-bold text-slate-900 dark:text-white">{count}</span>
-      ) : (
-        <span className={`text-xs font-bold ${statusColor}`}>{status}</span>
+          {/* Daily Exceptions */}
+          <SectionCard title="Daily Exceptions" icon={AlertCircle} tone="warning" pad="md">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <ExceptionTile
+                title="High Void Rate"
+                value={`${data.exceptions.voidRatePct}%`}
+                threshold={`${data.exceptions.voidThresholdPct}%`}
+                isWarning={data.exceptions.voidRatePct > data.exceptions.voidThresholdPct}
+              />
+              <ExceptionTile
+                title="Low Inventory"
+                value={String(data.exceptions.lowInventoryCount)}
+                isWarning={data.exceptions.lowInventoryCount > 0}
+              />
+              <ExceptionTile
+                title="Service Delays"
+                value={String(data.exceptions.serviceDelays)}
+                isWarning={data.exceptions.serviceDelays > 0}
+              />
+            </div>
+          </SectionCard>
+        </>
       )}
     </div>
   );
 }
 
-function ItemRow({ name, quantity, revenue }: any) {
+// ── Helper Components (portal-consistent) ──────────────────────────────────
+
+function SummaryRow({ label, value, percentage }: { label: string; value: string; percentage?: string }) {
   return (
-    <div className="flex items-center justify-between p-3 bg-slate-50 dark:bg-slate-700 rounded-lg">
-      <div>
-        <p className="text-sm font-medium text-slate-900 dark:text-white">{name}</p>
-        <p className="text-xs text-slate-500">{quantity} sold</p>
+    <div className="flex items-center justify-between">
+      <span className="text-sm text-gray-600 dark:text-gray-400">{label}</span>
+      <div className="flex items-center gap-4">
+        <span className="text-sm font-medium text-gray-900 dark:text-white tabular-nums">{value}</span>
+        {percentage && <span className="text-xs text-gray-500 dark:text-gray-500">{percentage}</span>}
       </div>
-      <span className="text-sm font-bold text-slate-900 dark:text-white">{revenue}</span>
     </div>
   );
 }
 
-function ExceptionCard({ title, value, threshold, items, count, status }: any) {
+function StatusTile({ label, count, icon: Icon, tone }: { label: string; count: number | string; icon: LucideIcon; tone: StatusTone }) {
+  const toneStyles = statusTone[tone];
   return (
-    <div className="p-4 bg-amber-50 dark:bg-amber-900/20 rounded-lg border border-amber-200 dark:border-amber-800">
-      <p className="text-sm font-semibold text-slate-900 dark:text-white">{title}</p>
-      <div className="flex items-center gap-2 mt-2">
-        <span className="text-lg font-bold text-amber-600 dark:text-amber-400">
-          {value || items || count}
-        </span>
-        {threshold && <span className="text-xs text-slate-500">/ {threshold}</span>}
+    <div className="flex items-center justify-between p-3 bg-slate-50 dark:bg-slate-900/40 rounded-xl">
+      <div className="flex items-center gap-3">
+        <div className={`shrink-0 p-1.5 rounded-lg ${toneStyles.soft}`}>
+          <Icon className="w-4 h-4" />
+        </div>
+        <span className="text-sm text-gray-700 dark:text-gray-300">{label}</span>
       </div>
-      <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">Action required</p>
+      <span className="text-sm font-bold text-gray-900 dark:text-white tabular-nums">{count}</span>
+    </div>
+  );
+}
+
+function ItemRow({ name, quantity, revenue }: { name: string; quantity: number; revenue: string }) {
+  return (
+    <div className="flex items-center justify-between p-3 bg-slate-50 dark:bg-slate-900/40 rounded-xl">
+      <div className="min-w-0">
+        <p className="text-sm font-medium text-gray-900 dark:text-white truncate">{name}</p>
+        <p className="text-xs text-gray-500 dark:text-gray-500">{quantity} sold</p>
+      </div>
+      <span className="text-sm font-bold text-gray-900 dark:text-white tabular-nums shrink-0 ml-3">{revenue}</span>
+    </div>
+  );
+}
+
+function ExceptionTile({ title, value, threshold, isWarning }: { title: string; value: string; threshold?: string; isWarning: boolean }) {
+  const tone: StatusTone = isWarning ? 'warning' : 'success';
+  const toneStyles = statusTone[tone];
+  return (
+    <div className={`p-4 rounded-xl border ${isWarning ? 'border-amber-200 dark:border-amber-800' : 'border-green-200 dark:border-green-800'} ${isWarning ? 'bg-amber-50 dark:bg-amber-900/20' : 'bg-green-50 dark:bg-green-900/20'}`}>
+      <p className="text-sm font-semibold text-gray-900 dark:text-white">{title}</p>
+      <div className="flex items-center gap-2 mt-2">
+        <span className={`text-lg font-bold tabular-nums ${toneStyles.text}`}>{value}</span>
+        {threshold && <span className="text-xs text-gray-500 dark:text-gray-500">/ {threshold}</span>}
+      </div>
+      <div className="mt-1">
+        <Badge tone={isWarning ? 'warning' : 'success'}>
+          {isWarning ? 'Action required' : 'Within threshold'}
+        </Badge>
+      </div>
     </div>
   );
 }

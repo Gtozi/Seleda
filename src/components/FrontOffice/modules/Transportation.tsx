@@ -3,7 +3,7 @@
  * Airport transfers, shuttle services, and vehicle management
  */
 
-import { useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import {
   Car,
@@ -18,18 +18,17 @@ import {
   Save,
   X,
   ChevronDown,
-  Clock,
   User,
   Plane,
   MapPin,
   Calendar,
   Phone,
-  CreditCard,
   Route,
-  Fuel,
-  Wrench
+  Wrench,
+  Loader2
 } from 'lucide-react';
 import StatCard from '../StatCard';
+import { useERP } from '../../../context/ERPContext';
 
 type TripStatus = 'scheduled' | 'confirmed' | 'in_progress' | 'completed' | 'cancelled';
 type TripType = 'airport_pickup' | 'airport_dropoff' | 'local_transfer' | 'shuttle' | 'other';
@@ -80,7 +79,68 @@ interface Driver {
   activeTrips: number;
 }
 
+const REQUEST_TO_TRIP_STATUS: Record<string, TripStatus> = {
+  'Requested': 'scheduled',
+  'Confirmed': 'confirmed',
+  'Assigned': 'confirmed',
+  'Driver En Route': 'in_progress',
+  'Guest Picked Up': 'in_progress',
+  'In Progress': 'in_progress',
+  'Completed': 'completed',
+  'Cancelled': 'cancelled',
+  'No Show': 'cancelled',
+};
+
+const REQUEST_TO_TRIP_TYPE: Record<string, TripType> = {
+  'Airport Pickup': 'airport_pickup',
+  'Airport Drop-off': 'airport_dropoff',
+  'City Transfer': 'local_transfer',
+  'Hotel Shuttle': 'shuttle',
+  'Staff Shuttle': 'shuttle',
+  'Sightseeing Tour': 'local_transfer',
+  'VIP Transport': 'other',
+  'Courier Service': 'other',
+};
+
+const TRIP_TYPE_TO_REQUEST: Record<TripType, string> = {
+  airport_pickup: 'Airport Pickup',
+  airport_dropoff: 'Airport Drop-off',
+  local_transfer: 'City Transfer',
+  shuttle: 'Hotel Shuttle',
+  other: 'City Transfer',
+};
+
+const VEHICLE_TO_STATUS: Record<string, VehicleStatus> = {
+  'Active': 'available',
+  'In Use': 'in_use',
+  'Maintenance': 'maintenance',
+  'Out of Service': 'out_of_service',
+  'Retired': 'out_of_service',
+  'Sold': 'out_of_service',
+};
+
+const VEHICLE_TO_TYPE: Record<string, Vehicle['type']> = {
+  Sedan: 'sedan',
+  SUV: 'suv',
+  Van: 'van',
+  Bus: 'bus',
+  Shuttle: 'shuttle',
+  Limousine: 'sedan',
+  Minibus: 'bus',
+};
+
+function transportHeaders(json = false): Record<string, string> {
+  const token = typeof window !== 'undefined'
+    ? localStorage.getItem('hotel_erp_session') || localStorage.getItem('auth_token')
+    : null;
+  const headers: Record<string, string> = {};
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+  if (json) headers['Content-Type'] = 'application/json';
+  return headers;
+}
+
 const Transportation = () => {
+  const { currentPropertyId } = useERP();
   const [searchParams, setSearchParams] = useSearchParams();
   const activeTab = (searchParams.get('view') as 'trips' | 'vehicles' | 'drivers' | 'schedule') || 'trips';
   const setActiveTab = (tab: 'trips' | 'vehicles' | 'drivers' | 'schedule') => {
@@ -90,7 +150,6 @@ const Transportation = () => {
   };
   const [searchQuery, setSearchQuery] = useState('');
   const [showTripModal, setShowTripModal] = useState(false);
-  const [selectedTrip, setSelectedTrip] = useState<Trip | null>(null);
 
   const [tripForm, setTripForm] = useState({
     guestName: '',
@@ -109,175 +168,121 @@ const Transportation = () => {
     paymentStatus: 'pending' as 'paid' | 'pending' | 'complimentary'
   });
 
-  const [trips] = useState<Trip[]>([
-    {
-      id: 'TRP-001',
-      guestName: 'John Smith',
-      roomNumber: '301',
-      reservationId: 'RES-001',
-      type: 'airport_pickup',
-      status: 'scheduled',
-      pickupLocation: 'Bole International Airport',
-      dropoffLocation: 'SELEDA Hotel',
-      scheduledDate: '2026-07-30',
-      scheduledTime: '14:00',
-      vehicleId: 'VH-001',
-      driverId: 'DRV-001',
-      passengers: 2,
-      luggage: 3,
-      flightNumber: 'ET456',
-      notes: 'Guest arriving on ET456',
-      cost: 45,
-      paymentStatus: 'pending',
-    },
-    {
-      id: 'TRP-002',
-      guestName: 'Sarah Johnson',
-      roomNumber: '205',
-      reservationId: 'RES-002',
-      type: 'airport_dropoff',
-      status: 'confirmed',
-      pickupLocation: 'SELEDA Hotel',
-      dropoffLocation: 'Bole International Airport',
-      scheduledDate: '2026-07-31',
-      scheduledTime: '08:00',
-      vehicleId: 'VH-002',
-      driverId: 'DRV-002',
-      passengers: 1,
-      luggage: 2,
-      flightNumber: 'ET789',
-      notes: 'Flight at 10:30 AM',
-      cost: 45,
-      paymentStatus: 'paid',
-    },
-    {
-      id: 'TRP-003',
-      guestName: 'Michael Chen',
-      roomNumber: '412',
-      reservationId: 'RES-003',
-      type: 'local_transfer',
-      status: 'in_progress',
-      pickupLocation: 'SELEDA Hotel',
-      dropoffLocation: 'United Nations Conference Center',
-      scheduledDate: '2026-07-29',
-      scheduledTime: '09:00',
-      vehicleId: 'VH-003',
-      driverId: 'DRV-003',
-      passengers: 1,
-      luggage: 1,
-      notes: 'Business meeting',
-      cost: 25,
-      paymentStatus: 'paid',
-    },
-    {
-      id: 'TRP-004',
-      guestName: 'Emma Wilson',
-      roomNumber: '118',
-      reservationId: 'RES-004',
-      type: 'shuttle',
-      status: 'completed',
-      pickupLocation: 'SELEDA Hotel',
-      dropoffLocation: 'Meskel Square',
-      scheduledDate: '2026-07-29',
-      scheduledTime: '10:00',
-      vehicleId: 'VH-004',
-      driverId: 'DRV-004',
-      passengers: 4,
-      luggage: 2,
-      notes: 'Shopping trip',
-      cost: 0,
-      paymentStatus: 'complimentary',
-      completedAt: '2026-07-29 11:30',
-    },
-    {
-      id: 'TRP-005',
-      guestName: 'Robert Brown',
-      roomNumber: '320',
-      reservationId: 'RES-005',
-      type: 'airport_pickup',
-      status: 'scheduled',
-      pickupLocation: 'Bole International Airport',
-      dropoffLocation: 'SELEDA Hotel',
-      scheduledDate: '2026-08-01',
-      scheduledTime: '16:00',
-      passengers: 2,
-      luggage: 4,
-      flightNumber: 'ET123',
-      notes: 'Family with 2 children',
-      cost: 55,
-      paymentStatus: 'pending',
-    },
-  ]);
+  const [trips, setTrips] = useState<Trip[]>([]);
+  const [vehicles, setVehicles] = useState<Vehicle[]>([]);
+  const [drivers, setDrivers] = useState<Driver[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [modalError, setModalError] = useState<string | null>(null);
 
-  const [vehicles] = useState<Vehicle[]>([
-    {
-      id: 'VH-001',
-      name: 'Toyota Camry',
-      type: 'sedan',
-      plateNumber: 'AA-1234',
-      capacity: 4,
-      status: 'available',
-      driverId: 'DRV-001',
-      fuelLevel: 85,
-      lastMaintenance: '2026-06-15',
-      nextMaintenance: '2026-09-15',
-    },
-    {
-      id: 'VH-002',
-      name: 'Toyota Land Cruiser',
-      type: 'suv',
-      plateNumber: 'AA-5678',
-      capacity: 7,
-      status: 'in_use',
-      driverId: 'DRV-002',
-      fuelLevel: 60,
-      lastMaintenance: '2026-06-20',
-      nextMaintenance: '2026-09-20',
-    },
-    {
-      id: 'VH-003',
-      name: 'Mercedes V-Class',
-      type: 'van',
-      plateNumber: 'AA-9012',
-      capacity: 6,
-      status: 'in_use',
-      driverId: 'DRV-003',
-      fuelLevel: 45,
-      lastMaintenance: '2026-07-01',
-      nextMaintenance: '2026-10-01',
-    },
-    {
-      id: 'VH-004',
-      name: 'Toyota Hiace',
-      type: 'shuttle',
-      plateNumber: 'AA-3456',
-      capacity: 14,
-      status: 'available',
-      driverId: 'DRV-004',
-      fuelLevel: 70,
-      lastMaintenance: '2026-06-10',
-      nextMaintenance: '2026-09-10',
-    },
-    {
-      id: 'VH-005',
-      name: 'Hyundai H1',
-      type: 'bus',
-      plateNumber: 'AA-7890',
-      capacity: 12,
-      status: 'maintenance',
-      fuelLevel: 30,
-      lastMaintenance: '2026-07-25',
-      nextMaintenance: '2026-08-25',
-    },
-  ]);
+  const loadData = useCallback(async () => {
+    if (!currentPropertyId) {
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    try {
+      const headers = transportHeaders();
+      const [reqRes, vehRes, drvRes] = await Promise.all([
+        fetch(`/api/transport/requests/${currentPropertyId}`, { headers, credentials: 'include' }),
+        fetch(`/api/transport/vehicles/${currentPropertyId}`, { headers, credentials: 'include' }),
+        fetch(`/api/transport/drivers/${currentPropertyId}`, { headers, credentials: 'include' }),
+      ]);
+      const reqJson = await reqRes.json().catch(() => ({}));
+      const vehJson = await vehRes.json().catch(() => ({}));
+      const drvJson = await drvRes.json().catch(() => ({}));
+      if (!reqRes.ok) throw new Error(reqJson.error || 'Failed to load trips');
+      if (!vehRes.ok) throw new Error(vehJson.error || 'Failed to load vehicles');
+      if (!drvRes.ok) throw new Error(drvJson.error || 'Failed to load drivers');
 
-  const [drivers] = useState<Driver[]>([
-    { id: 'DRV-001', name: 'Abebe Bikila', phone: '+251 911 123 4567', licenseNumber: 'DL-001', status: 'available', assignedVehicleId: 'VH-001', activeTrips: 0 },
-    { id: 'DRV-002', name: 'Belayneh Daba', phone: '+251 911 234 5678', licenseNumber: 'DL-002', status: 'on_trip', assignedVehicleId: 'VH-002', activeTrips: 1 },
-    { id: 'DRV-003', name: 'Chala Adugna', phone: '+251 911 345 6789', licenseNumber: 'DL-003', status: 'on_trip', assignedVehicleId: 'VH-003', activeTrips: 1 },
-    { id: 'DRV-004', name: 'Dereje Tadesse', phone: '+251 911 456 7890', licenseNumber: 'DL-004', status: 'available', assignedVehicleId: 'VH-004', activeTrips: 0 },
-    { id: 'DRV-005', name: 'Ephrem Seyoum', phone: '+251 911 567 8901', licenseNumber: 'DL-005', status: 'off_duty', activeTrips: 0 },
-  ]);
+      const requests: any[] = reqJson.requests || [];
+      const vehicleRows: any[] = vehJson.vehicles || [];
+      const driverRows: any[] = drvJson.drivers || [];
+
+      setVehicles(vehicleRows.map((v: any) => ({
+        id: v.id,
+        name: [v.make, v.model].filter(Boolean).join(' ') || v.vehicle_number,
+        type: VEHICLE_TO_TYPE[v.category] || 'sedan',
+        plateNumber: v.plate_number || v.vehicle_number || '-',
+        capacity: v.capacity ?? 4,
+        status: VEHICLE_TO_STATUS[v.status] || 'available',
+        driverId: v.assigned_driver_id,
+        fuelLevel: v.fuel_level ?? 0,
+        lastMaintenance: v.last_maintenance_date || '',
+        nextMaintenance: v.next_maintenance_date,
+      })));
+
+      const activeByDriver = new Map<string, number>();
+      requests.forEach((r: any) => {
+        const s = REQUEST_TO_TRIP_STATUS[r.status];
+        if (r.driver_id && s && ['scheduled', 'confirmed', 'in_progress'].includes(s)) {
+          activeByDriver.set(r.driver_id, (activeByDriver.get(r.driver_id) || 0) + 1);
+        }
+      });
+
+      setDrivers(driverRows.map((d: any) => {
+        const active = activeByDriver.get(d.id) || 0;
+        return {
+          id: d.id,
+          name: d.employees?.name || d.name || 'Driver',
+          phone: d.employees?.phone || d.phone || '-',
+          licenseNumber: d.license_number || '-',
+          status: active > 0 ? 'on_trip' : (d.status === 'Active' ? 'available' : 'off_duty'),
+          assignedVehicleId: d.assigned_vehicle,
+          activeTrips: active,
+        } as Driver;
+      }));
+
+      setTrips(requests.map((r: any) => {
+        const scheduled = r.scheduled_time ? new Date(r.scheduled_time) : null;
+        return {
+          id: r.id,
+          guestName: r.guest_name || 'Guest',
+          roomNumber: r.room || '-',
+          reservationId: r.reservation_id,
+          type: REQUEST_TO_TRIP_TYPE[r.type] || 'other',
+          status: REQUEST_TO_TRIP_STATUS[r.status] || 'scheduled',
+          pickupLocation: r.pickup_location || '',
+          dropoffLocation: r.destination || '',
+          scheduledDate: scheduled ? scheduled.toISOString().slice(0, 10) : '',
+          scheduledTime: scheduled ? scheduled.toTimeString().slice(0, 5) : '',
+          vehicleId: r.vehicle_id,
+          driverId: r.driver_id,
+          passengers: r.passenger_count || 1,
+          luggage: 0,
+          flightNumber: r.flight_number,
+          notes: r.special_instructions || '',
+          cost: Number(r.amount) || 0,
+          paymentStatus: (r.payment_method === 'Complimentary' || !r.amount) ? 'complimentary' : 'pending',
+          completedAt: r.completed_at,
+        };
+      }));
+    } catch (e: any) {
+      setError(e.message || 'Failed to load transportation data');
+    } finally {
+      setLoading(false);
+    }
+  }, [currentPropertyId]);
+
+  useEffect(() => { loadData(); }, [loadData]);
+
+  const updateTripStatus = async (tripId: string, status: 'Completed' | 'Cancelled') => {
+    try {
+      const res = await fetch(`/api/transport/requests/${tripId}`, {
+        method: 'PUT',
+        headers: transportHeaders(true),
+        credentials: 'include',
+        body: JSON.stringify({ status }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.error || 'Update failed');
+      await loadData();
+    } catch (e: any) {
+      alert(e.message || 'Could not update trip');
+    }
+  };
 
   const filteredTrips = trips.filter(trip => {
     if (!searchQuery) return true;
@@ -314,24 +319,64 @@ const Transportation = () => {
     return <span className={`px-2 py-0.5 rounded-full text-xs font-semibold ${c.bg} ${c.text}`}>{c.label}</span>;
   };
 
-  const handleTripSubmit = () => {
-    setShowTripModal(false);
-    setTripForm({
-      guestName: '',
-      roomNumber: '',
-      reservationId: '',
-      type: 'airport_pickup',
-      pickupLocation: '',
-      dropoffLocation: '',
-      scheduledDate: '',
-      scheduledTime: '',
-      passengers: '1',
-      luggage: '1',
-      flightNumber: '',
-      notes: '',
-      cost: '',
-      paymentStatus: 'pending'
-    });
+  const handleTripSubmit = async () => {
+    if (!currentPropertyId) return;
+    if (!tripForm.guestName.trim() || !tripForm.pickupLocation.trim() || !tripForm.scheduledDate || !tripForm.scheduledTime) {
+      setModalError('Guest name, pickup location, date and time are required');
+      return;
+    }
+    setSubmitting(true);
+    setModalError(null);
+    try {
+      const res = await fetch('/api/transport/requests', {
+        method: 'POST',
+        headers: transportHeaders(true),
+        credentials: 'include',
+        body: JSON.stringify({
+          propertyId: currentPropertyId,
+          guestName: tripForm.guestName.trim(),
+          room: tripForm.roomNumber.trim() || null,
+          type: TRIP_TYPE_TO_REQUEST[tripForm.type],
+          source: 'Front Office',
+          pickupLocation: tripForm.pickupLocation.trim(),
+          destination: tripForm.dropoffLocation.trim() || tripForm.pickupLocation.trim(),
+          scheduledTime: new Date(`${tripForm.scheduledDate}T${tripForm.scheduledTime}:00`).toISOString(),
+          passengerCount: Math.max(1, parseInt(tripForm.passengers) || 1),
+          luggageCount: Math.max(0, parseInt(tripForm.luggage) || 0),
+          status: 'Requested',
+          specialInstructions: [
+            tripForm.flightNumber ? `Flight ${tripForm.flightNumber}` : '',
+            tripForm.notes,
+          ].filter(Boolean).join(' · ') || null,
+          amount: parseFloat(tripForm.cost) || 0,
+          paymentMethod: tripForm.paymentStatus === 'complimentary' ? 'Complimentary' : 'Guest Folio',
+        }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.error || 'Booking failed');
+      setShowTripModal(false);
+      setTripForm({
+        guestName: '',
+        roomNumber: '',
+        reservationId: '',
+        type: 'airport_pickup' as TripType,
+        pickupLocation: '',
+        dropoffLocation: '',
+        scheduledDate: '',
+        scheduledTime: '',
+        passengers: '1',
+        luggage: '1',
+        flightNumber: '',
+        notes: '',
+        cost: '',
+        paymentStatus: 'pending' as 'paid' | 'pending' | 'complimentary'
+      });
+      await loadData();
+    } catch (e: any) {
+      setModalError(e.message || 'Booking failed');
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   const TabButton = ({ id, label, icon: Icon }: { id: typeof activeTab; label: string; icon: any }) => (
@@ -364,18 +409,28 @@ const Transportation = () => {
             <Plus size={16} />
             New Trip
           </button>
-          <button className="p-2 text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors cursor-pointer">
-            <RefreshCw size={18} />
+          <button
+            onClick={loadData}
+            className="p-2 text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors cursor-pointer"
+            title="Refresh"
+          >
+            <RefreshCw size={18} className={loading ? 'animate-spin' : ''} />
           </button>
         </div>
       </div>
 
+      {error && (
+        <div className="flex items-center gap-2 p-4 bg-rose-50 border border-rose-200 rounded-lg text-rose-700 text-sm">
+          <AlertTriangle size={16} /> {error}
+        </div>
+      )}
+
       {/* Stats */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <StatCard label="Active Trips" value="2" icon={Route} variant="primary" />
-        <StatCard label="Scheduled Today" value="2" icon={Calendar} variant="alert" />
-        <StatCard label="Available Vehicles" value="2" icon={Car} variant="rooms" />
-        <StatCard label="Available Drivers" value="2" icon={User} variant="guests" />
+        <StatCard label="Active Trips" value={String(trips.filter(t => t.status === 'in_progress').length)} icon={Route} variant="primary" />
+        <StatCard label="Scheduled Today" value={String(trips.filter(t => t.scheduledDate === new Date().toISOString().slice(0, 10) && ['scheduled', 'confirmed'].includes(t.status)).length)} icon={Calendar} variant="alert" />
+        <StatCard label="Available Vehicles" value={String(vehicles.filter(v => v.status === 'available').length)} icon={Car} variant="rooms" />
+        <StatCard label="Available Drivers" value={String(drivers.filter(d => d.status === 'available').length)} icon={User} variant="guests" />
       </div>
 
       {/* Tabs */}
@@ -407,8 +462,14 @@ const Transportation = () => {
         </div>
       )}
 
+      {loading && (
+        <div className="flex items-center justify-center py-8 text-slate-400 text-sm">
+          <Loader2 size={18} className="animate-spin mr-2" /> Loading transportation data...
+        </div>
+      )}
+
       {/* Trips Tab */}
-      {activeTab === 'trips' && (
+      {!loading && activeTab === 'trips' && (
         <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
           <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between">
             <h3 className="font-semibold text-slate-900">Transport Trips</h3>
@@ -464,14 +525,18 @@ const Transportation = () => {
                     <td className="px-4 py-3">
                       <div className="flex items-center justify-end gap-1">
                         <button
-                          onClick={() => setSelectedTrip(trip)}
-                          className="p-1.5 text-slate-600 hover:bg-slate-100 rounded-lg cursor-pointer"
-                          title="View details"
+                          onClick={() => updateTripStatus(trip.id, 'Completed')}
+                          className="p-1.5 text-emerald-600 hover:bg-emerald-50 rounded-lg cursor-pointer"
+                          title="Complete"
                         >
-                          <Edit size={16} />
-                        </button>
-                        <button className="p-1.5 text-emerald-600 hover:bg-emerald-50 rounded-lg cursor-pointer" title="Complete">
                           <CheckCircle2 size={16} />
+                        </button>
+                        <button
+                          onClick={() => updateTripStatus(trip.id, 'Cancelled')}
+                          className="p-1.5 text-rose-600 hover:bg-rose-50 rounded-lg cursor-pointer"
+                          title="Cancel"
+                        >
+                          <XCircle size={16} />
                         </button>
                       </div>
                     </td>
@@ -484,7 +549,7 @@ const Transportation = () => {
       )}
 
       {/* Vehicles Tab */}
-      {activeTab === 'vehicles' && (
+      {!loading && activeTab === 'vehicles' && (
         <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
           <div className="px-6 py-4 border-b border-slate-200">
             <h3 className="font-semibold text-slate-900">Vehicle Fleet</h3>
@@ -537,7 +602,7 @@ const Transportation = () => {
       )}
 
       {/* Drivers Tab */}
-      {activeTab === 'drivers' && (
+      {!loading && activeTab === 'drivers' && (
         <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
           <div className="px-6 py-4 border-b border-slate-200">
             <h3 className="font-semibold text-slate-900">Drivers</h3>
@@ -591,11 +656,11 @@ const Transportation = () => {
       )}
 
       {/* Schedule Tab */}
-      {activeTab === 'schedule' && (
+      {!loading && activeTab === 'schedule' && (
         <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6">
           <h3 className="font-semibold text-slate-900 mb-6">Today's Schedule</h3>
           <div className="space-y-3">
-            {filteredTrips.filter(t => t.scheduledDate === '2026-07-29' || t.scheduledDate === '2026-07-30').map((trip) => (
+            {filteredTrips.filter(t => t.scheduledDate === new Date().toISOString().slice(0, 10)).map((trip) => (
               <div key={trip.id} className="p-4 border border-slate-200 rounded-lg">
                 <div className="flex items-center justify-between">
                   <div>
@@ -749,9 +814,10 @@ const Transportation = () => {
               </div>
             </div>
             <div className="flex items-center justify-end gap-3 p-6 border-t border-slate-200">
+              {modalError && <span className="mr-auto text-sm text-rose-600">{modalError}</span>}
               <button onClick={() => setShowTripModal(false)} className="px-4 py-2 text-slate-600 hover:bg-slate-100 rounded-lg text-sm font-medium cursor-pointer">Cancel</button>
-              <button onClick={handleTripSubmit} className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700 transition-colors cursor-pointer">
-                <Save size={16} />
+              <button onClick={handleTripSubmit} disabled={submitting} className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700 transition-colors cursor-pointer disabled:opacity-50">
+                {submitting ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
                 Book Trip
               </button>
             </div>

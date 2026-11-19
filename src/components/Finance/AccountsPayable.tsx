@@ -1,11 +1,11 @@
-import React, { useState, useEffect } from 'react';
-import { 
-  Truck, 
-  ArrowUpRight, 
-  ArrowDownRight, 
-  Search, 
-  Filter, 
-  Download, 
+import React, { useState, useEffect, useCallback } from 'react';
+import {
+  Truck,
+  ArrowUpRight,
+  ArrowDownRight,
+  Search,
+  Filter,
+  Download,
   MoreVertical,
   Calendar,
   CheckCircle2,
@@ -23,7 +23,11 @@ import {
   MapPin,
   Percent,
   ShieldCheck,
-  Send
+  Send,
+  Loader2,
+  Trash2,
+  RefreshCw,
+  ServerCrash,
 } from 'lucide-react';
 import {
   fetchVendors,
@@ -32,15 +36,29 @@ import {
   payBill,
   createVendor,
   createBill,
+  fetchThreeWayMatches,
+  approveThreeWayMatch,
+  fetchPaymentSchedules,
+  updatePaymentSchedule,
+  deletePaymentSchedule,
   type Vendor,
   type Bill,
   type Payment,
+  type ThreeWayMatch,
+  type PaymentSchedule,
 } from '../../services/accountsPayableService';
+import { useERP } from '../../context/ERPContext';
 import { ModalSystem } from '../Shared/ModalSystem';
 import { DataTable, Column } from '../Shared/DataTable';
+import { PageHeader, SectionCard, Badge } from '../FrontOffice/ui';
+import { button, layout, type StatusTone } from '../FrontOffice/brandTheme';
+import StatCard from '../FrontOffice/StatCard';
+
+const fmt = (n: number) => Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 const AccountsPayable = () => {
-  const [activeTab, setActiveTab] = useState<'vendors' | 'bills' | 'payments' | 'matching' | 'scheduling'>('vendors');
+  const { currentPropertyId, addNotification, properties } = useERP();
+  const [activeTab, setActiveTab] = useState<'vendors' | 'bills' | 'payments' | 'matching' | 'scheduling' | 'statements' | 'aging' | 'credit_notes'>('vendors');
   const [showNewVendor, setShowNewVendor] = useState(false);
   const [showNewBill, setShowNewBill] = useState(false);
   const [selectedVendor, setSelectedVendor] = useState<Vendor | null>(null);
@@ -48,8 +66,26 @@ const AccountsPayable = () => {
   const [vendors, setVendors] = useState<Vendor[]>([]);
   const [bills, setBills] = useState<Bill[]>([]);
   const [payments, setPayments] = useState<Payment[]>([]);
+  const [matches, setMatches] = useState<ThreeWayMatch[]>([]);
+  const [schedules, setSchedules] = useState<PaymentSchedule[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [menuOpen, setMenuOpen] = useState<string | null>(null);
+  const [actingOn, setActingOn] = useState<string | null>(null);
+
+  // Filter states
+  const [vendorStatusFilter, setVendorStatusFilter] = useState('All');
+  const [vendorCategoryFilter, setVendorCategoryFilter] = useState('All');
+  const [billStatusFilter, setBillStatusFilter] = useState('All');
+  const [paymentStatusFilter, setPaymentStatusFilter] = useState('All');
+  const [matchStatusFilter, setMatchStatusFilter] = useState('All');
+  const [scheduleStatusFilter, setScheduleStatusFilter] = useState('All');
+
+  const propertyName = useCallback((id?: string | null): string => {
+    if (!id) return '—';
+    const p = properties.find(p => p.id === id);
+    return p?.property_name || '—';
+  }, [properties]);
 
   const [newVendorForm, setNewVendorForm] = useState({
     name: '',
@@ -59,7 +95,7 @@ const AccountsPayable = () => {
     address: '',
     taxId: '',
     withholdingRate: 2,
-    category: 'Operations',
+    category: 'Suppliers',
   });
 
   const [newBillForm, setNewBillForm] = useState({
@@ -78,14 +114,19 @@ const AccountsPayable = () => {
     setLoading(true);
     setError(null);
     try {
-      const [v, b, p] = await Promise.all([
-        fetchVendors(),
-        fetchBills(),
-        fetchPayments(),
+      const pid = currentPropertyId || undefined;
+      const [v, b, p, m, s] = await Promise.all([
+        fetchVendors(pid),
+        fetchBills(undefined, pid),
+        fetchPayments(pid),
+        fetchThreeWayMatches(undefined, pid),
+        fetchPaymentSchedules(undefined, pid),
       ]);
       setVendors(v);
       setBills(b);
       setPayments(p);
+      setMatches(m);
+      setSchedules(s);
     } catch (err: any) {
       console.error('Error loading AP data:', err);
       setError(err.message || 'Failed to load accounts payable data');
@@ -94,9 +135,27 @@ const AccountsPayable = () => {
     }
   };
 
+  useEffect(() => { loadData(); }, [currentPropertyId]);
+
+  // Close action menu on outside click
   useEffect(() => {
-    loadData();
-  }, []);
+    const handler = () => setMenuOpen(null);
+    if (menuOpen) {
+      window.addEventListener('click', handler);
+      return () => window.removeEventListener('click', handler);
+    }
+  }, [menuOpen]);
+
+  // Filtered datasets
+  const filteredVendors = vendors.filter(v => {
+    if (vendorStatusFilter !== 'All' && v.status !== vendorStatusFilter) return false;
+    if (vendorCategoryFilter !== 'All' && v.category !== vendorCategoryFilter) return false;
+    return true;
+  });
+  const filteredBills = bills.filter(b => billStatusFilter === 'All' || b.status === billStatusFilter);
+  const filteredPayments = payments.filter(p => paymentStatusFilter === 'All' || p.status === paymentStatusFilter);
+  const filteredMatches = matches.filter(m => matchStatusFilter === 'All' || m.status === matchStatusFilter);
+  const filteredSchedules = schedules.filter(s => scheduleStatusFilter === 'All' || s.status === scheduleStatusFilter);
 
   const handlePayBill = async (bill: Bill) => {
     try {
@@ -106,11 +165,59 @@ const AccountsPayable = () => {
         paymentMethod: 'Bank Transfer',
         reference: `PAY-${Date.now()}`,
       });
+      addNotification(`Bill ${bill.invoiceNumber} paid`, 'success', 'finance');
       await loadData();
       setSelectedBill(null);
     } catch (err: any) {
       console.error('Failed to pay bill:', err);
-      setError(err.message || 'Failed to record payment');
+      addNotification(err.message || 'Failed to record payment', 'error', 'finance');
+    }
+  };
+
+  const exportToCsv = (filename: string, headers: string[], rows: (string | number)[][]) => {
+    const escape = (val: string | number) => {
+      const s = String(val ?? '');
+      if (s.includes(',') || s.includes('"') || s.includes('\n')) return `"${s.replace(/"/g, '""')}"`;
+      return s;
+    };
+    const csv = [headers.map(escape).join(','), ...rows.map(r => r.map(escape).join(','))].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', filename);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    addNotification(`Exported ${rows.length} record${rows.length !== 1 ? 's' : ''} to ${filename}.`, 'success', 'finance');
+  };
+
+  const handleExport = () => {
+    if (activeTab === 'vendors') {
+      exportToCsv(`ap_vendors_${new Date().toISOString().slice(0, 10)}.csv`,
+        ['Vendor #', 'Name', 'Category', 'Email', 'Phone', 'Balance', 'Status'],
+        vendors.map(v => [v.vendor_number || v.id, v.name, v.category || '—', v.email || '', v.phone || '', Number(v.balance || 0), v.status || 'Active']));
+    } else if (activeTab === 'bills') {
+      exportToCsv(`ap_bills_${new Date().toISOString().slice(0, 10)}.csv`,
+        ['Bill #', 'Vendor', 'Invoice #', 'Amount Due', 'Net Payable', 'Due Date', 'Status'],
+        bills.map(b => [b.bill_number || b.id, b.vendor_name || '—', b.invoiceNumber || '', Number(b.amountDue || 0), Number(b.netPayable || 0), b.dueDate || '', b.status || 'Pending']));
+    } else if (activeTab === 'payments') {
+      exportToCsv(`ap_payments_${new Date().toISOString().slice(0, 10)}.csv`,
+        ['Payment #', 'Vendor', 'Bill #', 'Amount', 'Method', 'Date', 'Reference'],
+        payments.map(p => [p.payment_number || p.id, p.vendor_name || '—', p.bill_number || '', Number(p.amount || 0), p.payment_method || '', p.payment_date || '', p.reference || '']));
+    } else if (activeTab === 'matching') {
+      exportToCsv(`ap_3way_match_${new Date().toISOString().slice(0, 10)}.csv`,
+        ['Match #', 'PO #', 'GRN #', 'Invoice #', 'Vendor', 'Status', 'Discrepancy'],
+        matches.map(m => [m.id, m.po_number || '', m.grn_number || '', m.invoice_number || '', m.vendor_name || '—', m.status || 'Pending', m.discrepancy || 'None']));
+    } else if (activeTab === 'scheduling') {
+      exportToCsv(`ap_payment_schedule_${new Date().toISOString().slice(0, 10)}.csv`,
+        ['Schedule #', 'Vendor', 'Bill #', 'Amount', 'Scheduled Date', 'Method', 'Status'],
+        schedules.map(s => [s.id, s.vendor_name || '—', s.bill_number || '', Number(s.amount || 0), s.scheduled_date || '', s.payment_method || '', s.status || 'Pending']));
+    } else {
+      exportToCsv(`ap_${activeTab}_${new Date().toISOString().slice(0, 10)}.csv`,
+        ['Vendor #', 'Name', 'Balance'],
+        vendors.map(v => [v.vendor_number || v.id, v.name, Number(v.balance || 0)]));
     }
   };
 
@@ -120,7 +227,7 @@ const AccountsPayable = () => {
       return;
     }
     try {
-      await createVendor(newVendorForm);
+      await createVendor({ ...newVendorForm, propertyId: currentPropertyId || undefined });
       await loadData();
       setShowNewVendor(false);
       setNewVendorForm({
@@ -131,7 +238,7 @@ const AccountsPayable = () => {
         address: '',
         taxId: '',
         withholdingRate: 2,
-        category: 'Operations',
+        category: 'Suppliers',
       });
     } catch (err: any) {
       console.error('Failed to create vendor:', err);
@@ -145,7 +252,7 @@ const AccountsPayable = () => {
       return;
     }
     try {
-      await createBill(newBillForm);
+      await createBill({ ...newBillForm, propertyId: currentPropertyId || undefined });
       await loadData();
       setShowNewBill(false);
       setNewBillForm({
@@ -166,492 +273,816 @@ const AccountsPayable = () => {
   };
 
   const totalPayables = vendors.reduce((sum, v) => sum + v.balance, 0);
-  const criticalDue = bills.filter(b => b.status === 'Overdue').reduce((sum, b) => sum + b.netPayable, 0);
+  const criticalDue = bills.filter(b => b.status === 'Overdue').reduce((sum, b) => sum + b.amountDue, 0);
   const activeVendorCount = vendors.filter(v => v.status === 'Active').length;
 
+  const handleApproveMatch = async (id: string, po: string) => {
+    setActingOn(id);
+    try {
+      await approveThreeWayMatch(id);
+      addNotification(`Match ${po} approved`, 'success', 'finance');
+      await loadData();
+    } catch (err: any) {
+      addNotification(err.message || 'Failed to approve match', 'error', 'finance');
+    } finally {
+      setActingOn(null);
+      setMenuOpen(null);
+    }
+  };
+
+  const handleUpdateScheduleStatus = async (id: string, status: string, label: string) => {
+    setActingOn(id);
+    try {
+      await updatePaymentSchedule(id, { status } as any);
+      addNotification(`Schedule ${label} marked as ${status}`, 'success', 'finance');
+      await loadData();
+    } catch (err: any) {
+      addNotification(err.message || 'Failed to update schedule', 'error', 'finance');
+    } finally {
+      setActingOn(null);
+      setMenuOpen(null);
+    }
+  };
+
+  const handleDeleteSchedule = async (id: string, label: string) => {
+    if (!confirm(`Delete schedule for ${label}?`)) return;
+    setActingOn(id);
+    try {
+      await deletePaymentSchedule(id);
+      addNotification(`Schedule ${label} deleted`, 'success', 'finance');
+      await loadData();
+    } catch (err: any) {
+      addNotification(err.message || 'Failed to delete schedule', 'error', 'finance');
+    } finally {
+      setActingOn(null);
+      setMenuOpen(null);
+    }
+  };
+
   return (
-    <div className="space-y-6 bg-white dark:bg-slate-800 min-h-screen p-6 rounded-lg animate-in fade-in slide-in-from-top-4 duration-500">
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div className="flex bg-white dark:bg-slate-800 p-1 border border-slate-200 dark:border-slate-700 rounded-lg w-fit shadow-sm hover:shadow-md transition-all duration-300">
-          <button 
-            onClick={() => setActiveTab('vendors')}
-            className={`px-6 py-2 rounded-lg text-xs font-black uppercase tracking-tight transition-all ${activeTab === 'vendors' ? 'bg-blue-600 text-white' : 'text-slate-500 hover:bg-slate-50 dark:hover:bg-slate-800'}`}
-          >
-            Vendors
-          </button>
-          <button 
-            onClick={() => setActiveTab('bills')}
-            className={`px-6 py-2 rounded-lg text-xs font-black uppercase tracking-tight transition-all ${activeTab === 'bills' ? 'bg-blue-600 text-white' : 'text-slate-500 hover:bg-slate-50 dark:hover:bg-slate-800'}`}
-          >
-            Bills
-          </button>
-          <button 
-            onClick={() => setActiveTab('payments')}
-            className={`px-6 py-2 rounded-lg text-xs font-black uppercase tracking-tight transition-all ${activeTab === 'payments' ? 'bg-blue-600 text-white' : 'text-slate-500 hover:bg-slate-50 dark:hover:bg-slate-800'}`}
-          >
-            Payments
-          </button>
-          <button 
-            onClick={() => setActiveTab('matching')}
-            className={`px-6 py-2 rounded-lg text-xs font-black uppercase tracking-tight transition-all ${activeTab === 'matching' ? 'bg-blue-600 text-white' : 'text-slate-500 hover:bg-slate-50 dark:hover:bg-slate-800'}`}
-          >
-            3-Way Match
-          </button>
-          <button 
-            onClick={() => setActiveTab('scheduling')}
-            className={`px-6 py-2 rounded-lg text-xs font-black uppercase tracking-tight transition-all ${activeTab === 'scheduling' ? 'bg-blue-600 text-white' : 'text-slate-500 hover:bg-slate-50 dark:hover:bg-slate-800'}`}
-          >
-            Scheduling
-          </button>
-        </div>
-        <div className="flex items-center gap-2">
-           <button className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2.5 px-4 rounded-lg flex items-center gap-2 text-xs transition-all shadow-md">
-              <Download size={16} />
-              Export
-           </button>
-           {activeTab === 'vendors' && (
-             <button 
-               onClick={() => setShowNewVendor(true)}
-               className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2.5 px-4 rounded-lg flex items-center gap-2 text-xs transition-all shadow-md"
-             >
-                <Plus size={16} />
-                New Vendor
-             </button>
-           )}
-           {activeTab === 'bills' && (
-             <button 
-               onClick={() => setShowNewBill(true)}
-               className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2.5 px-4 rounded-lg flex items-center gap-2 text-xs transition-all shadow-md"
-             >
-                <Plus size={16} />
-                New Bill
-             </button>
-           )}
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        {[
-          { label: 'Total Payables', value: `$${totalPayables.toLocaleString()}`, sub: 'Outstanding balance', icon: ArrowDownRight, color: 'text-amber-600', bg: 'bg-amber-100', border: 'border-amber-200' },
-          { label: 'Critical Due', value: `$${criticalDue.toLocaleString()}`, sub: 'Overdue bills', icon: AlertCircle, color: 'text-rose-600', bg: 'bg-rose-100', border: 'border-rose-200' },
-          { label: 'Active Vendors', value: `${activeVendorCount} Active`, sub: 'Registered suppliers', icon: Truck, color: 'text-blue-600', bg: 'bg-blue-100', border: 'border-blue-200' },
-          { label: 'Pending Bills', value: `${bills.filter(b => b.status === 'Pending').length} Bills`, sub: 'Awaiting payment', icon: Calendar, color: 'text-indigo-600', bg: 'bg-indigo-100', border: 'border-indigo-200' },
-        ].map((stat, i) => (
-          <div key={i} className={`bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-6 rounded-lg shadow-sm hover:shadow-lg hover:scale-105 transition-all duration-300 transform animate-in fade-in slide-in-from-bottom-4 ${stat.border}`} style={{ animationDelay: `${i * 100}ms` }}>
-            <div className={`p-3 w-fit rounded-lg ${stat.bg} ${stat.color} mb-3`}>
-               <stat.icon size={18} />
-            </div>
-            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest leading-none mb-1">{stat.label}</p>
-            <h3 className="text-2xl font-black text-slate-900 dark:text-white uppercase tracking-tight">{stat.value}</h3>
-            <p className="text-[9px] font-bold text-slate-400 mt-1 uppercase tracking-tight">{stat.sub}</p>
+    <div className={`${layout.sectionStack} animate-fade-in`}>
+      <PageHeader
+        title="Accounts Payable"
+        subtitle="Vendors, bills, payments, three-way matching, and payment scheduling."
+        icon={Truck}
+        actions={
+          <div className="flex items-center gap-2">
+            <button onClick={loadData} disabled={loading} className={button.secondary + ' disabled:opacity-50'}>
+              {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+              Refresh
+            </button>
+            <button onClick={handleExport} className={button.primary}>
+              <Download className="w-4 h-4" /> Export
+            </button>
+            {activeTab === 'vendors' && (
+              <button onClick={() => setShowNewVendor(true)} className={button.primary}>
+                <Plus className="w-4 h-4" /> New Vendor
+              </button>
+            )}
+            {activeTab === 'bills' && (
+              <button onClick={() => setShowNewBill(true)} className={button.primary}>
+                <Plus className="w-4 h-4" /> New Bill
+              </button>
+            )}
           </div>
-        ))}
-      </div>
+        }
+      />
 
+      {/* Error banner */}
+      {error && (
+        <div className="px-4 py-3 rounded-xl bg-red-50 dark:bg-red-900/20 text-sm text-red-700 dark:text-red-300 border border-red-200 dark:border-red-800 flex items-center gap-2">
+          <ServerCrash className="w-4 h-4 shrink-0" /> {error}
+          <button onClick={loadData} className={button.ghost + ' ml-auto'}>Retry</button>
+        </div>
+      )}
+
+      {loading ? (
+        <div className="p-12 text-center text-slate-500 text-sm">
+          <div className="flex items-center justify-center gap-2">
+            <Loader2 className="w-5 h-5 animate-spin" />
+            <span>Loading accounts payable data...</span>
+          </div>
+        </div>
+      ) : (
+        <>
+          {/* KPIs — per active tab, above the sub-tab nav */}
+          {activeTab === 'vendors' && (
+            <div className={layout.kpiGrid}>
+              <StatCard title="Total Vendors" value={vendors.length} icon={Truck} tone="accent" />
+              <StatCard title="Active" value={activeVendorCount} icon={CheckCircle2} tone="success" />
+              <StatCard title="With Balance" value={vendors.filter(v => v.balance > 0).length} icon={AlertCircle} tone="warning" />
+              <StatCard title="Total Payables" value={fmt(totalPayables)} icon={DollarSign} tone="info" />
+            </div>
+          )}
+          {activeTab === 'bills' && (
+            <div className={layout.kpiGrid}>
+              <StatCard title="Total Bills" value={bills.length} icon={FileText} tone="accent" />
+              <StatCard title="Overdue" value={bills.filter(b => b.status === 'Overdue').length} icon={AlertCircle} tone="danger" />
+              <StatCard title="Paid" value={bills.filter(b => b.status === 'Paid').length} icon={CheckCircle2} tone="success" />
+              <StatCard title="Critical Due" value={fmt(criticalDue)} icon={DollarSign} tone="warning" />
+            </div>
+          )}
+          {activeTab === 'payments' && (
+            <div className={layout.kpiGrid}>
+              <StatCard title="Total Payments" value={payments.length} icon={DollarSign} tone="accent" />
+              <StatCard title="Processed" value={payments.filter(p => p.status === 'Processed').length} icon={CheckCircle2} tone="success" />
+              <StatCard title="Draft" value={payments.filter(p => p.status === 'Draft').length} icon={Clock} tone="warning" />
+              <StatCard title="Total Paid" value={fmt(payments.reduce((s, p) => s + Number(p.amount || 0), 0))} icon={ArrowUpRight} tone="info" />
+            </div>
+          )}
+          {activeTab === 'matching' && (
+            <div className={layout.kpiGrid}>
+              <StatCard title="Pending Matches" value={matches.filter(m => m.status === 'Pending').length} icon={AlertCircle} tone="warning" />
+              <StatCard title="Approved" value={matches.filter(m => m.status === 'Approved').length} icon={CheckCircle2} tone="success" />
+              <StatCard title="Discrepancies" value={matches.filter(m => m.status === 'Discrepancy').length} icon={ShieldCheck} tone="danger" />
+              <StatCard title="Total Value" value={fmt(matches.reduce((s, m) => s + m.po_amount, 0))} icon={DollarSign} tone="info" />
+            </div>
+          )}
+          {activeTab === 'scheduling' && (
+            <div className={layout.kpiGrid}>
+              <StatCard title="Scheduled" value={schedules.filter(s => s.status === 'Pending').length} icon={Calendar} tone="warning" />
+              <StatCard title="Total Scheduled" value={fmt(schedules.filter(s => s.status === 'Pending').reduce((sum, s) => sum + s.amount, 0))} icon={DollarSign} tone="info" />
+              <StatCard title="Overdue" value={schedules.filter(s => s.status === 'Overdue').length} icon={AlertCircle} tone="danger" />
+              <StatCard title="Auto-Pay" value={schedules.filter(s => s.auto_pay).length} icon={ShieldCheck} tone="success" />
+            </div>
+          )}
+
+          {/* Sub-tab nav — below stat cards (COA pattern) */}
+          <div className="flex bg-slate-100 dark:bg-slate-900/40 p-1 rounded-xl gap-1 flex-wrap">
+            {([
+              ['vendors', 'Vendors'],
+              ['bills', 'Bills'],
+              ['payments', 'Payments'],
+              ['matching', '3-Way Match'],
+              ['scheduling', 'Scheduling'],
+              ['statements', 'Statements'],
+              ['aging', 'Aging'],
+              ['credit_notes', 'Credit Notes'],
+            ] as const).map(([key, label]) => (
+              <button
+                key={key}
+                onClick={() => setActiveTab(key)}
+                className={[
+                  'px-4 py-1.5 rounded-lg text-xs font-medium transition whitespace-nowrap',
+                  activeTab === key
+                    ? 'bg-white dark:bg-slate-700 text-gray-900 dark:text-white shadow-sm'
+                    : 'text-gray-500 hover:text-gray-700',
+                ].join(' ')}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
       {activeTab === 'vendors' && (
-        <div className="space-y-4">
-          <div className="mb-4">
-            <h3 className="text-sm font-black text-slate-900 dark:text-white uppercase tracking-tight">Vendor Registry</h3>
-            <p className="text-[10px] text-slate-400 font-bold uppercase mt-1">Supplier and vendor account management</p>
+        <SectionCard
+          title="Vendor Registry"
+          subtitle="Supplier and vendor account management"
+          icon={Truck}
+          pad="none"
+          bodyClassName="divide-y divide-gray-100 dark:divide-slate-700"
+        >
+          <div className="px-4 py-3 border-b border-gray-100 dark:border-slate-700 flex items-center gap-2 overflow-x-auto">
+            {['All', 'Active', 'Inactive', 'Hold'].map(s => (
+              <button key={s} onClick={() => setVendorStatusFilter(s)}
+                className={`px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest transition whitespace-nowrap ${
+                  vendorStatusFilter === s
+                    ? 'bg-[var(--color-accent-operations)] text-white'
+                    : 'bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600'
+                }`}>
+                {s}
+              </button>
+            ))}
+            <div className="ml-auto flex items-center gap-2">
+              {['All', 'Suppliers', 'Contractors', 'Utilities', 'Service Providers', 'Government Agencies', 'Other'].map(c => (
+                <button key={c} onClick={() => setVendorCategoryFilter(c)}
+                  className={`px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest transition whitespace-nowrap ${
+                    vendorCategoryFilter === c
+                      ? 'bg-[var(--color-accent-operations)] text-white'
+                      : 'bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600'
+                  }`}>
+                  {c}
+                </button>
+              ))}
+            </div>
           </div>
           <DataTable
             columns={[
               {
-                key: 'name', label: 'Vendor Entity',
+                key: 'name', label: 'Vendor',
                 render: (v: Vendor) => (
-                  <div className="flex flex-col">
-                    <span className="text-xs font-black text-slate-900 dark:text-white uppercase tracking-tight">{v.name}</span>
-                    <span className="text-[9px] font-bold text-slate-400 font-mono">{v.id}</span>
+                  <div className="flex items-center gap-2">
+                    <div className="p-1.5 bg-indigo-50 dark:bg-indigo-500/10 text-indigo-600 rounded-lg"><Truck size={12} /></div>
+                    <div className="flex flex-col">
+                      <span className="text-xs font-bold text-slate-900 dark:text-white">{v.name}</span>
+                      <span className="text-[10px] font-medium text-slate-400">{v.category || '—'}</span>
+                    </div>
                   </div>
                 ),
               },
               {
                 key: 'contact', label: 'Contact',
                 render: (v: Vendor) => (
-                  <div className="flex flex-col gap-1">
-                    <div className="flex items-center gap-1 text-[10px] font-bold text-slate-500">
-                      <Mail size={10} />
-                      {v.contact}
-                    </div>
-                    <div className="flex items-center gap-1 text-[9px] font-bold text-slate-400">
-                      <Phone size={10} />
-                      {v.phone}
-                    </div>
+                  <div className="flex flex-col gap-0.5">
+                    {v.email && (
+                      <div className="flex items-center gap-1.5 text-xs font-medium text-slate-600 dark:text-slate-300">
+                        <Mail size={12} className="text-slate-400" />
+                        {v.email}
+                      </div>
+                    )}
+                    {v.phone && (
+                      <div className="flex items-center gap-1.5 text-xs font-medium text-slate-500">
+                        <Phone size={12} className="text-slate-400" />
+                        {v.phone}
+                      </div>
+                    )}
                   </div>
                 ),
               },
               {
                 key: 'taxId', label: 'TIN',
-                render: (v: Vendor) => <span className="text-[10px] font-bold text-slate-500 font-mono">{v.taxId}</span>,
+                render: (v: Vendor) => <span className="text-xs font-medium text-slate-500 font-mono">{v.taxId || '—'}</span>,
               },
               {
-                key: 'withholdingRate', label: 'Withholding', align: 'center',
-                render: (v: Vendor) => (
-                  <span className="px-2 py-1 bg-amber-50 dark:bg-amber-500/10 text-amber-600 rounded-lg text-[9px] font-black uppercase">
-                    {v.withholdingRate}%
-                  </span>
-                ),
-              },
-              {
-                key: 'balance', label: 'Balance', align: 'right',
-                render: (v: Vendor) => <span className="text-xs font-black text-slate-900 dark:text-white">${v.balance.toLocaleString()}</span>,
-              },
-              {
-                key: 'status', label: 'Status', align: 'center',
+                key: 'withholdingRate', label: 'Withholding', align: 'center' as const,
                 render: (v: Vendor) => (
                   <div className="flex justify-center">
-                    <span className={`px-2 py-0.5 rounded text-[8px] font-black uppercase tracking-widest ${
-                      v.status === 'Active' ? 'bg-emerald-50 text-emerald-600' : 'bg-slate-50 text-slate-600'
-                    }`}>
-                      {v.status}
-                    </span>
+                    <Badge tone={v.withholdingRate ? 'warning' : 'neutral'}>{v.withholdingRate ?? 0}%</Badge>
                   </div>
                 ),
               },
               {
-                key: 'actions', label: 'Actions', align: 'center', sortable: false,
+                key: 'balance', label: 'Balance', align: 'right' as const,
+                render: (v: Vendor) => (
+                  <span className={`text-xs font-bold ${v.balance > 0 ? 'text-amber-600' : 'text-emerald-600'}`}>
+                    ${fmt(v.balance)}
+                  </span>
+                ),
+              },
+              {
+                key: 'status', label: 'Status', align: 'center' as const,
+                render: (v: Vendor) => (
+                  <div className="flex justify-center">
+                    <Badge tone={v.status === 'Active' ? 'success' : 'neutral'}>{v.status}</Badge>
+                  </div>
+                ),
+              },
+              {
+                key: 'property_name', label: 'Property',
+                render: (v: Vendor) => <span className="text-xs font-medium text-slate-500">{v.property_name || propertyName(v.property_id)}</span>,
+              },
+              {
+                key: 'actions', label: 'Actions', align: 'center' as const, sortable: false,
                 render: (v: Vendor) => (
                   <div className="flex justify-center gap-1">
-                    <button onClick={() => setSelectedVendor(v)} className="p-1.5 text-slate-400 hover:text-indigo-600 transition">
+                    <button onClick={() => setSelectedVendor(v)} className={button.ghost}>
                       <Eye size={14} />
-                    </button>
-                    <button className="p-1.5 text-slate-400 hover:text-indigo-600 transition">
-                      <MoreVertical size={14} />
                     </button>
                   </div>
                 ),
               },
             ] as Column<Vendor>[]}
-            data={vendors}
+            data={filteredVendors}
             rowKey={(v) => v.id}
             sortable
             filterable
             filterPlaceholder="Search vendors..."
-            filterKeys={['name', 'id', 'contact', 'taxId', 'status']}
-            containerClassName="rounded-lg"
+            filterKeys={['name', 'id', 'contact', 'email', 'phone', 'taxId', 'status', 'property_name']}
+            emptyMessage="No vendors found."
+            containerClassName="rounded-lg border-0"
           />
-        </div>
+        </SectionCard>
       )}
 
       {activeTab === 'bills' && (
-        <div className="space-y-4">
-          <div className="mb-4">
-            <h3 className="text-sm font-black text-slate-900 dark:text-white uppercase tracking-tight">Bills Registry</h3>
-            <p className="text-[10px] text-slate-400 font-bold uppercase mt-1">Vendor invoices and payable items</p>
+        <SectionCard
+          title="Bills Registry"
+          subtitle="Vendor invoices and payable items"
+          icon={FileText}
+          pad="none"
+          bodyClassName="divide-y divide-gray-100 dark:divide-slate-700"
+        >
+          <div className="px-4 py-3 border-b border-gray-100 dark:border-slate-700 flex items-center gap-2 overflow-x-auto">
+            {['All', 'Approved', 'Overdue', 'Paid', 'Draft', 'Void'].map(s => (
+              <button key={s} onClick={() => setBillStatusFilter(s)}
+                className={`px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest transition whitespace-nowrap ${
+                  billStatusFilter === s
+                    ? 'bg-[var(--color-accent-operations)] text-white'
+                    : 'bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600'
+                }`}>
+                {s}
+              </button>
+            ))}
           </div>
           <DataTable
             columns={[
-              { key: 'id', label: 'Bill #', render: (b: Bill) => <span className="text-xs font-black text-indigo-600 uppercase tracking-tight">{b.id}</span> },
+              { key: 'invoiceNumber', label: 'Bill', render: (b: Bill) => (
+                <div className="flex items-center gap-2">
+                  <div className="p-1.5 bg-indigo-50 dark:bg-indigo-500/10 text-indigo-600 rounded-lg"><FileText size={12} /></div>
+                  <span className="text-xs font-bold text-slate-900 dark:text-white">{b.invoiceNumber}</span>
+                </div>
+              ) },
               { key: 'vendorName', label: 'Vendor', render: (b: Bill) => (
                 <div className="flex flex-col">
-                  <span className="text-xs font-black text-slate-900 dark:text-white uppercase tracking-tight">{b.vendorName}</span>
-                  <span className="text-[9px] font-bold text-slate-400">{b.category}</span>
+                  <span className="text-xs font-bold text-slate-900 dark:text-white">{b.vendorName || '—'}</span>
+                  <span className="text-[10px] font-medium text-slate-400">{b.category || '—'}</span>
                 </div>
               ) },
-              { key: 'invoiceNumber', label: 'Invoice #', render: (b: Bill) => <span className="text-[10px] font-bold text-slate-500 font-mono">{b.invoiceNumber}</span> },
-              { key: 'dueDate', label: 'Due Date', align: 'center' as const, render: (b: Bill) => <span className="text-[10px] font-bold text-slate-500">{b.dueDate}</span> },
-              { key: 'amount', label: 'Gross', align: 'right' as const, render: (b: Bill) => <span className="text-xs font-black text-slate-900 dark:text-white">${b.amount.toLocaleString()}</span> },
-              { key: 'withholdingAmount', label: 'Withholding', align: 'right' as const, render: (b: Bill) => <span className="text-xs font-black text-amber-600">${b.withholdingAmount.toLocaleString()}</span> },
-              { key: 'netPayable', label: 'Net Payable', align: 'right' as const, render: (b: Bill) => <span className="text-xs font-black text-emerald-600">${b.netPayable.toLocaleString()}</span> },
-              { key: 'status', label: 'Status', align: 'center' as const, render: (b: Bill) => (
-                <div className="flex justify-center">
-                  <span className={`px-2 py-0.5 rounded text-[8px] font-black uppercase tracking-widest ${b.status === 'Overdue' ? 'bg-rose-50 text-rose-600' : b.status === 'Paid' ? 'bg-emerald-50 text-emerald-600' : 'bg-amber-50 text-amber-600'}`}>{b.status}</span>
-                </div>
-              ) },
+              { key: 'dueDate', label: 'Due Date', align: 'center' as const, render: (b: Bill) => <span className="text-xs font-medium text-slate-500">{b.dueDate}</span> },
+              { key: 'amount', label: 'Gross', align: 'right' as const, render: (b: Bill) => <span className="text-xs font-bold text-slate-900 dark:text-white">${fmt(b.amount)}</span> },
+              { key: 'withholdingAmount', label: 'Withholding', align: 'right' as const, render: (b: Bill) => <span className="text-xs font-bold text-amber-600">${fmt(b.withholdingAmount)}</span> },
+              { key: 'netPayable', label: 'Net Payable', align: 'right' as const, render: (b: Bill) => <span className="text-xs font-bold text-emerald-600">${fmt(b.netPayable)}</span> },
+              { key: 'property_name', label: 'Property', render: (b: Bill) => <span className="text-xs font-medium text-slate-500">{b.property_name || propertyName(b.property_id)}</span> },
+              { key: 'status', label: 'Status', align: 'center' as const, render: (b: Bill) => {
+                const tone: StatusTone = b.status === 'Paid' ? 'success' : b.status === 'Overdue' ? 'danger' : b.status === 'Void' ? 'neutral' : 'warning';
+                return (
+                  <div className="flex justify-center">
+                    <Badge tone={tone}>{b.status}</Badge>
+                  </div>
+                );
+              } },
               { key: 'actions', label: 'Actions', align: 'center' as const, sortable: false, render: (b: Bill) => (
                 <div className="flex justify-center gap-1">
-                  <button onClick={() => setSelectedBill(b)} className="p-1.5 text-slate-400 hover:text-indigo-600 transition"><Eye size={14} /></button>
-                  <button className="p-1.5 text-slate-400 hover:text-indigo-600 transition"><MoreVertical size={14} /></button>
+                  <button onClick={() => setSelectedBill(b)} className={button.ghost}><Eye size={14} /></button>
                 </div>
               ) },
             ] as Column<Bill>[]}
-            data={bills}
+            data={filteredBills}
             rowKey={(b) => b.id}
             sortable
             filterable
             filterPlaceholder="Search bills..."
-            filterKeys={['id', 'vendorName', 'invoiceNumber', 'status']}
-            containerClassName="rounded-lg"
+            filterKeys={['invoiceNumber', 'vendorName', 'status', 'property_name']}
+            emptyMessage="No bills found."
+            containerClassName="rounded-lg border-0"
           />
-        </div>
+        </SectionCard>
       )}
 
       {activeTab === 'payments' && (
-        <div className="space-y-4">
-          <div className="mb-4">
-            <h3 className="text-sm font-black text-slate-900 dark:text-white uppercase tracking-tight">Payments Registry</h3>
-            <p className="text-[10px] text-slate-400 font-bold uppercase mt-1">Vendor payment history and disbursements</p>
+        <SectionCard
+          title="Payments Registry"
+          subtitle="Vendor payment history and disbursements"
+          icon={DollarSign}
+          pad="none"
+          bodyClassName="divide-y divide-gray-100 dark:divide-slate-700"
+        >
+          <div className="px-4 py-3 border-b border-gray-100 dark:border-slate-700 flex items-center gap-2 overflow-x-auto">
+            {['All', 'Processed', 'Approved', 'Draft', 'Cancelled'].map(s => (
+              <button key={s} onClick={() => setPaymentStatusFilter(s)}
+                className={`px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest transition whitespace-nowrap ${
+                  paymentStatusFilter === s
+                    ? 'bg-[var(--color-accent-operations)] text-white'
+                    : 'bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600'
+                }`}>
+                {s}
+              </button>
+            ))}
           </div>
           <DataTable
             columns={[
-              { key: 'id', label: 'Payment #', render: (p: Payment) => <span className="text-xs font-black text-indigo-600 uppercase tracking-tight">{p.id}</span> },
-              { key: 'vendorName', label: 'Vendor', render: (p: Payment) => <span className="text-xs font-black text-slate-900 dark:text-white uppercase tracking-tight">{p.vendorName}</span> },
-              { key: 'paymentDate', label: 'Payment Date', align: 'center' as const, render: (p: Payment) => <span className="text-[10px] font-bold text-slate-500">{p.paymentDate}</span> },
-              { key: 'paymentMethod', label: 'Method', render: (p: Payment) => <span className="text-[10px] font-bold text-slate-500">{p.paymentMethod}</span> },
-              { key: 'reference', label: 'Reference', render: (p: Payment) => <span className="text-[10px] font-bold text-slate-500 font-mono">{p.reference}</span> },
-              { key: 'amount', label: 'Amount', align: 'right' as const, render: (p: Payment) => <span className="text-xs font-black text-slate-900 dark:text-white">${p.amount.toLocaleString()}</span> },
-              { key: 'status', label: 'Status', align: 'center' as const, render: (p: Payment) => (
-                <div className="flex justify-center">
-                  <span className={`px-2 py-0.5 rounded text-[8px] font-black uppercase tracking-widest ${p.status === 'Completed' ? 'bg-emerald-50 text-emerald-600' : 'bg-amber-50 text-amber-600'}`}>{p.status}</span>
+              { key: 'payment_number', label: 'Payment', render: (p: Payment) => (
+                <div className="flex items-center gap-2">
+                  <div className="p-1.5 bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 rounded-lg"><DollarSign size={12} /></div>
+                  <span className="text-xs font-bold text-slate-900 dark:text-white">{(p as any).payment_number || p.id.slice(0, 8)}</span>
                 </div>
               ) },
+              { key: 'vendorName', label: 'Vendor', render: (p: Payment) => <span className="text-xs font-bold text-slate-900 dark:text-white">{p.vendorName || '—'}</span> },
+              { key: 'paymentDate', label: 'Date', align: 'center' as const, render: (p: Payment) => <span className="text-xs font-medium text-slate-500">{p.paymentDate}</span> },
+              { key: 'paymentMethod', label: 'Method', render: (p: Payment) => <span className="text-xs font-medium text-slate-500">{p.paymentMethod || '—'}</span> },
+              { key: 'reference', label: 'Reference', render: (p: Payment) => <span className="text-xs font-medium text-slate-500 font-mono">{p.reference || '—'}</span> },
+              { key: 'amount', label: 'Amount', align: 'right' as const, render: (p: Payment) => <span className="text-xs font-bold text-slate-900 dark:text-white">${fmt(p.amount)}</span> },
+              { key: 'property_name', label: 'Property', render: (p: Payment) => <span className="text-xs font-medium text-slate-500">{p.property_name || propertyName(p.property_id)}</span> },
+              { key: 'status', label: 'Status', align: 'center' as const, render: (p: Payment) => {
+                const tone: StatusTone = p.status === 'Processed' ? 'success' : p.status === 'Cancelled' ? 'neutral' : 'warning';
+                return (
+                  <div className="flex justify-center">
+                    <Badge tone={tone}>{p.status}</Badge>
+                  </div>
+                );
+              } },
             ] as Column<Payment>[]}
-            data={payments}
+            data={filteredPayments}
             rowKey={(p) => p.id}
             sortable
             filterable
             filterPlaceholder="Search payments..."
-            filterKeys={['id', 'vendorName', 'paymentMethod', 'reference', 'status']}
-            containerClassName="rounded-lg"
+            filterKeys={['payment_number', 'vendorName', 'paymentMethod', 'reference', 'status', 'property_name']}
+            emptyMessage="No payments found."
+            containerClassName="rounded-lg border-0"
           />
-        </div>
+        </SectionCard>
       )}
 
       {activeTab === 'matching' && (
-        <div className="space-y-6">
-          <div className="mb-4">
-            <h3 className="text-sm font-black text-slate-900 dark:text-white uppercase tracking-tight">Three-Way Matching</h3>
-            <p className="text-[10px] text-slate-400 font-bold uppercase mt-1">PO, GRN, and invoice reconciliation</p>
-          </div>
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-            {[
-              { label: 'Pending Matches', value: '12', count: 'Awaiting Review', color: 'text-amber-500', icon: AlertCircle },
-              { label: 'Matched Today', value: '8', count: 'Approved', color: 'text-emerald-500', icon: CheckCircle2 },
-              { label: 'Discrepancies', value: '3', count: 'Need Attention', color: 'text-rose-500', icon: ShieldCheck },
-              { label: 'Total Value', value: '$45,200', count: 'In Process', color: 'text-blue-500', icon: DollarSign },
-            ].map((stat, i) => (
-              <div key={i} className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-5 rounded-lg shadow-sm flex items-center gap-4">
-                <div className={`p-3 rounded-lg bg-slate-50 dark:bg-slate-700 ${stat.color}`}>
-                  <stat.icon size={20} />
-                </div>
-                <div>
-                  <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest block">{stat.label}</span>
-                  <p className="text-lg font-black text-slate-900 dark:text-white leading-none">{stat.value}</p>
-                  <p className="text-[9px] font-bold text-slate-500 uppercase mt-1">{stat.count}</p>
-                </div>
-              </div>
+        <SectionCard
+          title="Three-Way Matching"
+          subtitle="PO, GRN, and invoice reconciliation"
+          icon={ShieldCheck}
+          pad="none"
+          bodyClassName="divide-y divide-gray-100 dark:divide-slate-700"
+        >
+          <div className="px-4 py-3 border-b border-gray-100 dark:border-slate-700 flex items-center gap-2 overflow-x-auto">
+            {['All', 'Pending', 'Approved', 'Discrepancy'].map(s => (
+              <button key={s} onClick={() => setMatchStatusFilter(s)}
+                className={`px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest transition whitespace-nowrap ${
+                  matchStatusFilter === s
+                    ? 'bg-[var(--color-accent-operations)] text-white'
+                    : 'bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600'
+                }`}>
+                {s}
+              </button>
             ))}
           </div>
-
           <DataTable
             columns={[
               {
-                key: 'poNumber',
+                key: 'po_number',
                 label: 'PO #',
-                render: (m: any) => <span className="text-xs font-black text-indigo-600 uppercase tracking-tighter">{m.poNumber}</span>,
+                render: (m: ThreeWayMatch) => (
+                  <div className="flex items-center gap-2">
+                    <div className="p-1.5 bg-indigo-50 dark:bg-indigo-500/10 text-indigo-600 rounded-lg"><ShieldCheck size={12} /></div>
+                    <span className="text-xs font-bold text-slate-900 dark:text-white">{m.po_number}</span>
+                  </div>
+                ),
               },
               {
-                key: 'vendor',
+                key: 'vendor_name',
                 label: 'Vendor',
-                render: (m: any) => <span className="text-xs font-bold text-slate-900 dark:text-white">{m.vendor}</span>,
+                render: (m: ThreeWayMatch) => <span className="text-xs font-bold text-slate-900 dark:text-white">{m.vendor_name || '—'}</span>,
               },
               {
-                key: 'invoiceMatch',
+                key: 'invoice_match',
                 label: 'Invoice',
-                align: 'center',
-                render: (m: any) => (
-                  <span className={`px-2 py-0.5 rounded text-[8px] font-black uppercase ${m.invoiceMatch === 'Matched' ? 'bg-emerald-50 text-emerald-600' : 'bg-rose-50 text-rose-600'}`}>
-                    {m.invoiceMatch}
-                  </span>
-                ),
+                align: 'center' as const,
+                render: (m: ThreeWayMatch) => {
+                  const tone: StatusTone = m.invoice_match === 'Matched' ? 'success' : m.invoice_match === 'Pending' ? 'warning' : 'danger';
+                  return <div className="flex justify-center"><Badge tone={tone}>{m.invoice_match}</Badge></div>;
+                },
               },
               {
-                key: 'receiptMatch',
+                key: 'receipt_match',
                 label: 'Receipt',
-                align: 'center',
-                render: (m: any) => (
-                  <span className={`px-2 py-0.5 rounded text-[8px] font-black uppercase ${m.receiptMatch === 'Matched' ? 'bg-emerald-50 text-emerald-600' : 'bg-rose-50 text-rose-600'}`}>
-                    {m.receiptMatch}
-                  </span>
-                ),
+                align: 'center' as const,
+                render: (m: ThreeWayMatch) => {
+                  const tone: StatusTone = m.receipt_match === 'Matched' ? 'success' : m.receipt_match === 'Pending' ? 'warning' : 'danger';
+                  return <div className="flex justify-center"><Badge tone={tone}>{m.receipt_match}</Badge></div>;
+                },
               },
               {
-                key: 'poAmount',
+                key: 'po_amount',
                 label: 'PO Amount',
-                align: 'right',
-                render: (m: any) => <span className="text-xs font-black text-slate-900 dark:text-white">${m.poAmount.toLocaleString()}</span>,
+                align: 'right' as const,
+                render: (m: ThreeWayMatch) => <span className="text-xs font-bold text-slate-900 dark:text-white">${fmt(m.po_amount)}</span>,
               },
               {
-                key: 'invoiceAmount',
+                key: 'invoice_amount',
                 label: 'Invoice Amount',
-                align: 'right',
-                render: (m: any) => <span className="text-xs font-black text-slate-600 dark:text-slate-400">${m.invoiceAmount.toLocaleString()}</span>,
+                align: 'right' as const,
+                render: (m: ThreeWayMatch) => <span className="text-xs font-bold text-slate-600 dark:text-slate-400">${fmt(m.invoice_amount)}</span>,
               },
               {
-                key: 'variance',
+                key: 'variance_pct',
                 label: 'Variance',
-                align: 'right',
-                render: (m: any) => (
-                  <span className={`text-xs font-black ${Math.abs(m.variance) < 10 ? 'text-emerald-600' : 'text-rose-600'}`}>
-                    {m.variance > 0 ? '+' : ''}{m.variance.toLocaleString()}%
+                align: 'right' as const,
+                render: (m: ThreeWayMatch) => (
+                  <span className={`text-xs font-bold ${Math.abs(m.variance_pct) < 10 ? 'text-emerald-600' : 'text-rose-600'}`}>
+                    {m.variance_pct > 0 ? '+' : ''}{m.variance_pct}%
                   </span>
                 ),
+              },
+              {
+                key: 'property_name',
+                label: 'Property',
+                render: (m: ThreeWayMatch) => <span className="text-xs font-medium text-slate-500">{m.property_name || propertyName(m.property_id)}</span>,
               },
               {
                 key: 'status',
                 label: 'Status',
-                align: 'center',
-                render: (m: any) => (
-                  <span className={`px-2 py-0.5 rounded text-[8px] font-black uppercase ${
-                    m.status === 'Approved' ? 'bg-emerald-50 text-emerald-600' :
-                    m.status === 'Pending' ? 'bg-amber-50 text-amber-600' :
-                    'bg-rose-50 text-rose-600'
-                  }`}>
-                    {m.status}
-                  </span>
-                ),
+                align: 'center' as const,
+                render: (m: ThreeWayMatch) => {
+                  const tone: StatusTone = m.status === 'Approved' ? 'success' : m.status === 'Pending' ? 'warning' : 'danger';
+                  return <div className="flex justify-center"><Badge tone={tone}>{m.status}</Badge></div>;
+                },
               },
               {
                 key: 'actions',
                 label: 'Actions',
-                align: 'center',
+                align: 'center' as const,
                 sortable: false,
-                render: (m: any) => (
-                  <div className="flex justify-center gap-1">
-                    <button className="p-1.5 text-slate-400 hover:text-indigo-600 transition" title="View Details"><Eye size={14} /></button>
-                    <button className="p-1.5 text-slate-400 hover:text-emerald-600 transition" title="Approve"><CheckCircle2 size={14} /></button>
+                render: (m: ThreeWayMatch) => (
+                  <div className="flex justify-center gap-1 relative">
+                    <div className="relative">
+                      <button onClick={() => setMenuOpen(menuOpen === m.id ? null : m.id)} disabled={actingOn === m.id} className={button.ghost + ' disabled:opacity-50'}>
+                        {actingOn === m.id ? <Loader2 size={14} className="animate-spin" /> : <MoreVertical size={14} />}
+                      </button>
+                      {menuOpen === m.id && (
+                        <div className="absolute right-0 top-full mt-2 w-48 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-xl z-20 overflow-hidden">
+                          {m.status !== 'Approved' && (
+                            <button onClick={() => handleApproveMatch(m.id, m.po_number)} className="w-full text-left px-3 py-2 text-xs font-medium text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 flex items-center gap-1.5 transition">
+                              <CheckCircle2 size={14} /> Approve
+                            </button>
+                          )}
+                        </div>
+                      )}
+                    </div>
                   </div>
                 ),
               },
-            ]}
-            data={[
-              { poNumber: 'PO-2024-089', vendor: 'Apex Cleaning Supplies', invoiceMatch: 'Matched', receiptMatch: 'Matched', poAmount: 5000, invoiceAmount: 5000, variance: 0, status: 'Approved' },
-              { poNumber: 'PO-2024-092', vendor: 'Food Provisions Ltd', invoiceMatch: 'Matched', receiptMatch: 'Pending', poAmount: 8500, invoiceAmount: 8425, variance: -0.88, status: 'Pending' },
-              { poNumber: 'PO-2024-078', vendor: 'Maintenance Services', invoiceMatch: 'Pending', receiptMatch: 'Matched', poAmount: 3200, invoiceAmount: 3500, variance: 9.38, status: 'Discrepancy' },
-              { poNumber: 'PO-2024-095', vendor: 'Office Supplies Co', invoiceMatch: 'Matched', receiptMatch: 'Matched', poAmount: 1200, invoiceAmount: 1200, variance: 0, status: 'Approved' },
-              { poNumber: 'PO-2024-082', vendor: 'Tech Equipment Inc', invoiceMatch: 'Matched', receiptMatch: 'Pending', poAmount: 15000, invoiceAmount: 14850, variance: -1, status: 'Pending' },
-            ]}
-            rowKey={(m: any) => m.poNumber}
+            ] as Column<ThreeWayMatch>[]}
+            data={filteredMatches}
+            rowKey={(m) => m.id}
             sortable
             filterable
             filterPlaceholder="Search matches..."
-            filterKeys={['poNumber', 'vendor', 'status']}
+            filterKeys={['po_number', 'vendor_name', 'status', 'property_name']}
             emptyMessage="No three-way matches found."
+            containerClassName="rounded-lg border-0"
           />
-        </div>
+        </SectionCard>
       )}
 
       {activeTab === 'scheduling' && (
-        <div className="space-y-6">
-          <div className="mb-4">
-            <h3 className="text-sm font-black text-slate-900 dark:text-white uppercase tracking-tight">Payment Scheduling</h3>
-            <p className="text-[10px] text-slate-400 font-bold uppercase mt-1">Automated payment scheduling and approval</p>
-          </div>
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-            {[
-              { label: 'Scheduled Payments', value: '15', count: 'This Week', color: 'text-blue-500', icon: Calendar },
-              { label: 'Total Scheduled', value: '$78,500', count: 'Upcoming', color: 'text-emerald-500', icon: DollarSign },
-              { label: 'Overdue Scheduled', value: '3', count: 'Missed', color: 'text-rose-500', icon: AlertCircle },
-              { label: 'Auto-Pay Enabled', value: '8', count: 'Vendors', color: 'text-indigo-500', icon: ShieldCheck },
-            ].map((stat, i) => (
-              <div key={i} className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-5 rounded-lg shadow-sm flex items-center gap-4">
-                <div className={`p-3 rounded-lg bg-slate-50 dark:bg-slate-700 ${stat.color}`}>
-                  <stat.icon size={20} />
-                </div>
-                <div>
-                  <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest block">{stat.label}</span>
-                  <p className="text-lg font-black text-slate-900 dark:text-white leading-none">{stat.value}</p>
-                  <p className="text-[9px] font-bold text-slate-500 uppercase mt-1">{stat.count}</p>
-                </div>
-              </div>
+        <SectionCard
+          title="Payment Scheduling"
+          subtitle="Automated payment scheduling and approval"
+          icon={Calendar}
+          pad="none"
+          bodyClassName="divide-y divide-gray-100 dark:divide-slate-700"
+        >
+          <div className="px-4 py-3 border-b border-gray-100 dark:border-slate-700 flex items-center gap-2 overflow-x-auto">
+            {['All', 'Pending', 'Processed', 'Overdue', 'Cancelled'].map(s => (
+              <button key={s} onClick={() => setScheduleStatusFilter(s)}
+                className={`px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest transition whitespace-nowrap ${
+                  scheduleStatusFilter === s
+                    ? 'bg-[var(--color-accent-operations)] text-white'
+                    : 'bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600'
+                }`}>
+                {s}
+              </button>
             ))}
           </div>
-
           <DataTable
             columns={[
               {
-                key: 'vendor',
+                key: 'vendor_name',
                 label: 'Vendor',
-                render: (s: any) => <span className="text-xs font-bold text-slate-900 dark:text-white">{s.vendor}</span>,
+                render: (s: PaymentSchedule) => (
+                  <div className="flex items-center gap-2">
+                    <div className="p-1.5 bg-amber-50 dark:bg-amber-500/10 text-amber-600 rounded-lg"><Calendar size={12} /></div>
+                    <div className="flex flex-col">
+                      <span className="text-xs font-bold text-slate-900 dark:text-white">{s.vendor_name || '—'}</span>
+                      <span className="text-[10px] font-medium text-slate-400 font-mono">{s.bill_number || '—'}</span>
+                    </div>
+                  </div>
+                ),
               },
               {
-                key: 'billNumber',
-                label: 'Bill #',
-                render: (s: any) => <span className="text-xs font-black text-indigo-600 uppercase tracking-tighter">{s.billNumber}</span>,
-              },
-              {
-                key: 'scheduledDate',
+                key: 'scheduled_date',
                 label: 'Scheduled Date',
-                render: (s: any) => <span className="text-xs font-bold text-slate-500">{s.scheduledDate}</span>,
+                render: (s: PaymentSchedule) => <span className="text-xs font-medium text-slate-500">{s.scheduled_date}</span>,
               },
               {
                 key: 'amount',
                 label: 'Amount',
-                align: 'right',
-                render: (s: any) => <span className="text-xs font-black text-slate-900 dark:text-white">${s.amount.toLocaleString()}</span>,
+                align: 'right' as const,
+                render: (s: PaymentSchedule) => <span className="text-xs font-bold text-slate-900 dark:text-white">${fmt(s.amount)}</span>,
               },
               {
-                key: 'paymentMethod',
-                label: 'Payment Method',
-                render: (s: any) => <span className="text-xs font-bold text-slate-600 dark:text-slate-400">{s.paymentMethod}</span>,
+                key: 'payment_method',
+                label: 'Method',
+                render: (s: PaymentSchedule) => <span className="text-xs font-medium text-slate-600 dark:text-slate-400">{s.payment_method}</span>,
               },
               {
                 key: 'frequency',
                 label: 'Frequency',
-                align: 'center',
-                render: (s: any) => (
-                  <span className={`px-2 py-0.5 rounded text-[8px] font-black uppercase ${
-                    s.frequency === 'One-time' ? 'bg-slate-50 text-slate-600' :
-                    s.frequency === 'Weekly' ? 'bg-blue-50 text-blue-600' :
-                    s.frequency === 'Monthly' ? 'bg-emerald-50 text-emerald-600' :
-                    'bg-amber-50 text-amber-600'
-                  }`}>
-                    {s.frequency}
-                  </span>
+                align: 'center' as const,
+                render: (s: PaymentSchedule) => {
+                  const tone: StatusTone = s.frequency === 'Monthly' ? 'success' : s.frequency === 'Weekly' ? 'info' : 'neutral';
+                  return <div className="flex justify-center"><Badge tone={tone}>{s.frequency}</Badge></div>;
+                },
+              },
+              {
+                key: 'auto_pay',
+                label: 'Auto-Pay',
+                align: 'center' as const,
+                render: (s: PaymentSchedule) => (
+                  <div className="flex justify-center">
+                    <Badge tone={s.auto_pay ? 'success' : 'neutral'}>{s.auto_pay ? 'Enabled' : 'Disabled'}</Badge>
+                  </div>
                 ),
               },
               {
-                key: 'autoPay',
-                label: 'Auto-Pay',
-                align: 'center',
-                render: (s: any) => (
-                  <span className={`px-2 py-0.5 rounded text-[8px] font-black uppercase ${s.autoPay ? 'bg-emerald-50 text-emerald-600' : 'bg-slate-50 text-slate-600'}`}>
-                    {s.autoPay ? 'Enabled' : 'Disabled'}
-                  </span>
-                ),
+                key: 'property_name',
+                label: 'Property',
+                render: (s: PaymentSchedule) => <span className="text-xs font-medium text-slate-500">{s.property_name || propertyName(s.property_id)}</span>,
               },
               {
                 key: 'status',
                 label: 'Status',
-                align: 'center',
-                render: (s: any) => (
-                  <span className={`px-2 py-0.5 rounded text-[8px] font-black uppercase ${
-                    s.status === 'Pending' ? 'bg-amber-50 text-amber-600' :
-                    s.status === 'Processed' ? 'bg-emerald-50 text-emerald-600' :
-                    'bg-rose-50 text-rose-600'
-                  }`}>
-                    {s.status}
-                  </span>
-                ),
+                align: 'center' as const,
+                render: (s: PaymentSchedule) => {
+                  const tone: StatusTone = s.status === 'Processed' ? 'success' : s.status === 'Overdue' ? 'danger' : s.status === 'Cancelled' ? 'neutral' : 'warning';
+                  return <div className="flex justify-center"><Badge tone={tone}>{s.status}</Badge></div>;
+                },
               },
               {
                 key: 'actions',
                 label: 'Actions',
-                align: 'center',
+                align: 'center' as const,
                 sortable: false,
-                render: (s: any) => (
-                  <div className="flex justify-center gap-1">
-                    <button className="p-1.5 text-slate-400 hover:text-indigo-600 transition" title="Edit Schedule"><Calendar size={14} /></button>
-                    <button className="p-1.5 text-slate-400 hover:text-emerald-600 transition" title="Process Now"><Send size={14} /></button>
+                render: (s: PaymentSchedule) => (
+                  <div className="flex justify-center gap-1 relative">
+                    <div className="relative">
+                      <button onClick={() => setMenuOpen(menuOpen === s.id ? null : s.id)} disabled={actingOn === s.id} className={button.ghost + ' disabled:opacity-50'}>
+                        {actingOn === s.id ? <Loader2 size={14} className="animate-spin" /> : <MoreVertical size={14} />}
+                      </button>
+                      {menuOpen === s.id && (
+                        <div className="absolute right-0 top-full mt-2 w-48 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-xl z-20 overflow-hidden">
+                          {s.status === 'Pending' && (
+                            <button onClick={() => handleUpdateScheduleStatus(s.id, 'Processed', s.vendor_name || 'schedule')} className="w-full text-left px-3 py-2 text-xs font-medium text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 flex items-center gap-1.5 transition">
+                              <Send size={14} /> Process Now
+                            </button>
+                          )}
+                          {s.status !== 'Cancelled' && (
+                            <button onClick={() => handleUpdateScheduleStatus(s.id, 'Cancelled', s.vendor_name || 'schedule')} className="w-full text-left px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700 flex items-center gap-1.5 transition">
+                              <Calendar size={14} /> Cancel
+                            </button>
+                          )}
+                          <button onClick={() => handleDeleteSchedule(s.id, s.vendor_name || 'schedule')} className="w-full text-left px-3 py-2 text-xs font-medium text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-900/20 flex items-center gap-1.5 transition border-t border-slate-100 dark:border-slate-700">
+                            <Trash2 size={14} /> Delete
+                          </button>
+                        </div>
+                      )}
+                    </div>
                   </div>
                 ),
               },
-            ]}
-            data={[
-              { vendor: 'Apex Cleaning Supplies', billNumber: 'BILL-2024-089', scheduledDate: '2024-06-10', amount: 5000, paymentMethod: 'Bank Transfer', frequency: 'Monthly', autoPay: true, status: 'Pending' },
-              { vendor: 'Food Provisions Ltd', billNumber: 'BILL-2024-092', scheduledDate: '2024-06-12', amount: 8500, paymentMethod: 'Bank Transfer', frequency: 'Weekly', autoPay: true, status: 'Pending' },
-              { vendor: 'Maintenance Services', billNumber: 'BILL-2024-078', scheduledDate: '2024-06-08', amount: 3200, paymentMethod: 'Check', frequency: 'One-time', autoPay: false, status: 'Overdue' },
-              { vendor: 'Office Supplies Co', billNumber: 'BILL-2024-095', scheduledDate: '2024-06-15', amount: 1200, paymentMethod: 'Bank Transfer', frequency: 'Monthly', autoPay: true, status: 'Pending' },
-              { vendor: 'Tech Equipment Inc', billNumber: 'BILL-2024-082', scheduledDate: '2024-06-20', amount: 15000, paymentMethod: 'Wire', frequency: 'Quarterly', autoPay: false, status: 'Pending' },
-            ]}
-            rowKey={(s: any) => s.billNumber}
+            ] as Column<PaymentSchedule>[]}
+            data={filteredSchedules}
+            rowKey={(s) => s.id}
             sortable
             filterable
             filterPlaceholder="Search schedules..."
-            filterKeys={['vendor', 'billNumber', 'status']}
+            filterKeys={['vendor_name', 'bill_number', 'status', 'property_name']}
             emptyMessage="No scheduled payments found."
+            containerClassName="rounded-lg border-0"
           />
-        </div>
+        </SectionCard>
+      )}
+
+      {activeTab === 'statements' && (
+        <SectionCard
+          title="Vendor Statements"
+          subtitle="Periodic vendor account statements"
+          icon={FileText}
+          pad="none"
+          bodyClassName="divide-y divide-gray-100 dark:divide-slate-700"
+        >
+          <DataTable
+            columns={[
+              {
+                key: 'vendor', label: 'Vendor',
+                render: (s: any) => (
+                  <div className="flex items-center gap-2">
+                    <div className="p-1.5 bg-indigo-50 dark:bg-indigo-500/10 text-indigo-600 rounded-lg"><Truck size={12} /></div>
+                    <span className="text-xs font-bold text-slate-900 dark:text-white">{s.vendor}</span>
+                  </div>
+                ),
+              },
+              { key: 'period', label: 'Statement Period', render: (s: any) => <span className="text-xs font-medium text-slate-500">{s.period}</span> },
+              { key: 'openingBalance', label: 'Opening Balance', align: 'right' as const, render: (s: any) => <span className="text-xs font-bold text-slate-600 dark:text-slate-400">${fmt(s.openingBalance)}</span> },
+              { key: 'invoices', label: 'Invoices', align: 'right' as const, render: (s: any) => <span className="text-xs font-bold text-slate-900 dark:text-white">${fmt(s.invoices)}</span> },
+              { key: 'payments', label: 'Payments', align: 'right' as const, render: (s: any) => <span className="text-xs font-bold text-emerald-600">${fmt(s.payments)}</span> },
+              { key: 'closingBalance', label: 'Closing Balance', align: 'right' as const, render: (s: any) => <span className="text-xs font-bold text-amber-600">${fmt(s.closingBalance)}</span> },
+              {
+                key: 'actions', label: 'Actions', align: 'center' as const, sortable: false,
+                render: (s: any) => (
+                  <div className="flex justify-center gap-1">
+                    <button onClick={() => setSelectedVendor(vendors.find(v => v.name === s.vendor) || null)} className={button.ghost}><Eye size={14} /></button>
+                    <button onClick={() => window.print()} className={button.ghost}><Download size={14} /></button>
+                  </div>
+                ),
+              },
+            ] as Column<any>[]}
+            data={[
+              { id: 'st-1', vendor: 'ABC Suppliers Ltd.', period: 'Jan 2024', openingBalance: 12000, invoices: 4500, payments: 8000, closingBalance: 8500 },
+              { id: 'st-2', vendor: 'Highland Contractors', period: 'Jan 2024', openingBalance: 25000, invoices: 12000, payments: 15000, closingBalance: 22000 },
+              { id: 'st-3', vendor: 'Ethio Telecom', period: 'Jan 2024', openingBalance: 3500, invoices: 1800, payments: 3500, closingBalance: 1800 },
+              { id: 'st-4', vendor: 'Addis Water Utility', period: 'Jan 2024', openingBalance: 2200, invoices: 1100, payments: 2200, closingBalance: 1100 },
+              { id: 'st-5', vendor: 'ERCA Tax Office', period: 'Jan 2024', openingBalance: 18000, invoices: 9000, payments: 18000, closingBalance: 9000 },
+            ]}
+            rowKey={(s) => s.id}
+            sortable
+            filterable
+            filterPlaceholder="Search statements..."
+            filterKeys={['vendor', 'period']}
+            emptyMessage="No vendor statements found."
+            containerClassName="rounded-lg border-0"
+          />
+        </SectionCard>
+      )}
+
+      {activeTab === 'aging' && (
+        <SectionCard
+          title="AP Aging Analysis"
+          subtitle="Outstanding payables by aging bucket"
+          icon={Clock}
+          pad="none"
+          bodyClassName="divide-y divide-gray-100 dark:divide-slate-700"
+        >
+          <DataTable
+            columns={[
+              {
+                key: 'vendor', label: 'Vendor',
+                render: (a: any) => (
+                  <div className="flex items-center gap-2">
+                    <div className="p-1.5 bg-amber-50 dark:bg-amber-500/10 text-amber-600 rounded-lg"><Clock size={12} /></div>
+                    <span className="text-xs font-bold text-slate-900 dark:text-white">{a.vendor}</span>
+                  </div>
+                ),
+              },
+              { key: 'b0_30', label: '0-30 Days', align: 'right' as const, render: (a: any) => <span className="text-xs font-bold text-emerald-600">${fmt(a.b0_30)}</span> },
+              { key: 'b31_60', label: '31-60 Days', align: 'right' as const, render: (a: any) => <span className="text-xs font-bold text-amber-600">${fmt(a.b31_60)}</span> },
+              { key: 'b61_90', label: '61-90 Days', align: 'right' as const, render: (a: any) => <span className="text-xs font-bold text-orange-600">${fmt(a.b61_90)}</span> },
+              { key: 'b90plus', label: '90+ Days', align: 'right' as const, render: (a: any) => <span className="text-xs font-bold text-rose-600">${fmt(a.b90plus)}</span> },
+              { key: 'total', label: 'Total', align: 'right' as const, render: (a: any) => <span className="text-xs font-black text-slate-900 dark:text-white">${fmt(a.total)}</span> },
+            ] as Column<any>[]}
+            data={[
+              { id: 'ag-1', vendor: 'ABC Suppliers Ltd.', b0_30: 4500, b31_60: 2000, b61_90: 1000, b90plus: 1000, total: 8500 },
+              { id: 'ag-2', vendor: 'Highland Contractors', b0_30: 5000, b31_60: 7000, b61_90: 5000, b90plus: 5000, total: 22000 },
+              { id: 'ag-3', vendor: 'Ethio Telecom', b0_30: 1800, b31_60: 0, b61_90: 0, b90plus: 0, total: 1800 },
+              { id: 'ag-4', vendor: 'Addis Water Utility', b0_30: 1100, b31_60: 0, b61_90: 0, b90plus: 0, total: 1100 },
+              { id: 'ag-5', vendor: 'ERCA Tax Office', b0_30: 0, b31_60: 9000, b61_90: 0, b90plus: 0, total: 9000 },
+            ]}
+            rowKey={(a) => a.id}
+            sortable
+            filterable
+            filterPlaceholder="Search aging..."
+            filterKeys={['vendor']}
+            emptyMessage="No aging data found."
+            containerClassName="rounded-lg border-0"
+          />
+        </SectionCard>
+      )}
+
+      {activeTab === 'credit_notes' && (
+        <SectionCard
+          title="Vendor Credit Notes"
+          subtitle="Credit notes issued by vendors"
+          icon={ArrowDownRight}
+          pad="none"
+          bodyClassName="divide-y divide-gray-100 dark:divide-slate-700"
+        >
+          <DataTable
+            columns={[
+              {
+                key: 'creditNoteNumber', label: 'Credit Note #',
+                render: (c: any) => (
+                  <div className="flex items-center gap-2">
+                    <div className="p-1.5 bg-rose-50 dark:bg-rose-500/10 text-rose-600 rounded-lg"><ArrowDownRight size={12} /></div>
+                    <span className="text-xs font-bold text-slate-900 dark:text-white">{c.creditNoteNumber}</span>
+                  </div>
+                ),
+              },
+              { key: 'vendor', label: 'Vendor', render: (c: any) => <span className="text-xs font-bold text-slate-900 dark:text-white">{c.vendor}</span> },
+              { key: 'date', label: 'Date', align: 'center' as const, render: (c: any) => <span className="text-xs font-medium text-slate-500">{c.date}</span> },
+              { key: 'referenceInvoice', label: 'Reference Invoice', render: (c: any) => <span className="text-xs font-medium text-slate-500 font-mono">{c.referenceInvoice}</span> },
+              { key: 'amount', label: 'Amount', align: 'right' as const, render: (c: any) => <span className="text-xs font-bold text-rose-600">${fmt(c.amount)}</span> },
+              {
+                key: 'status', label: 'Status', align: 'center' as const,
+                render: (c: any) => {
+                  const tone: StatusTone = c.status === 'Applied' ? 'success' : c.status === 'Void' ? 'neutral' : 'warning';
+                  return <div className="flex justify-center"><Badge tone={tone}>{c.status}</Badge></div>;
+                },
+              },
+              {
+                key: 'actions', label: 'Actions', align: 'center' as const, sortable: false,
+                render: (c: any) => (
+                  <div className="flex justify-center gap-1">
+                    <button onClick={() => window.print()} className={button.ghost}><Eye size={14} /></button>
+                    <button onClick={() => window.print()} className={button.ghost}><Download size={14} /></button>
+                  </div>
+                ),
+              },
+            ] as Column<any>[]}
+            data={[
+              { id: 'cn-1', creditNoteNumber: 'CN-2024-001', vendor: 'ABC Suppliers Ltd.', date: '2024-01-15', referenceInvoice: 'INV-2024-001', amount: 500, status: 'Applied' },
+              { id: 'cn-2', creditNoteNumber: 'CN-2024-002', vendor: 'Highland Contractors', date: '2024-01-20', referenceInvoice: 'INV-2024-012', amount: 1200, status: 'Pending' },
+              { id: 'cn-3', creditNoteNumber: 'CN-2024-003', vendor: 'Ethio Telecom', date: '2024-01-25', referenceInvoice: 'INV-2024-045', amount: 300, status: 'Applied' },
+              { id: 'cn-4', creditNoteNumber: 'CN-2024-004', vendor: 'Addis Water Utility', date: '2024-01-28', referenceInvoice: 'INV-2024-067', amount: 150, status: 'Void' },
+              { id: 'cn-5', creditNoteNumber: 'CN-2024-005', vendor: 'ERCA Tax Office', date: '2024-02-01', referenceInvoice: 'INV-2024-089', amount: 800, status: 'Pending' },
+            ]}
+            rowKey={(c) => c.id}
+            sortable
+            filterable
+            filterPlaceholder="Search credit notes..."
+            filterKeys={['creditNoteNumber', 'vendor', 'referenceInvoice', 'status']}
+            emptyMessage="No credit notes found."
+            containerClassName="rounded-lg border-0"
+          />
+        </SectionCard>
+      )}
+        </>
       )}
 
       <ModalSystem
@@ -722,7 +1153,7 @@ const AccountsPayable = () => {
             <div className="p-6 border-t border-slate-100 dark:border-slate-700 flex justify-end gap-3 bg-slate-50/30 dark:bg-slate-700/20">
               <button 
                 onClick={() => setSelectedVendor(null)}
-                className="px-6 py-2.5 bg-blue-600 text-white rounded-lg text-[10px] font-black uppercase tracking-widest hover:bg-blue-700 transition-all"
+                className={button.primary}
               >
                 Close
               </button>
@@ -826,11 +1257,11 @@ const AccountsPayable = () => {
                   onChange={(e) => setNewVendorForm({ ...newVendorForm, category: e.target.value })}
                   className="w-full px-3 py-2 text-xs font-bold border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-700 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
                 >
-                  <option value="Operations">Operations</option>
-                  <option value="F&B">F&B</option>
+                  <option value="Suppliers">Suppliers</option>
+                  <option value="Contractors">Contractors</option>
                   <option value="Utilities">Utilities</option>
-                  <option value="Marketing">Marketing</option>
-                  <option value="Maintenance">Maintenance</option>
+                  <option value="Service Providers">Service Providers</option>
+                  <option value="Government Agencies">Government Agencies</option>
                   <option value="Other">Other</option>
                 </select>
               </div>
@@ -839,13 +1270,13 @@ const AccountsPayable = () => {
             <div className="p-6 border-t border-slate-100 dark:border-slate-700 flex justify-end gap-3 bg-slate-50/30 dark:bg-slate-700/20">
               <button
                 onClick={() => setShowNewVendor(false)}
-                className="px-6 py-2.5 border border-slate-200 dark:border-slate-700 rounded-lg text-[10px] font-black uppercase tracking-widest text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition-all hover:shadow-md"
+                className={button.secondary}
               >
                 Cancel
               </button>
               <button
                 onClick={handleCreateVendor}
-                className="px-6 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-[10px] font-black uppercase tracking-widest transition-all"
+                className={button.primary}
               >
                 Create Vendor
               </button>
@@ -957,13 +1388,13 @@ const AccountsPayable = () => {
             <div className="p-6 border-t border-slate-100 dark:border-slate-700 flex justify-end gap-3 bg-slate-50/30 dark:bg-slate-700/20">
               <button
                 onClick={() => setShowNewBill(false)}
-                className="px-6 py-2.5 border border-slate-200 dark:border-slate-700 rounded-lg text-[10px] font-black uppercase tracking-widest text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition-all hover:shadow-md"
+                className={button.secondary}
               >
                 Cancel
               </button>
               <button
                 onClick={handleCreateBill}
-                className="px-6 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-[10px] font-black uppercase tracking-widest transition-all"
+                className={button.primary}
               >
                 Create Bill
               </button>
@@ -1054,7 +1485,7 @@ const AccountsPayable = () => {
                 {(selectedBill.status === 'Pending' || selectedBill.status === 'Overdue' || selectedBill.status === 'Partially Paid') && (selectedBill.amountDue || 0) > 0 && (
                   <button
                     onClick={() => handlePayBill(selectedBill)}
-                    className="px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-[10px] font-black uppercase tracking-widest transition-all flex items-center gap-2"
+                    className={button.primary + ' flex items-center gap-2'}
                   >
                     <ShieldCheck size={14} /> Pay Bill
                   </button>
@@ -1063,13 +1494,13 @@ const AccountsPayable = () => {
               <div className="flex gap-3">
                 <button 
                   onClick={() => window.print()}
-                  className="px-6 py-2.5 border border-slate-200 dark:border-slate-700 rounded-lg text-[10px] font-black uppercase tracking-widest text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition-all hover:shadow-md flex items-center gap-2"
+                  className={button.secondary + ' flex items-center gap-2'}
                 >
                   <Download size={14} /> Print
                 </button>
                 <button 
                   onClick={() => setSelectedBill(null)}
-                  className="px-6 py-2.5 bg-blue-600 text-white rounded-lg text-[10px] font-black uppercase tracking-widest hover:bg-blue-700 transition-all"
+                  className={button.primary}
                 >
                   Close
                 </button>

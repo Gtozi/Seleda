@@ -2,273 +2,128 @@
  * @license
  * SPDX-License-Identifier: Apache-2.0
  *
- * Shared export & print helpers for the Front Desk Reports & Audit portal.
- * Provides real PDF (jsPDF), Excel (SheetJS / xlsx) and browser print output.
+ * reportExportUtils — shared report export/print helpers (PDF via jsPDF +
+ * autotable, Excel via xlsx, CSV via Blob, Print via a printable window).
  */
 
-import { jsPDF } from 'jspdf';
+import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import * as XLSX from 'xlsx';
 
 export interface ReportSection {
-  /** Section heading rendered above the table. */
   title: string;
-  /** Column headers for the table. */
   columns: string[];
-  /** Row data; each row is an array of cell values. */
-  rows: (string | number)[][];
+  rows: Record<string, any>[];
 }
 
 export interface ReportDocument {
-  /** Human readable report name, e.g. "Executive Summary". */
-  reportName: string;
-  /** Business / operating date string. */
-  businessDate: string;
-  /** Optional hotel or property label for the header. */
-  propertyName?: string;
-  /** One or more tabular sections to render. */
+  title: string;
+  generatedAt: string;
   sections: ReportSection[];
 }
 
-const HOTEL_LABEL = 'SELEDA Hotel ERP';
+const sanitize = (v: any): string =>
+  v == null ? '' : typeof v === 'object' ? JSON.stringify(v) : String(v);
 
-const slug = (name: string) =>
-  name
-    .trim()
-    .replace(/\s+/g, '_')
-    .replace(/[^a-zA-Z0-9_-]/g, '')
-    .toLowerCase();
+const sectionBody = (s: ReportSection) =>
+  s.rows.map(r => s.columns.map(c => sanitize(r[c])));
 
-/**
- * Generate and download a true PDF using jsPDF + autotable.
- */
-export function exportReportToPDF(doc: ReportDocument) {
-  const pdf = new jsPDF({ orientation: 'portrait', unit: 'pt', format: 'a4' });
-  const pageWidth = pdf.internal.pageSize.getWidth();
-
+export function exportReportToPDF(doc: ReportDocument, filename: string): void {
+  const pdf = new jsPDF({ orientation: 'landscape', unit: 'pt' });
+  const width = pdf.internal.pageSize.getWidth();
   pdf.setFontSize(16);
-  pdf.setFont('helvetica', 'bold');
-  pdf.text(doc.propertyName || HOTEL_LABEL, 40, 48);
-
-  pdf.setFontSize(12);
-  pdf.setFont('helvetica', 'normal');
-  pdf.text(doc.reportName, 40, 68);
-
+  pdf.text(doc.title, 40, 40);
   pdf.setFontSize(9);
   pdf.setTextColor(120);
-  pdf.text(`Business Date: ${doc.businessDate}`, 40, 84);
-  pdf.text(`Generated: ${new Date().toLocaleString()}`, pageWidth - 40, 84, { align: 'right' });
+  pdf.text(`Generated: ${doc.generatedAt}`, 40, 56);
   pdf.setTextColor(0);
-
-  let cursorY = 100;
-
-  doc.sections.forEach((section) => {
+  let y = 70;
+  doc.sections.forEach((s, i) => {
+    if (i > 0) y = ((pdf as any).lastAutoTable?.finalY ?? y) + 18;
     pdf.setFontSize(11);
-    pdf.setFont('helvetica', 'bold');
-    pdf.text(section.title, 40, cursorY);
-    cursorY += 8;
-
+    pdf.text(s.title, 40, y);
     autoTable(pdf, {
-      head: [section.columns],
-      body: section.rows.map((r) => r.map((c) => String(c))),
-      startY: cursorY,
+      head: [s.columns],
+      body: sectionBody(s),
+      startY: y + 8,
       margin: { left: 40, right: 40 },
-      styles: { fontSize: 8, cellPadding: 4 },
-      headStyles: { fillColor: [30, 41, 59], textColor: 255, fontStyle: 'bold' },
-      alternateRowStyles: { fillColor: [245, 247, 250] },
-      theme: 'grid',
+      styles: { fontSize: 8, cellPadding: 3 },
+      headStyles: { fillColor: [79, 70, 229] },
+      tableWidth: width - 80,
     });
-
-    // @ts-ignore - lastAutoTable is attached at runtime by the plugin
-    cursorY = (pdf as any).lastAutoTable.finalY + 24;
   });
-
-  pdf.save(`${slug(doc.reportName)}_${doc.businessDate}.pdf`);
+  pdf.save(filename.replace(/\.\w+$/, '') + '.pdf');
 }
 
-/**
- * Generate and download a real multi-sheet Excel workbook.
- */
-export function exportReportToExcel(doc: ReportDocument) {
+export function exportReportToExcel(doc: ReportDocument, filename: string): void {
   const wb = XLSX.utils.book_new();
-
-  doc.sections.forEach((section, idx) => {
-    const aoa = [section.columns, ...section.rows];
-    const ws = XLSX.utils.aoa_to_sheet(aoa);
-    // Sheet names max 31 chars, must be unique & free of special chars.
-    const sheetName = (section.title || `Sheet ${idx + 1}`)
-      .replace(/[\\/?*[\]:]/g, '')
-      .slice(0, 31) || `Sheet ${idx + 1}`;
-    XLSX.utils.book_append_sheet(wb, ws, sheetName);
+  const aoa: any[][] = [[doc.title], [`Generated: ${doc.generatedAt}`], []];
+  doc.sections.forEach(s => {
+    aoa.push([s.title], s.columns, ...sectionBody(s), []);
   });
-
-  XLSX.writeFile(wb, `${slug(doc.reportName)}_${doc.businessDate}.xlsx`);
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  const colCount = Math.max(...doc.sections.map(s => s.columns.length), 1);
+  ws['!cols'] = Array.from({ length: colCount }, (_, i) => {
+    const longest = Math.max(
+      12,
+      ...doc.sections.flatMap(s => [
+        (s.columns[i] ?? '').length,
+        ...s.rows.map(r => sanitize(r[s.columns[i]] ?? '').length),
+      ])
+    );
+    return { wch: Math.min(60, longest + 2) };
+  });
+  XLSX.utils.book_append_sheet(wb, ws, 'Report');
+  XLSX.writeFile(wb, filename.replace(/\.\w+$/, '') + '.xlsx');
 }
 
-/**
- * Open a clean print window and trigger the browser print dialog
- * (lets users print or Save-as-PDF) using inline print-scoped CSS.
- */
-export function printReport(doc: ReportDocument) {
-  if (typeof window === 'undefined') return;
-
-  const sectionsHtml = doc.sections
-    .map((section) => {
-      const headCells = section.columns.map((c) => `<th>${escapeHtml(c)}</th>`).join('');
-      const bodyRows = section.rows
-        .map(
-          (row) =>
-            `<tr>${row.map((cell) => `<td>${escapeHtml(String(cell))}</td>`).join('')}</tr>`
-        )
-        .join('');
-      return `
-        <section>
-          <h2>${escapeHtml(section.title)}</h2>
-          <table>
-            <thead><tr>${headCells}</tr></thead>
-            <tbody>${bodyRows}</tbody>
-          </table>
-        </section>`;
-    })
-    .join('');
-
-  const html = `<!doctype html>
-<html>
-<head>
-<meta charset="utf-8" />
-<title>${escapeHtml(doc.reportName)}</title>
-<style>
-  * { box-sizing: border-box; }
-  body { font-family: -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; color: #0f172a; margin: 32px; }
-  header { border-bottom: 2px solid #1e293b; padding-bottom: 12px; margin-bottom: 20px; }
-  header .brand { font-size: 18px; font-weight: 800; }
-  header .report { font-size: 14px; margin-top: 2px; }
-  header .meta { font-size: 11px; color: #64748b; margin-top: 6px; display: flex; justify-content: space-between; }
-  section { margin-bottom: 22px; }
-  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.04em; margin: 0 0 8px; }
-  table { width: 100%; border-collapse: collapse; font-size: 11px; }
-  th, td { border: 1px solid #cbd5e1; padding: 6px 8px; text-align: left; }
-  thead th { background: #1e293b; color: #fff; }
-  tbody tr:nth-child(even) { background: #f1f5f9; }
-  @media print {
-    body { margin: 12mm; }
-    section { page-break-inside: avoid; }
-  }
-</style>
-</head>
-<body>
-  <header>
-    <div class="brand">${escapeHtml(doc.propertyName || HOTEL_LABEL)}</div>
-    <div class="report">${escapeHtml(doc.reportName)}</div>
-    <div class="meta">
-      <span>Business Date: ${escapeHtml(doc.businessDate)}</span>
-      <span>Generated: ${escapeHtml(new Date().toLocaleString())}</span>
-    </div>
-  </header>
-  ${sectionsHtml}
-  <script>
-    window.onload = function () {
-      window.focus();
-      window.print();
-      window.onafterprint = function () { window.close(); };
-    };
-  </script>
-</body>
-</html>`;
-
-  const printWindow = window.open('', '_blank', 'width=900,height=700');
-  if (!printWindow) {
-    console.warn('Print window blocked by browser pop-up settings.');
-    return;
-  }
-  printWindow.document.open();
-  printWindow.document.write(html);
-  printWindow.document.close();
-}
-
-/**
- * Print a specific DOM element by its `id` in a clean popup window.
- * This ensures the Print button prints exactly the report content
- * it sits next to, not the whole page. Preserves all UI styling
- * by copying parent stylesheets and including Tailwind CDN.
- */
-export function printElementById(elementId: string, title?: string) {
-  if (typeof window === 'undefined') return;
-
-  const el = document.getElementById(elementId);
-  if (!el) {
-    console.warn(`printElementById: element #${elementId} not found`);
-    return;
-  }
-
-  // Clone the element and remove interactive / hidden UI
-  const clone = el.cloneNode(true) as HTMLElement;
-
-  // Strip buttons, inputs, and no-print elements from the clone
-  clone.querySelectorAll('button, input, select, textarea, .no-print, [data-no-print]').forEach((n) => {
-    (n as HTMLElement).remove();
-  });
-
-  // Collect all existing stylesheets and style blocks from the parent document
-  let parentStyles = '';
-  document.querySelectorAll('link[rel="stylesheet"]').forEach((link) => {
-    parentStyles += link.outerHTML;
-  });
-  document.querySelectorAll('style').forEach((style) => {
-    parentStyles += style.outerHTML;
-  });
-
-  const html = `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <title>${escapeHtml(title || 'Report Print')}</title>
-  <script src="https://cdn.tailwindcss.com"><\/script>
-  ${parentStyles}
-  <style>
-    @page { margin: 1.2cm; }
-    body { font-family: system-ui, -apple-system, sans-serif; color: #1e293b; background: #fff; padding: 0; margin: 0; }
-    /* Ensure dark-mode overrides don't apply in print */
-    [class*="dark:"] { }
-    /* Inline spacer utilities that may be missing */
-    .space-y-1 > * + * { margin-top: 0.25rem; }
-    .space-y-2 > * + * { margin-top: 0.5rem; }
-    .space-y-3 > * + * { margin-top: 0.75rem; }
-    .space-y-4 > * + * { margin-top: 1rem; }
-    .space-y-5 > * + * { margin-top: 1.25rem; }
-    .space-y-6 > * + * { margin-top: 1.5rem; }
-    @media print {
-      body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+export function exportReportToCSV(doc: ReportDocument, filename: string): void {
+  const lines: string[] = [];
+  lines.push(doc.title);
+  lines.push(`Generated: ${doc.generatedAt}`);
+  lines.push('');
+  for (const section of doc.sections) {
+    lines.push(section.title);
+    lines.push(section.columns.join(','));
+    for (const row of section.rows) {
+      lines.push(section.columns.map(c => `"${sanitize(row[c]).replace(/"/g, '""')}"`).join(','));
     }
-  </style>
-</head>
-<body>
-  ${clone.outerHTML}
-  <script>
-    window.onload = function () {
-      window.focus();
-      window.print();
-      window.onafterprint = function () { window.close(); };
-    };
-  <\/script>
-</body>
-</html>`;
-
-  const printWindow = window.open('', '_blank', 'width=1000,height=800');
-  if (!printWindow) {
-    console.warn('Print window blocked by browser pop-up settings.');
-    return;
+    lines.push('');
   }
-  printWindow.document.open();
-  printWindow.document.write(html);
-  printWindow.document.close();
+  const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
 }
 
-function escapeHtml(value: string) {
-  return value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
+/** Opens a printable window with the rendered report and triggers print. */
+export function printReport(doc: ReportDocument): void {
+  const win = window.open('', '_blank', 'width=900,height=700');
+  if (!win) return;
+  const sections = doc.sections.map(s => `
+    <h2>${s.title}</h2>
+    <table>
+      <thead><tr>${s.columns.map(c => `<th>${c}</th>`).join('')}</tr></thead>
+      <tbody>${s.rows.map(r => `<tr>${s.columns.map(c => `<td>${sanitize(r[c])}</td>`).join('')}</tr>`).join('')}</tbody>
+    </table>`).join('');
+  win.document.write(`<!doctype html><html><head><title>${doc.title}</title><style>
+    body { font-family: ui-sans-serif, system-ui, sans-serif; margin: 32px; color: #0f172a; }
+    h1 { font-size: 20px; margin-bottom: 4px; }
+    .gen { font-size: 12px; color: #64748b; margin-bottom: 24px; }
+    h2 { font-size: 14px; margin: 24px 0 8px; }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    th, td { border: 1px solid #cbd5e1; padding: 6px 8px; text-align: left; }
+    th { background: #eef2ff; }
+    @media print { body { margin: 0; } }
+  </style></head><body>
+    <h1>${doc.title}</h1>
+    <div class="gen">Generated: ${doc.generatedAt}</div>
+    ${sections}
+  </body></html>`);
+  win.document.close();
+  win.focus();
+  setTimeout(() => { win.print(); }, 300);
 }

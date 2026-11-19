@@ -1,242 +1,319 @@
-import React from 'react';
-import { 
-  ShieldAlert,
-  AlertTriangle,
-  ClipboardList,
-  Users,
-  Camera,
-  Key,
-  MapPin,
-  Flame,
-  Radio,
-  TrendingUp,
-  CheckCircle2,
-  Clock,
-  Activity,
-  Package,
-  FileText,
-  Bell,
-  Eye,
-  Lock,
-  UserCheck,
-  Building2
+/**
+ * Security Executive Dashboard — /erp/security/dashboard.
+ *
+ * DB-integrated via GET /api/sec-portal/dashboard/overview (migration 623):
+ * the server aggregates KPIs + chart series live from the sec_* tables and
+ * runs a Smart Alert Engine (mirroring hk_dashboard_alerts) that upserts
+ * alerts into sec_dashboard_alerts, auto-resolving cleared triggers.
+ * Acknowledge / Snooze actions persist back via POST /dashboard/alerts/:id.
+ *
+ * UI follows the HK/F&B portal pattern: PageHeader, StatCard KPIs,
+ * SectionCard chart containers, Badge, brandTheme, recharts visualizations,
+ * ERP notifications. Multi-property scoping via useERP().currentPropertyId.
+ */
+
+import React, { useCallback, useEffect, useState } from 'react';
+import {
+  ShieldAlert, AlertTriangle, ClipboardList, Users, Camera, Key,
+  MapPin, Flame, Bell, Eye, Lock, UserCheck, RefreshCw, Loader2,
+  ServerCrash, CheckCheck, TimerOff, Package, Activity,
+  type LucideIcon,
 } from 'lucide-react';
-import { 
-  BarChart, 
-  Bar, 
-  XAxis, 
-  YAxis, 
-  CartesianGrid, 
-  Tooltip, 
-  ResponsiveContainer, 
-  LineChart, 
-  Line,
-  Cell,
-  PieChart,
-  Pie
+import {
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
+  LineChart, Line, Cell, PieChart, Pie, Legend,
 } from 'recharts';
+import StatCard from '../FrontOffice/StatCard';
+import { PageHeader, SectionCard, Badge } from '../FrontOffice/ui';
+import { button, layout, type StatusTone } from '../FrontOffice/brandTheme';
+import { useERP } from '../../context/ERPContext';
+import {
+  fetchSecDashboardOverview,
+  acknowledgeSecAlert,
+  snoozeSecAlert,
+  type SecDashboardOverview,
+  type SecDashboardAlert,
+  type SecAlertPriority,
+} from '../../services/securityService';
+
+const PIE_COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#8b5cf6', '#14b8a6', '#ec4899'];
+
+const PRIORITY_TONE: Record<SecAlertPriority, StatusTone> = {
+  Critical: 'danger', High: 'warning', Medium: 'info', Low: 'neutral',
+};
+
+const PRIORITY_DOT: Record<SecAlertPriority, string> = {
+  Critical: 'bg-rose-500', High: 'bg-amber-500', Medium: 'bg-blue-500', Low: 'bg-slate-400',
+};
+
+const ALERT_ICON: Record<string, LucideIcon> = {
+  'Active Alarm': Bell,
+  'Critical Incident': AlertTriangle,
+  'Emergency Active': ShieldAlert,
+  'Fire Equipment Overdue': Flame,
+  'Fire Equipment Down': Flame,
+  'CCTV Offline': Camera,
+  'Risk Review Overdue': ClipboardList,
+  'Training Expired': UserCheck,
+  'Access Violation': Lock,
+  'Key Lost': Key,
+  'Blacklisted Visitor': Eye,
+  'Patrol Missed': MapPin,
+};
+
+function timeAgo(iso: string | null | undefined): string {
+  if (!iso) return '—';
+  const ms = Date.now() - new Date(iso).getTime();
+  if (ms < 60000) return 'just now';
+  if (ms < 3600000) return `${Math.floor(ms / 60000)}m ago`;
+  if (ms < 86400000) return `${Math.floor(ms / 3600000)}h ago`;
+  return `${Math.floor(ms / 86400000)}d ago`;
+}
+
+function riskTone(level: string): StatusTone {
+  if (level === 'Critical') return 'danger';
+  if (level === 'High') return 'warning';
+  if (level === 'Medium') return 'info';
+  if (level === 'Low') return 'success';
+  return 'neutral';
+}
 
 const SecurityDashboard: React.FC = () => {
-  const stats = [
-    { label: 'Active Incidents', value: 5, sub: '2 Emergency', color: 'bg-rose-500', icon: AlertTriangle },
-    { label: 'Open Investigations', value: 3, sub: '1 High Priority', color: 'bg-amber-500', icon: ClipboardList },
-    { label: 'Patrol Completion', value: '92%', sub: 'Today', color: 'bg-emerald-500', icon: MapPin },
-    { label: 'Security Alerts', value: 8, sub: '4 Critical', color: 'bg-rose-600', icon: Bell },
-    { label: 'Access Violations', value: 2, sub: 'Last 24h', color: 'bg-amber-600', icon: Lock },
-    { label: 'Visitor Count', value: 24, sub: 'On Property', color: 'bg-blue-500', icon: Users },
-    { label: 'Lost & Found Cases', value: 7, sub: '3 Pending', color: 'bg-indigo-500', icon: Package },
-    { label: 'Fire Safety Status', value: 'Normal', sub: 'All Systems OK', color: 'bg-emerald-600', icon: Flame },
-    { label: 'CCTV Status', value: '98%', sub: 'Online', color: 'bg-blue-600', icon: Camera },
-    { label: 'Risk Level', value: 'Medium', sub: 'Property Wide', color: 'bg-amber-500', icon: ShieldAlert },
-    { label: 'Staff on Duty', value: 12, sub: 'Security Officers', color: 'bg-indigo-600', icon: UserCheck },
-    { label: 'Keycards Active', value: 156, sub: 'Total Issued', color: 'bg-purple-500', icon: Key },
-  ];
+  const { currentPropertyId, addNotification } = useERP();
+  const [data, setData] = useState<SecDashboardOverview | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [actingOn, setActingOn] = useState<string | null>(null);
 
-  const incidentCategoryData = [
-    { name: 'Theft', value: 2, color: '#ef4444' },
-    { name: 'Medical Emergency', value: 1, color: '#f97316' },
-    { name: 'Property Damage', value: 1, color: '#eab308' },
-    { name: 'Security Breach', value: 1, color: '#22c55e' },
-    { name: 'Guest Complaint', value: 3, color: '#3b82f6' },
-    { name: 'Lost Property', value: 2, color: '#8b5cf6' },
-  ];
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      setData(await fetchSecDashboardOverview(currentPropertyId));
+    } catch (e: any) {
+      setError(e?.message || 'Failed to load security dashboard');
+    } finally {
+      setLoading(false);
+    }
+  }, [currentPropertyId]);
 
-  const alerts = [
-    { type: 'Unauthorized Access', message: 'Rear entrance - Unknown person detected', time: '10:45 AM', icon: Lock, color: 'bg-rose-500' },
-    { type: 'Fire Alarm', message: 'Kitchen area - Smoke detector activation', time: '09:30 AM', icon: Flame, color: 'bg-rose-600' },
-    { type: 'Panic Alarm', message: 'Room 204 - Guest emergency button pressed', time: '08:15 AM', icon: Radio, color: 'bg-rose-500' },
-    { type: 'Emergency Evacuation', message: 'Drill scheduled for 2:00 PM', time: '07:00 AM', icon: Activity, color: 'bg-amber-500' },
-    { type: 'Suspicious Activity', message: 'Parking lot - Vehicle loitering', time: '06:30 AM', icon: Eye, color: 'bg-amber-600' },
-    { type: 'Missing Master Key', message: 'Housekeeping master key not returned', time: 'Yesterday', icon: Key, color: 'bg-rose-500' },
-    { type: 'Critical Risk Escalation', message: 'Fire safety equipment inspection overdue', time: 'Yesterday', icon: ShieldAlert, color: 'bg-amber-500' },
-    { type: 'CCTV Offline', message: 'Camera 12 - Lobby entrance', time: '2 days ago', icon: Camera, color: 'bg-amber-600' },
-    { type: 'Patrol Missed', message: 'Night shift - Floor 5 checkpoint not verified', time: '2 days ago', icon: MapPin, color: 'bg-rose-600' },
-  ];
+  useEffect(() => { load(); }, [load]);
 
-  const patrolActivityData = [
-    { name: 'John D.', patrols: 8, completion: 100 },
-    { name: 'Elena R.', patrols: 7, completion: 100 },
-    { name: 'Carlos M.', patrols: 6, completion: 85 },
-    { name: 'Sarah L.', patrols: 8, completion: 100 },
-    { name: 'Mike T.', patrols: 5, completion: 75 },
-  ];
+  const acknowledge = async (a: SecDashboardAlert) => {
+    setActingOn(a.id);
+    try {
+      const updated = await acknowledgeSecAlert(a.id);
+      setData(prev => prev ? { ...prev, alerts: prev.alerts.map(x => (x.id === a.id ? updated : x)) } : prev);
+      addNotification(`Alert acknowledged: ${a.type}`, 'task', 'Security');
+    } catch (e: any) {
+      addNotification(e?.message || 'Acknowledge failed', 'warning', 'Security');
+    } finally {
+      setActingOn(null);
+    }
+  };
 
-  const riskByPropertyData = [
-    { property: 'Main Building', risk: 75 },
-    { property: 'Annex A', risk: 45 },
-    { property: 'Parking', risk: 60 },
-    { property: 'Garden Area', risk: 30 },
-    { property: 'Pool Area', risk: 50 },
-  ];
+  const snooze = async (a: SecDashboardAlert) => {
+    setActingOn(a.id);
+    try {
+      const updated = await snoozeSecAlert(a.id, 4);
+      setData(prev => prev ? { ...prev, alerts: prev.alerts.map(x => (x.id === a.id ? updated : x)) } : prev);
+      addNotification(`Alert snoozed for 4h: ${a.type}`, 'task', 'Security');
+    } catch (e: any) {
+      addNotification(e?.message || 'Snooze failed', 'warning', 'Security');
+    } finally {
+      setActingOn(null);
+    }
+  };
 
-  const incidentTrendData = [
-    { date: 'Mon', incidents: 3, resolved: 2 },
-    { date: 'Tue', incidents: 5, resolved: 4 },
-    { date: 'Wed', incidents: 2, resolved: 3 },
-    { date: 'Thu', incidents: 4, resolved: 3 },
-    { date: 'Fri', incidents: 6, resolved: 5 },
-    { date: 'Sat', incidents: 7, resolved: 6 },
-    { date: 'Sun', incidents: 4, resolved: 4 },
-  ];
+  const k = data?.kpis;
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold text-slate-900 dark:text-white">Security Executive Dashboard</h1>
-          <p className="text-slate-600 dark:text-slate-400 mt-1">Real-time security operations overview</p>
-        </div>
-        <div className="flex gap-2">
-          <button className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition">
-            Generate Report
+    <div className={layout.sectionStack}>
+      <PageHeader
+        title="Security Executive Dashboard"
+        subtitle="Real-time security operations overview"
+        icon={ShieldAlert}
+        actions={
+          <button onClick={load} disabled={loading} className={button.secondary + ' disabled:opacity-50'}>
+            {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+            Refresh
           </button>
-          <button className="px-4 py-2 bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-lg hover:bg-slate-300 dark:hover:bg-slate-600 transition">
-            Export Data
-          </button>
-        </div>
-      </div>
+        }
+      />
 
-      {/* KPI Stats */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-        {stats.map((stat, index) => {
-          const Icon = stat.icon;
-          return (
-            <div key={index} className="bg-white dark:bg-slate-800 rounded-xl p-6 shadow-sm border border-slate-200 dark:border-slate-700">
-              <div className="flex items-center justify-between">
-                <div className="flex-1">
-                  <p className="text-sm font-medium text-slate-600 dark:text-slate-400">{stat.label}</p>
-                  <p className="text-2xl font-bold text-slate-900 dark:text-white mt-1">{stat.value}</p>
-                  <p className="text-xs text-slate-500 dark:text-slate-500 mt-1">{stat.sub}</p>
-                </div>
-                <div className={`p-3 rounded-lg ${stat.color}`}>
-                  <Icon className="w-6 h-6 text-white" />
-                </div>
+      {error && (
+        <div className="px-4 py-3 rounded-xl bg-red-50 dark:bg-red-900/20 text-sm text-red-700 dark:text-red-300 border border-red-200 dark:border-red-800 flex items-center gap-2">
+          <ServerCrash className="w-4 h-4 shrink-0" /> {error}
+          <button onClick={load} className={button.ghost + ' ml-auto'}>Retry</button>
+        </div>
+      )}
+
+      {loading && !data ? (
+        <div className="py-16 flex items-center justify-center gap-2 text-sm text-slate-500">
+          <Loader2 className="w-5 h-5 animate-spin" /> Loading security overview…
+        </div>
+      ) : k ? (
+        <>
+          {/* KPI Stats */}
+          <div className={layout.kpiGrid}>
+            <StatCard title="Active Incidents" value={k.activeIncidents} icon={AlertTriangle} tone={k.activeIncidents > 0 ? 'danger' : 'success'} caption={`${k.criticalIncidents} critical / high`} />
+            <StatCard title="Open Investigations" value={k.openInvestigations} icon={ClipboardList} tone={k.highPriorityInvestigations > 0 ? 'warning' : 'neutral'} caption={`${k.highPriorityInvestigations} high priority`} />
+            <StatCard title="Patrol Completion" value={`${k.patrolCompletion}%`} icon={MapPin} tone={k.patrolCompletion >= 90 ? 'success' : k.patrolCompletion >= 70 ? 'warning' : 'danger'} caption={`${k.patrolsToday} scheduled today`} />
+            <StatCard title="Security Alerts" value={k.activeAlarms} icon={Bell} tone={k.activeAlarms > 0 ? 'danger' : 'success'} caption={`${k.unacknowledgedAlarms} unacknowledged`} />
+            <StatCard title="Access Violations" value={k.accessViolations} icon={Lock} tone={k.accessViolations > 0 ? 'warning' : 'success'} caption="Last 24h" />
+            <StatCard title="Visitors On Property" value={k.visitorsOnProperty} icon={Users} tone="info" caption="Checked in now" />
+            <StatCard title="Lost & Found Open" value={k.lostFoundOpen} icon={Package} tone="accent" caption={`${k.lostFoundPendingClaims} claim(s) pending`} />
+            <StatCard title="Fire Safety" value={k.fireIssues === 0 && k.fireOverdue === 0 ? 'Normal' : `${k.fireIssues + k.fireOverdue} issue(s)`} icon={Flame} tone={k.fireIssues + k.fireOverdue === 0 ? 'success' : 'danger'} caption={k.fireOverdue > 0 ? `${k.fireOverdue} inspection(s) overdue` : 'All systems OK'} />
+            <StatCard title="CCTV Online" value={`${k.cctvOnlinePct}%`} icon={Camera} tone={k.cctvOnlinePct >= 95 ? 'success' : 'warning'} caption={`${k.cctvTotal} cameras`} />
+            <StatCard title="Top Risk Level" value={k.topRiskLevel} icon={ShieldAlert} tone={riskTone(k.topRiskLevel)} caption={`${k.highCriticalRisks} high/critical open`} />
+            <StatCard title="Staff on Duty" value={k.staffOnDuty} icon={UserCheck} tone="accent" caption={`of ${k.staffTotal} rostered`} />
+            <StatCard title="Keys / Cards Issued" value={k.keysIssued} icon={Key} tone="info" caption="Currently issued" />
+          </div>
+
+          {/* Charts Row */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <SectionCard title="Incidents by Category" icon={AlertTriangle} tone="accent" pad="md">
+              {data!.incidentCategories.length === 0 ? (
+                <div className="py-10 text-center text-sm text-slate-400">No incidents on record.</div>
+              ) : (
+                <ResponsiveContainer width="100%" height={300}>
+                  <PieChart>
+                    <Pie
+                      data={data!.incidentCategories}
+                      cx="50%"
+                      cy="50%"
+                      labelLine={false}
+                      label={({ name, percent }: any) => `${name} ${(percent * 100).toFixed(0)}%`}
+                      outerRadius={80}
+                      dataKey="value"
+                    >
+                      {data!.incidentCategories.map((_, index) => (
+                        <Cell key={`cell-${index}`} fill={PIE_COLORS[index % PIE_COLORS.length]} />
+                      ))}
+                    </Pie>
+                    <Tooltip />
+                  </PieChart>
+                </ResponsiveContainer>
+              )}
+            </SectionCard>
+
+            <SectionCard title="Incident Trend (7 Days)" icon={Activity} tone="accent" pad="md">
+              <ResponsiveContainer width="100%" height={300}>
+                <LineChart data={data!.incidentTrend}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="label" />
+                  <YAxis allowDecimals={false} />
+                  <Tooltip />
+                  <Legend />
+                  <Line type="monotone" dataKey="incidents" stroke="#ef4444" strokeWidth={2} name="Reported" />
+                  <Line type="monotone" dataKey="resolved" stroke="#22c55e" strokeWidth={2} name="Resolved" />
+                </LineChart>
+              </ResponsiveContainer>
+            </SectionCard>
+          </div>
+
+          {/* Risk by Category & Patrol Activity */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <SectionCard title="Avg Risk Score by Category" subtitle="Open risks · score = likelihood × impact" icon={ShieldAlert} tone="accent" pad="md">
+              {data!.riskByCategory.length === 0 ? (
+                <div className="py-10 text-center text-sm text-slate-400">No open risks.</div>
+              ) : (
+                <ResponsiveContainer width="100%" height={300}>
+                  <BarChart data={data!.riskByCategory}>
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis dataKey="name" tick={{ fontSize: 11 }} />
+                    <YAxis domain={[0, 25]} />
+                    <Tooltip />
+                    <Bar dataKey="risk" fill="#f59e0b" name="Avg Score" />
+                  </BarChart>
+                </ResponsiveContainer>
+              )}
+            </SectionCard>
+
+            <SectionCard title="Patrol Activity" subtitle="Completed patrols per officer · last 7 days" icon={MapPin} tone="accent" pad="md">
+              {data!.patrolActivity.length === 0 ? (
+                <div className="py-10 text-center text-sm text-slate-400">No patrols recorded this week.</div>
+              ) : (
+                <ResponsiveContainer width="100%" height={300}>
+                  <BarChart data={data!.patrolActivity}>
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis dataKey="name" tick={{ fontSize: 11 }} />
+                    <YAxis yAxisId="left" allowDecimals={false} />
+                    <YAxis yAxisId="right" orientation="right" domain={[0, 100]} unit="%" />
+                    <Tooltip />
+                    <Legend />
+                    <Bar yAxisId="left" dataKey="patrols" fill="#3b82f6" name="Patrols Completed" />
+                    <Bar yAxisId="right" dataKey="completion" fill="#22c55e" name="Completion %" />
+                  </BarChart>
+                </ResponsiveContainer>
+              )}
+            </SectionCard>
+          </div>
+
+          {/* Smart Alert Feed */}
+          <SectionCard
+            title="Smart Security Alerts"
+            subtitle={`${data!.alerts.length} active — generated live from operations data`}
+            icon={Bell}
+            tone="accent"
+            pad="none"
+          >
+            {data!.alerts.length === 0 ? (
+              <div className="px-6 py-10 text-center text-sm text-slate-400 flex items-center justify-center gap-2">
+                <CheckCheck size={16} className="text-emerald-500" /> All clear — no active alerts.
               </div>
-            </div>
-          );
-        })}
-      </div>
-
-      {/* Charts Row */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Incident Categories */}
-        <div className="bg-white dark:bg-slate-800 rounded-xl p-6 shadow-sm border border-slate-200 dark:border-slate-700">
-          <h3 className="text-lg font-semibold text-slate-900 dark:text-white mb-4">Incidents by Category</h3>
-          <ResponsiveContainer width="100%" height={300}>
-            <PieChart>
-              <Pie
-                data={incidentCategoryData}
-                cx="50%"
-                cy="50%"
-                labelLine={false}
-                label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
-                outerRadius={80}
-                fill="#8884d8"
-                dataKey="value"
-              >
-                {incidentCategoryData.map((entry, index) => (
-                  <Cell key={`cell-${index}`} fill={entry.color} />
-                ))}
-              </Pie>
-              <Tooltip />
-            </PieChart>
-          </ResponsiveContainer>
-        </div>
-
-        {/* Incident Trend */}
-        <div className="bg-white dark:bg-slate-800 rounded-xl p-6 shadow-sm border border-slate-200 dark:border-slate-700">
-          <h3 className="text-lg font-semibold text-slate-900 dark:text-white mb-4">Incident Trend (7 Days)</h3>
-          <ResponsiveContainer width="100%" height={300}>
-            <LineChart data={incidentTrendData}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="date" />
-              <YAxis />
-              <Tooltip />
-              <Line type="monotone" dataKey="incidents" stroke="#ef4444" strokeWidth={2} name="New Incidents" />
-              <Line type="monotone" dataKey="resolved" stroke="#22c55e" strokeWidth={2} name="Resolved" />
-            </LineChart>
-          </ResponsiveContainer>
-        </div>
-      </div>
-
-      {/* Risk by Property & Patrol Activity */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Risk by Property */}
-        <div className="bg-white dark:bg-slate-800 rounded-xl p-6 shadow-sm border border-slate-200 dark:border-slate-700">
-          <h3 className="text-lg font-semibold text-slate-900 dark:text-white mb-4">Risk Level by Property</h3>
-          <ResponsiveContainer width="100%" height={300}>
-            <BarChart data={riskByPropertyData}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="property" />
-              <YAxis />
-              <Tooltip />
-              <Bar dataKey="risk" fill="#f59e0b" />
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
-
-        {/* Patrol Activity */}
-        <div className="bg-white dark:bg-slate-800 rounded-xl p-6 shadow-sm border border-slate-200 dark:border-slate-700">
-          <h3 className="text-lg font-semibold text-slate-900 dark:text-white mb-4">Patrol Activity</h3>
-          <ResponsiveContainer width="100%" height={300}>
-            <BarChart data={patrolActivityData}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="name" />
-              <YAxis />
-              <Tooltip />
-              <Bar dataKey="patrols" fill="#3b82f6" name="Patrols Completed" />
-              <Bar dataKey="completion" fill="#22c55e" name="Completion %" />
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
-      </div>
-
-      {/* Alerts Section */}
-      <div className="bg-white dark:bg-slate-800 rounded-xl p-6 shadow-sm border border-slate-200 dark:border-slate-700">
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="text-lg font-semibold text-slate-900 dark:text-white">Security Alerts</h3>
-          <button className="text-indigo-600 hover:text-indigo-700 text-sm font-medium">View All Alerts</button>
-        </div>
-        <div className="space-y-3">
-          {alerts.map((alert, index) => {
-            const Icon = alert.icon;
-            return (
-              <div key={index} className="flex items-start gap-3 p-3 bg-slate-50 dark:bg-slate-700/50 rounded-lg">
-                <div className={`p-2 rounded-lg ${alert.color} mt-0.5`}>
-                  <Icon className="w-4 h-4 text-white" />
-                </div>
-                <div className="flex-1">
-                  <div className="flex items-center justify-between">
-                    <p className="font-medium text-slate-900 dark:text-white">{alert.type}</p>
-                    <p className="text-xs text-slate-500 dark:text-slate-400">{alert.time}</p>
-                  </div>
-                  <p className="text-sm text-slate-600 dark:text-slate-400 mt-1">{alert.message}</p>
-                </div>
+            ) : (
+              <div className="divide-y divide-gray-100 dark:divide-slate-800">
+                {data!.alerts.map(a => {
+                  const Icon = ALERT_ICON[a.type] || Bell;
+                  return (
+                    <div key={a.id} className={`flex items-start gap-3 px-6 py-3.5 ${a.status === 'Snoozed' ? 'opacity-60' : ''}`}>
+                      <div className={`p-2 rounded-lg ${PRIORITY_DOT[a.priority]} mt-0.5 shrink-0`}>
+                        <Icon className="w-4 h-4 text-white" />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <p className="font-bold text-sm text-slate-900 dark:text-white">{a.type}</p>
+                          <Badge tone={PRIORITY_TONE[a.priority]}>{a.priority}</Badge>
+                          {a.status !== 'Active' && <Badge tone="neutral">{a.status}</Badge>}
+                          {a.ref_id && <span className="text-[10px] font-mono text-slate-400">{a.ref_id}</span>}
+                        </div>
+                        <p className="text-sm text-slate-600 dark:text-slate-400 mt-0.5">{a.message}</p>
+                        <p className="text-[10px] text-slate-400 mt-1">
+                          {timeAgo(a.created_at)}{a.location ? ` · ${a.location}` : ''}
+                          {a.status === 'Snoozed' && a.snoozed_until ? ` · snoozed until ${new Date(a.snoozed_until).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : ''}
+                        </p>
+                      </div>
+                      <div className="flex gap-1.5 shrink-0">
+                        {a.status === 'Active' && (
+                          <button
+                            onClick={() => acknowledge(a)}
+                            disabled={actingOn === a.id}
+                            className="p-1.5 text-slate-400 hover:text-emerald-500 rounded-lg transition disabled:opacity-50"
+                            title="Acknowledge"
+                          >
+                            {actingOn === a.id ? <Loader2 size={14} className="animate-spin" /> : <CheckCheck size={14} />}
+                          </button>
+                        )}
+                        {a.status === 'Active' && (
+                          <button
+                            onClick={() => snooze(a)}
+                            disabled={actingOn === a.id}
+                            className="p-1.5 text-slate-400 hover:text-amber-500 rounded-lg transition disabled:opacity-50"
+                            title="Snooze 4h"
+                          >
+                            <TimerOff size={14} />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
-            );
-          })}
-        </div>
-      </div>
+            )}
+          </SectionCard>
+        </>
+      ) : null}
     </div>
   );
 };

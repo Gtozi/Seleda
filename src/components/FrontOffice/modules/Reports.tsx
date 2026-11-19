@@ -1,10 +1,19 @@
 /**
  * Front Office Reports Module
- * Simplified version to debug import issues
+ * ──────────────────────────────────────────────────────────────────────────
+ * Redesigned to mirror the F&B Reports template (/erp/fb/reports):
+ *  - Shared UI primitives (PageHeader, SectionCard, Badge, button, layout)
+ *  - ModalSystem for the report view modal
+ *  - useERP context for notifications + currency formatting
+ *  - Period toggle (Today / WTD / MTD / YTD / Custom) with concrete date range
+ *  - Live KPI StatCards (occupancy, arrivals, departures, in-house) per period
+ *  - Reports grouped by category in SectionCards with tables
+ *  - Search + PDF / Excel / CSV export via reportExportUtils
+ *
+ * Data layer is unchanged — every report still queries Supabase directly.
  */
 
-import { useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   FileBarChart,
   Calendar,
@@ -14,17 +23,33 @@ import {
   TrendingUp,
   Download,
   Printer,
-  Filter,
   RefreshCw,
   Clock,
   Activity,
   FileText,
-  X
+  Search,
+  Loader2,
+  AlertTriangle,
+  Eye,
+  Percent,
 } from 'lucide-react';
 import { supabase } from '../../../lib/supabase';
 import StatCard from '../StatCard';
+import { PageHeader, SectionCard, Badge } from '../ui';
+import { button, layout } from '../brandTheme';
+import { ModalSystem } from '../../Shared/ModalSystem';
+import { useERP } from '../../../context/ERPContext';
+import {
+  exportReportToPDF,
+  exportReportToExcel,
+  exportReportToCSV,
+  type ReportDocument,
+  type ReportSection,
+} from '../../FrontDesk/reportExportUtils';
 
 type ReportCategory = 'daily' | 'reservation' | 'financial' | 'operational';
+type ReportFormat = 'PDF' | 'Excel' | 'CSV';
+type Period = 'Today' | 'WTD' | 'MTD' | 'YTD' | 'Custom';
 
 interface Report {
   id: string;
@@ -34,12 +59,131 @@ interface Report {
   icon: any;
 }
 
-// Renders a cell value as readable text. Nested objects (e.g. {date, amount, description})
-// are flattened to "key: value" pairs joined by newlines instead of raw JSON.
+const ALL_FORMATS: ReportFormat[] = ['PDF', 'Excel', 'CSV'];
+const PERIODS: Period[] = ['Today', 'WTD', 'MTD', 'YTD', 'Custom'];
+
+const FORMAT_TONE: Record<ReportFormat, 'danger' | 'success' | 'info'> = {
+  PDF: 'danger',
+  Excel: 'success',
+  CSV: 'info',
+};
+
+// ── Concrete date-range resolution ────────────────────────────────────
+function toISODate(d: Date): string {
+  return d.toISOString().split('T')[0];
+}
+function startOfWeek(d: Date): Date {
+  const day = d.getDay(); // 0 = Sunday
+  const diff = (day === 0 ? -6 : 1) - day; // shift back to Monday
+  const monday = new Date(d);
+  monday.setDate(d.getDate() + diff);
+  return monday;
+}
+function periodDateRange(p: Period, customFrom: string, customTo: string): { from: string; to: string } {
+  const now = new Date();
+  const today = toISODate(now);
+  switch (p) {
+    case 'Today':
+      return { from: today, to: today };
+    case 'WTD':
+      return { from: toISODate(startOfWeek(now)), to: today };
+    case 'MTD':
+      return { from: toISODate(new Date(now.getFullYear(), now.getMonth(), 1)), to: today };
+    case 'YTD':
+      return { from: toISODate(new Date(now.getFullYear(), 0, 1)), to: today };
+    case 'Custom':
+    default:
+      return { from: customFrom, to: customTo };
+  }
+}
+function defaultCustomRange(): { from: string; to: string } {
+  const now = new Date();
+  const today = toISODate(now);
+  return { from: toISODate(new Date(now.getFullYear(), now.getMonth(), 1)), to: today };
+}
+function periodLabel(p: Period, from: string, to: string): string {
+  const range = periodDateRange(p, from, to);
+  return p === 'Custom' ? `${range.from} → ${range.to}` : `${p} (${range.from} → ${range.to})`;
+}
+
+// Columns that are noisy JSONB blobs, arrays, or internal system fields.
+// These are excluded from report tables because they show as raw JSON and
+// clutter the display with non-business data. Reports should show meaningful
+// scalar columns only (guest name, dates, amounts, statuses, room numbers, etc.)
+const EXCLUDED_COLUMNS = new Set([
+  // JSONB columns (raw JSON blobs)
+  'charges', 'payments', 'room_nights', 'split_rules', 'preferences',
+  'billing_address', 'room_type_breakdown', 'identification_doc', 'exceptions',
+  // Array columns
+  'package_ids', 'additional_guest_ids', 'guest_service_ids',
+  // Internal system / audit fields
+  'idempotency_key', 'ledger_migrated', 'property_id', 'series_id',
+  'routing_profile_id', 'rate_plan_id', 'group_profile_id', 'room_type_id',
+  'tour_operator_id', 'created_by', 'voided_by', 'gl_batch_id',
+  'source_reference', 'source_module', 'posted_to_gl',
+  // VAT / billing config (not useful in operational reports)
+  'custom_hotel_name', 'custom_hotel_address', 'hotel_tin', 'hotel_vat_no',
+  'hotel_vat_date', 'guest_tin', 'guest_vat_no', 'guest_vat_date',
+]);
+
+// Recursively flattens a row with nested relationship objects into a
+// single-level object with dotted keys. For example:
+//   { id: 'x', folios: { id: 'y', reservations: { guest_name: 'John' } } }
+// becomes:
+//   { id: 'x', 'folios.id': 'y', 'folios.reservations.guest_name': 'John' }
+// Arrays of objects (e.g. multiple reservations) are joined with '; '.
+// Noisy columns in EXCLUDED_COLUMNS are stripped.
+const flattenRow = (row: any, prefix = ''): Record<string, any> => {
+  const result: Record<string, any> = {};
+  if (!row || typeof row !== 'object') return result;
+  for (const [key, value] of Object.entries(row)) {
+    const fullKey = prefix ? `${prefix}.${key}` : key;
+    const leafName = key;
+    // Skip noisy JSONB / array / internal columns
+    if (EXCLUDED_COLUMNS.has(leafName)) continue;
+    if (value === null || value === undefined) {
+      result[fullKey] = '-';
+    } else if (Array.isArray(value)) {
+      // Arrays of related objects → join each item's flattened values
+      if (value.length > 0 && typeof value[0] === 'object') {
+        result[fullKey] = value
+          .map((item) =>
+            Object.entries(flattenRow(item))
+              .map(([k, v]) => `${k.split('.').pop()}: ${v}`)
+              .join(', ')
+          )
+          .join('; ');
+      } else {
+        result[fullKey] = value.join(', ');
+      }
+    } else if (typeof value === 'object') {
+      // Nested object → recurse
+      Object.assign(result, flattenRow(value, fullKey));
+    } else {
+      result[fullKey] = value;
+    }
+  }
+  return result;
+};
+
+// Prettify a flattened key for display: 'folios.reservations.guest_name' → 'Guest Name'
+const prettifyKey = (key: string): string => {
+  // Take the last segment after the final dot
+  const lastSegment = key.split('.').pop() || key;
+  return lastSegment
+    .replace(/_/g, ' ')
+    .replace(/([A-Z])/g, ' $1')
+    .trim()
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+};
+
+// Renders a cell value as readable text. Scalars render directly; nested
+// objects are flattened via flattenRow before reaching here.
 const formatCellValue = (value: any): string => {
   if (value === null || value === undefined) return '-';
   if (typeof value === 'number') return value.toLocaleString();
   if (typeof value === 'boolean') return value ? 'Yes' : 'No';
+  if (typeof value === 'string') return value;
   if (typeof value === 'object') {
     return Object.entries(value)
       .map(([k, v]) => `${k}: ${v === null || v === undefined ? '-' : typeof v === 'object' ? JSON.stringify(v) : String(v)}`)
@@ -48,108 +192,317 @@ const formatCellValue = (value: any): string => {
   return String(value);
 };
 
+// Renders a summary metric value as a React node. Scalars (number/string/boolean)
+// render directly; nested objects (e.g. byMethod: {Cash: {count, total}}) render
+// as a compact key/value list so they never get passed to React as a raw object
+// (which would throw "Objects are not valid as a React child").
+const renderSummaryValue = (value: any): React.ReactNode => {
+  if (value === null || value === undefined) return '-';
+  if (typeof value === 'number') return value.toLocaleString();
+  if (typeof value === 'boolean') return value ? 'Yes' : 'No';
+  if (typeof value === 'string') return value;
+  if (typeof value === 'object') {
+    const entries = Object.entries(value);
+    if (entries.length === 0) return '-';
+    return (
+      <dl className="mt-1 space-y-0.5">
+        {entries.map(([k, v]) => (
+          <div key={k} className="flex items-baseline gap-1.5 text-xs">
+            <dt className="font-medium text-gray-600 dark:text-gray-300">{k}</dt>
+            <dd className="text-gray-500 dark:text-gray-400 tabular-nums">
+              {typeof v === 'object' && v !== null
+                ? Object.entries(v)
+                    .map(([kk, vv]) => `${kk}: ${typeof vv === 'number' ? (vv as number).toLocaleString() : String(vv)}`)
+                    .join(', ')
+                : typeof v === 'number'
+                ? v.toLocaleString()
+                : String(v)}
+            </dd>
+          </div>
+        ))}
+      </dl>
+    );
+  }
+  return String(value);
+};
+
+const CATEGORY_ORDER: ReportCategory[] = ['daily', 'reservation', 'financial', 'operational'];
+
+const CATEGORY_LABELS: Record<ReportCategory, string> = {
+  daily: 'Daily Reports',
+  reservation: 'Reservation Reports',
+  financial: 'Financial Reports',
+  operational: 'Operational Reports',
+};
+
+const CATEGORY_ICONS: Record<ReportCategory, any> = {
+  daily: Calendar,
+  reservation: FileText,
+  financial: DollarSign,
+  operational: Activity,
+};
+
+const REPORTS: Report[] = [
+  // Daily Reports
+  { id: 'RPT-001', name: 'Arrival Report', category: 'daily', description: 'Expected arrivals for the period', icon: Users },
+  { id: 'RPT-002', name: 'Departure Report', category: 'daily', description: 'Expected & actual departures', icon: Users },
+  { id: 'RPT-003', name: 'In-House Guests', category: 'daily', description: 'Current in-house guest list', icon: BedDouble },
+  { id: 'RPT-004', name: 'VIP Guests', category: 'daily', description: 'VIP guest summary', icon: Users },
+  { id: 'RPT-005', name: 'House Status', category: 'daily', description: 'Room housekeeping status', icon: BedDouble },
+  { id: 'RPT-006', name: 'Occupancy Report', category: 'daily', description: 'Occupancy statistics for the period', icon: TrendingUp },
+  { id: 'RPT-007', name: 'Room Rack Report', category: 'daily', description: 'Room rack overview', icon: BedDouble },
+
+  // Reservation Reports
+  { id: 'RPT-008', name: 'Pickup Report', category: 'reservation', description: 'Reservation pickup analysis', icon: TrendingUp },
+  { id: 'RPT-009', name: 'Cancellation Report', category: 'reservation', description: 'Cancellation statistics', icon: Users },
+  { id: 'RPT-010', name: 'No Show Report', category: 'reservation', description: 'No-show analysis', icon: Users },
+  { id: 'RPT-011', name: 'Forecast Report', category: 'reservation', description: 'Future occupancy forecast', icon: Calendar },
+  { id: 'RPT-012', name: 'Group Report', category: 'reservation', description: 'Group booking summary', icon: Users },
+
+  // Financial Reports
+  { id: 'RPT-013', name: 'Guest Ledger', category: 'financial', description: 'Guest account balances', icon: DollarSign },
+  { id: 'RPT-014', name: 'Deposit Ledger', category: 'financial', description: 'Deposit transactions', icon: DollarSign },
+  { id: 'RPT-015', name: 'Cashier Summary', category: 'financial', description: 'Cashier shift summary', icon: DollarSign },
+  { id: 'RPT-016', name: 'Shift Report', category: 'financial', description: 'Shift financial summary', icon: Clock },
+  { id: 'RPT-017', name: 'Folio Report', category: 'financial', description: 'Folio transaction report', icon: FileText },
+
+  // Operational Reports
+  { id: 'RPT-018', name: 'Room Move Report', category: 'operational', description: 'Room move history', icon: BedDouble },
+  { id: 'RPT-019', name: 'Room Assignment Report', category: 'operational', description: 'Room assignment analysis', icon: BedDouble },
+  { id: 'RPT-020', name: 'Guest Balance Report', category: 'operational', description: 'Outstanding balances', icon: DollarSign },
+  { id: 'RPT-021', name: 'Long Stay Report', category: 'operational', description: 'Extended stay guests', icon: Clock },
+  { id: 'RPT-022', name: 'Blacklisted Guests', category: 'operational', description: 'Blacklist status report', icon: Users },
+  { id: 'RPT-023', name: 'Lost & Found Report', category: 'operational', description: 'Lost and found items', icon: Users },
+  { id: 'RPT-024', name: 'Concierge Activity', category: 'operational', description: 'Concierge service log', icon: Activity },
+  { id: 'RPT-025', name: 'Transportation Report', category: 'operational', description: 'Transportation services', icon: Activity },
+];
+
+// Department tag prepended to download filenames
+const DEPT_TAG = 'FO';
+
 const Reports = () => {
-  const [searchParams, setSearchParams] = useSearchParams();
-  const activeCategory = (searchParams.get('category') as ReportCategory) || 'daily';
-  const setActiveCategory = (cat: ReportCategory) => {
-    const next = new URLSearchParams(searchParams);
-    next.set('category', cat);
-    setSearchParams(next);
-  };
+  const { addNotification, formatAmount } = useERP();
+  const [search, setSearch] = useState('');
+  const [period, setPeriod] = useState<Period>('Today');
+  const [customFrom, setCustomFrom] = useState(() => {
+    const d = new Date();
+    d.setDate(d.getDate() - 7);
+    return d.toISOString().split('T')[0];
+  });
+  const [customTo, setCustomTo] = useState(() => new Date().toISOString().split('T')[0]);
+  const [format, setFormat] = useState<ReportFormat>('PDF');
+
+  // Concrete date range + display label for the active period, memoized so
+  // every consumer (KPIs, reports, exports) resolves the exact same dates.
+  const activeRange = useMemo(() => periodDateRange(period, customFrom, customTo), [period, customFrom, customTo]);
+  const activeLabel = useMemo(() => periodLabel(period, customFrom, customTo), [period, customFrom, customTo]);
+  const isRangeValid = activeRange.from && activeRange.to && activeRange.from <= activeRange.to;
+
   const [selectedReport, setSelectedReport] = useState<Report | null>(null);
   const [showReportModal, setShowReportModal] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [reportData, setReportData] = useState<any>(null);
-  
-  const reports: Report[] = [
-    // Daily Reports
-    { id: 'RPT-001', name: 'Arrival Report', category: 'daily', description: 'Today\'s expected arrivals', icon: Users },
-    { id: 'RPT-002', name: 'Departure Report', category: 'daily', description: 'Today\'s expected departures', icon: Users },
-    { id: 'RPT-003', name: 'In-House Guests', category: 'daily', description: 'Current in-house guest list', icon: BedDouble },
-    { id: 'RPT-004', name: 'VIP Guests', category: 'daily', description: 'VIP guest summary', icon: Users },
-    { id: 'RPT-005', name: 'House Status', category: 'daily', description: 'Room housekeeping status', icon: BedDouble },
-    { id: 'RPT-006', name: 'Occupancy Report', category: 'daily', description: 'Daily occupancy statistics', icon: TrendingUp },
-    { id: 'RPT-007', name: 'Room Rack Report', category: 'daily', description: 'Room rack overview', icon: BedDouble },
-    
-    // Reservation Reports
-    { id: 'RPT-008', name: 'Pickup Report', category: 'reservation', description: 'Reservation pickup analysis', icon: TrendingUp },
-    { id: 'RPT-009', name: 'Cancellation Report', category: 'reservation', description: 'Cancellation statistics', icon: Users },
-    { id: 'RPT-010', name: 'No Show Report', category: 'reservation', description: 'No-show analysis', icon: Users },
-    { id: 'RPT-011', name: 'Forecast Report', category: 'reservation', description: 'Future occupancy forecast', icon: Calendar },
-    { id: 'RPT-012', name: 'Group Report', category: 'reservation', description: 'Group booking summary', icon: Users },
-    
-    // Financial Reports
-    { id: 'RPT-013', name: 'Guest Ledger', category: 'financial', description: 'Guest account balances', icon: DollarSign },
-    { id: 'RPT-014', name: 'Deposit Ledger', category: 'financial', description: 'Deposit transactions', icon: DollarSign },
-    { id: 'RPT-015', name: 'Cashier Summary', category: 'financial', description: 'Cashier shift summary', icon: DollarSign },
-    { id: 'RPT-016', name: 'Shift Report', category: 'financial', description: 'Shift financial summary', icon: Clock },
-    { id: 'RPT-017', name: 'Folio Report', category: 'financial', description: 'Folio transaction report', icon: FileText },
-    
-    // Operational Reports
-    { id: 'RPT-018', name: 'Room Move Report', category: 'operational', description: 'Room move history', icon: BedDouble },
-    { id: 'RPT-019', name: 'Room Assignment Report', category: 'operational', description: 'Room assignment analysis', icon: BedDouble },
-    { id: 'RPT-020', name: 'Guest Balance Report', category: 'operational', description: 'Outstanding balances', icon: DollarSign },
-    { id: 'RPT-021', name: 'Long Stay Report', category: 'operational', description: 'Extended stay guests', icon: Clock },
-    { id: 'RPT-022', name: 'Blacklisted Guests', category: 'operational', description: 'Blacklist status report', icon: Users },
-    { id: 'RPT-023', name: 'Lost & Found Report', category: 'operational', description: 'Lost and found items', icon: Users },
-    { id: 'RPT-024', name: 'Concierge Activity', category: 'operational', description: 'Concierge service log', icon: Activity },
-    { id: 'RPT-025', name: 'Transportation Report', category: 'operational', description: 'Transportation services', icon: Activity },
-  ];
+  const [downloadingId, setDownloadingId] = useState<string | null>(null);
 
-  const categories = [
-    { id: 'daily', label: 'Daily Reports', icon: Calendar },
-    { id: 'reservation', label: 'Reservation Reports', icon: FileText },
-    { id: 'financial', label: 'Financial Reports', icon: DollarSign },
-    { id: 'operational', label: 'Operational Reports', icon: Activity },
-  ];
+  // Live KPI metrics for the active period
+  interface KpiMetrics {
+    inHouse: number;
+    occupancy: number;
+    totalRooms: number;
+    arrivals: number;
+    departures: number;
+    roomRevenue: number;
+  }
+  const [kpis, setKpis] = useState<KpiMetrics | null>(null);
+  const [kpiLoading, setKpiLoading] = useState(false);
 
-  const filteredReports = reports.filter(report => report.category === activeCategory);
+  // ── Derived data ──────────────────────────────────────────────────
+  // Reports filtered by search, grouped by category for sectioned rendering.
+  const filteredReports = useMemo(
+    () =>
+      REPORTS.filter(
+        r =>
+          r.name.toLowerCase().includes(search.toLowerCase()) ||
+          r.description.toLowerCase().includes(search.toLowerCase()),
+      ),
+    [search],
+  );
+
+  const reportsByCategory = useMemo(() => {
+    const map: Record<ReportCategory, Report[]> = { daily: [], reservation: [], financial: [], operational: [] };
+    for (const r of filteredReports) {
+      if (map[r.category]) map[r.category].push(r);
+    }
+    return map;
+  }, [filteredReports]);
+
+  const categoryCounts = useMemo(() => {
+    const map: Record<ReportCategory, number> = { daily: 0, reservation: 0, financial: 0, operational: 0 };
+    for (const r of REPORTS) map[r.category]++;
+    return map;
+  }, []);
+
+  // ── Live KPI fetch ────────────────────────────────────────────────
+  // Runs cheap count queries in parallel whenever the period changes so the
+  // KPI cards at the top reflect the selected date range.
+  const fetchKpis = useCallback(async (range: { from: string; to: string }) => {
+    setKpiLoading(true);
+    try {
+      const [roomsRes, inHouseRes, arrivalsRes, departuresRes] = await Promise.all([
+        supabase.from('rooms').select('id'),
+        supabase.from('reservations').select('id, total_amount').eq('status', 'CheckedIn'),
+        supabase
+          .from('reservations')
+          .select('id, total_amount')
+          .gte('check_in_date', range.from)
+          .lte('check_in_date', range.to)
+          .in('status', ['Confirmed', 'CheckedIn', 'CheckedOut']),
+        supabase
+          .from('reservations')
+          .select('id, total_amount')
+          .gte('check_out_date', range.from)
+          .lte('check_out_date', range.to)
+          .in('status', ['CheckedIn', 'CheckedOut']),
+      ]);
+
+      const totalRooms = roomsRes.data?.length ?? 0;
+      const inHouse = inHouseRes.data?.length ?? 0;
+      const arrivals = arrivalsRes.data?.length ?? 0;
+      const departures = departuresRes.data?.length ?? 0;
+      const roomRevenue = (inHouseRes.data ?? []).reduce((s, r) => s + Number(r.total_amount || 0), 0);
+      const occupancy = totalRooms > 0 ? Math.round((inHouse / totalRooms) * 10000) / 100 : 0;
+
+      setKpis({ inHouse, occupancy, totalRooms, arrivals, departures, roomRevenue });
+    } catch {
+      setKpis(null);
+    } finally {
+      setKpiLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchKpis(activeRange);
+  }, [activeRange, fetchKpis]);
 
   // Real database query functions
-  const getArrivalReport = async (date: Date = new Date()) => {
-    const today = date.toISOString().split('T')[0];
-    
+  // All date-aware reports accept a [startDate, endDate] inclusive range
+  // (ISO yyyy-mm-dd). Point-in-time reports use startDate as the reference.
+  const getArrivalReport = async (startDate: string, endDate: string) => {
+    // Include all guests whose check_in_date falls in the range, regardless
+    // of whether they've already checked in, are still pending, or have
+    // already checked out (day-use / early departure). Only exclude
+    // Cancelled and NoShow.
     const { data, error } = await supabase
       .from('reservations')
-      .select('*')
-      .eq('check_in_date', today)
-      .in('status', ['Confirmed', 'CheckedIn'])
-      .order('check_in_date', { ascending: true });
+      .select('id, guest_name, guest_email, guest_phone, guest_status, room_type, room_number, check_in_date, check_out_date, adults, children, status, rate, total_amount, channel, payment_status, is_group, group_name, corporate_account_id, deposit_amount, is_deposit_paid')
+      .gte('check_in_date', startDate)
+      .lte('check_in_date', endDate)
+      .in('status', ['Confirmed', 'CheckedIn', 'CheckedOut'])
+      .order('check_in_date', { ascending: true })
+      .order('room_number', { ascending: true });
 
     if (error) throw error;
 
+    const rows = data || [];
+    const arrived = rows.filter(r => r.status === 'CheckedIn' || r.status === 'CheckedOut');
+    const pending = rows.filter(r => r.status === 'Confirmed');
+    const vipGuests = rows.filter(r => r.guest_status === 'VIP');
+    const groups = rows.filter(r => r.is_group);
+    const unassignedRooms = rows.filter(r => !r.room_number);
+
     return {
       summary: {
-        totalArrivals: data?.length || 0,
-        totalRooms: data?.length || 0,
-        totalAdults: data?.reduce((sum, r) => sum + (r.adults || 0), 0) || 0,
-        totalChildren: data?.reduce((sum, r) => sum + (r.children || 0), 0) || 0,
-        expectedRevenue: data?.reduce((sum, r) => sum + (r.total_amount || 0), 0) || 0
+        totalArrivals: rows.length,
+        pendingArrivals: pending.length,
+        arrived: arrived.length,
+        totalAdults: rows.reduce((sum, r) => sum + (r.adults || 0), 0),
+        totalChildren: rows.reduce((sum, r) => sum + (r.children || 0), 0),
+        expectedRevenue: rows.reduce((sum, r) => sum + Number(r.total_amount || 0), 0),
+        vipGuests: vipGuests.length,
+        groupArrivals: groups.length,
+        unassignedRooms: unassignedRooms.length,
+        dateRange: `${startDate} → ${endDate}`
       },
-      data: data || []
+      data: rows
     };
   };
 
-  const getDepartureReport = async (date: Date = new Date()) => {
-    const today = date.toISOString().split('T')[0];
-    
-    const { data, error } = await supabase
+  const getDepartureReport = async (startDate: string, endDate: string) => {
+    // A departure report should show:
+    //   1. Guests SCHEDULED to depart in the range (check_out_date in range)
+    //      — regardless of status (Confirmed = not yet arrived, CheckedIn =
+    //      still in house, CheckedOut = already left on schedule)
+    //   2. Guests who have ALREADY DEPARTED (status = 'CheckedOut') whose
+    //      actual departure happened in the range — even if their scheduled
+    //      check_out_date is in the future (early departures).
+    //
+    // We use an OR filter via two queries merged in JS, because Supabase's
+    // .or() with date comparisons is error-prone. This guarantees we catch
+    // both scheduled departures and early/actual departures.
+
+    // Query A: scheduled departures (check_out_date in range)
+    const { data: scheduled, error: errA } = await supabase
       .from('reservations')
-      .select('*')
-      .eq('check_out_date', today)
-      .in('status', ['Confirmed', 'CheckedIn'])
+      .select('id, guest_name, guest_email, guest_phone, guest_status, room_type, room_number, check_in_date, check_out_date, adults, children, status, rate, total_amount, channel, payment_status, is_group, group_name, corporate_account_id, deposit_amount, is_deposit_paid, updated_at')
+      .gte('check_out_date', startDate)
+      .lte('check_out_date', endDate)
+      .in('status', ['Confirmed', 'CheckedIn', 'CheckedOut'])
       .order('check_out_date', { ascending: true });
 
-    if (error) throw error;
+    if (errA) throw errA;
+
+    // Query B: already-departed guests updated in the range (early departures
+    // whose status flipped to CheckedOut during this window, even if their
+    // scheduled check_out_date is later than endDate)
+    const { data: earlyDeparted, error: errB } = await supabase
+      .from('reservations')
+      .select('id, guest_name, guest_email, guest_phone, guest_status, room_type, room_number, check_in_date, check_out_date, adults, children, status, rate, total_amount, channel, payment_status, is_group, group_name, corporate_account_id, deposit_amount, is_deposit_paid, updated_at')
+      .eq('status', 'CheckedOut')
+      .gte('updated_at', `${startDate}T00:00:00`)
+      .lte('updated_at', `${endDate}T23:59:59`)
+      .order('updated_at', { ascending: true });
+
+    if (errB) throw errB;
+
+    // Merge & dedupe by reservation id (a CheckedOut guest whose
+    // check_out_date is also in range would appear in both queries)
+    const seen = new Set<string>();
+    const rows = [...(scheduled || []), ...(earlyDeparted || [])].filter((r) => {
+      if (seen.has(r.id)) return false;
+      seen.add(r.id);
+      return true;
+    });
+    // Sort: departed first (by updated_at), then scheduled by check_out_date
+    rows.sort((a, b) => {
+      const aDeparted = a.status === 'CheckedOut' ? 0 : 1;
+      const bDeparted = b.status === 'CheckedOut' ? 0 : 1;
+      if (aDeparted !== bDeparted) return aDeparted - bDeparted;
+      return (a.check_out_date || '').localeCompare(b.check_out_date || '');
+    });
+
+    const departed = rows.filter(r => r.status === 'CheckedOut');
+    const inHouse = rows.filter(r => r.status === 'CheckedIn');
+    const notYetArrived = rows.filter(r => r.status === 'Confirmed');
+    const outstanding = rows.filter(r => r.payment_status === 'Unpaid' || r.payment_status === 'Partial');
+    const vipGuests = rows.filter(r => r.guest_status === 'VIP');
+    const earlyDepartures = rows.filter(r =>
+      r.status === 'CheckedOut' && r.check_out_date > endDate
+    );
 
     return {
       summary: {
-        totalDepartures: data?.length || 0,
-        totalRooms: data?.length || 0,
-        outstandingBalance: data?.reduce((sum, r) => 
-          (r.payment_status === 'Unpaid' || r.payment_status === 'Partial') ? sum + (r.total_amount || 0) : sum, 0) || 0
+        totalDepartures: rows.length,
+        departed: departed.length,
+        earlyDepartures: earlyDepartures.length,
+        inHousePending: inHouse.length,
+        notYetArrived: notYetArrived.length,
+        totalRooms: rows.length,
+        outstandingBalance: outstanding.reduce((sum, r) => sum + Number(r.total_amount || 0), 0),
+        outstandingCount: outstanding.length,
+        vipGuests: vipGuests.length,
+        dateRange: `${startDate} → ${endDate}`
       },
-      data: data || []
+      data: rows
     };
   };
 
@@ -173,9 +526,7 @@ const Reports = () => {
     };
   };
 
-  const getOccupancyReport = async (date: Date = new Date()) => {
-    const today = date.toISOString().split('T')[0];
-    
+  const getOccupancyReport = async (startDate: string, endDate: string) => {
     // Get total rooms
     const { data: rooms, error: roomsError } = await supabase
       .from('rooms')
@@ -183,11 +534,13 @@ const Reports = () => {
 
     if (roomsError) throw roomsError;
 
-    // Get checked-in reservations
+    // Get checked-in reservations overlapping the selected range
     const { data: reservations, error: resError } = await supabase
       .from('reservations')
-      .select('id, room_type, total_amount, adults, children')
-      .eq('status', 'CheckedIn');
+      .select('id, room_type, total_amount, adults, children, check_in_date, check_out_date')
+      .eq('status', 'CheckedIn')
+      .lte('check_in_date', endDate)
+      .gte('check_out_date', startDate);
 
     if (resError) throw resError;
 
@@ -197,7 +550,7 @@ const Reports = () => {
 
     return {
       summary: {
-        date: today,
+        dateRange: `${startDate} → ${endDate}`,
         totalRooms,
         occupiedRooms,
         vacantRooms: totalRooms - occupiedRooms,
@@ -265,12 +618,21 @@ const Reports = () => {
     };
   };
 
-  const getFolioReport = async () => {
+  const getFolioReport = async (startDate: string, endDate: string) => {
+    // folio_lines has 3 FKs to folios (folio_id, origin_folio_id,
+    // routed_from_folio_id), so we must disambiguate with `folios!folio_id`.
+    //
+    // We filter on `created_at` (the posting timestamp — when the charge was
+    // actually recorded) rather than `transaction_date` (the accounting
+    // business date the charge belongs to). This matches the operator's
+    // expectation: "transactions that happened today" = posted today, even
+    // if the business date they're posted to differs (e.g. backdated room
+    // charges). `transaction_date` is still returned as a column in the data.
     const { data, error } = await supabase
       .from('folio_lines')
       .select(`
         *,
-        folios (
+        folios!folio_id (
           id,
           reservations (
             id,
@@ -280,8 +642,10 @@ const Reports = () => {
         )
       `)
       .eq('is_voided', false)
-      .order('transaction_date', { ascending: false })
-      .limit(100);
+      .gte('created_at', `${startDate}T00:00:00`)
+      .lte('created_at', `${endDate}T23:59:59`)
+      .order('created_at', { ascending: false })
+      .limit(500);
 
     if (error) throw error;
 
@@ -297,7 +661,8 @@ const Reports = () => {
         totalTransactions: data?.length || 0,
         totalAmount: data?.reduce((sum, line) => sum + (line.amount || 0), 0) || 0,
         totalTax: data?.reduce((sum, line) => sum + (line.tax_amount || 0), 0) || 0,
-        byType
+        byType,
+        dateRange: `${startDate} → ${endDate}`
       },
       data: data || []
     };
@@ -362,15 +727,12 @@ const Reports = () => {
     };
   };
 
-  const getPickupReport = async (startDate: Date, endDate: Date) => {
-    const start = startDate.toISOString().split('T')[0];
-    const end = endDate.toISOString().split('T')[0];
-    
+  const getPickupReport = async (startDate: string, endDate: string) => {
     const { data, error } = await supabase
       .from('reservations')
       .select('*')
-      .gte('check_in_date', start)
-      .lte('check_in_date', end)
+      .gte('check_in_date', startDate)
+      .lte('check_in_date', endDate)
       .order('check_in_date', { ascending: true });
 
     if (error) throw error;
@@ -389,7 +751,8 @@ const Reports = () => {
       summary: {
         totalReservations: data?.length || 0,
         totalRevenue: data?.reduce((sum, r) => sum + (r.total_amount || 0), 0) || 0,
-        averageRate: data?.length ? data.reduce((sum, r) => sum + (r.rate || 0), 0) / data.length : 0
+        averageRate: data?.length ? data.reduce((sum, r) => sum + (r.rate || 0), 0) / data.length : 0,
+        dateRange: `${startDate} → ${endDate}`
       },
       data: Object.entries(dailyPickup).map(([date, stats]: [string, any]) => ({
         date,
@@ -398,16 +761,13 @@ const Reports = () => {
     };
   };
 
-  const getCancellationReport = async (startDate: Date, endDate: Date) => {
-    const start = startDate.toISOString().split('T')[0];
-    const end = endDate.toISOString().split('T')[0];
-    
+  const getCancellationReport = async (startDate: string, endDate: string) => {
     const { data, error } = await supabase
       .from('reservations')
       .select('*')
       .eq('status', 'Cancelled')
-      .gte('created_at', start)
-      .lte('created_at', end)
+      .gte('created_at', startDate)
+      .lte('created_at', endDate)
       .order('created_at', { ascending: false });
 
     if (error) throw error;
@@ -423,20 +783,20 @@ const Reports = () => {
       summary: {
         totalCancellations: data?.length || 0,
         totalLostRevenue: data?.reduce((sum, r) => sum + (r.total_amount || 0), 0) || 0,
-        byChannel
+        byChannel,
+        dateRange: `${startDate} → ${endDate}`
       },
       data: data || []
     };
   };
 
-  const getNoShowReport = async () => {
-    const today = new Date().toISOString().split('T')[0];
-    
+  const getNoShowReport = async (startDate: string, endDate: string) => {
     const { data, error } = await supabase
       .from('reservations')
       .select('*')
       .in('status', ['Confirmed', 'Waitlisted'])
-      .lt('check_in_date', today)
+      .gte('check_in_date', startDate)
+      .lte('check_in_date', endDate)
       .order('check_in_date', { ascending: false });
 
     if (error) throw error;
@@ -450,22 +810,19 @@ const Reports = () => {
       summary: {
         totalNoShows: noShows.length,
         totalLostRevenue: noShows.reduce((sum, r) => sum + (r.total_amount || 0), 0),
-        totalDepositsForfeited: noShows.reduce((sum, r) => sum + (r.is_deposit_paid ? r.deposit_amount || 0 : 0), 0)
+        totalDepositsForfeited: noShows.reduce((sum, r) => sum + (r.is_deposit_paid ? r.deposit_amount || 0 : 0), 0),
+        dateRange: `${startDate} → ${endDate}`
       },
       data: noShows
     };
   };
 
-  const getForecastReport = async (daysAhead: number = 30) => {
-    const startDate = new Date();
-    const endDate = new Date();
-    endDate.setDate(endDate.getDate() + daysAhead);
-    
+  const getForecastReport = async (startDate: string, endDate: string) => {
     const { data, error } = await supabase
       .from('reservations')
       .select('*')
-      .gte('check_in_date', startDate.toISOString().split('T')[0])
-      .lte('check_in_date', endDate.toISOString().split('T')[0])
+      .gte('check_in_date', startDate)
+      .lte('check_in_date', endDate)
       .in('status', ['Confirmed', 'CheckedIn'])
       .order('check_in_date', { ascending: true });
 
@@ -490,7 +847,7 @@ const Reports = () => {
       summary: {
         totalReservations: data?.length || 0,
         totalRevenue: data?.reduce((sum, r) => sum + (r.total_amount || 0), 0) || 0,
-        forecastPeriod: `${daysAhead} days`
+        forecastPeriod: `${startDate} → ${endDate}`
       },
       data: Object.entries(dailyForecast).map(([date, stats]: [string, any]) => ({
         date,
@@ -555,9 +912,7 @@ const Reports = () => {
     };
   };
 
-  const getCashierSummaryReport = async () => {
-    const today = new Date().toISOString().split('T')[0];
-    
+  const getCashierSummaryReport = async (startDate: string, endDate: string) => {
     const { data, error } = await supabase
       .from('folio_payments')
       .select(`
@@ -572,8 +927,8 @@ const Reports = () => {
         )
       `)
       .eq('is_voided', false)
-      .gte('payment_date', `${today}T00:00:00`)
-      .lte('payment_date', `${today}T23:59:59`)
+      .gte('payment_date', `${startDate}T00:00:00`)
+      .lte('payment_date', `${endDate}T23:59:59`)
       .order('payment_date', { ascending: true });
 
     if (error) throw error;
@@ -604,7 +959,7 @@ const Reports = () => {
     };
   };
 
-  const getShiftReport = async () => {
+  const getShiftReport = async (startDate: string, endDate: string) => {
     const { data, error } = await supabase
       .from('folio_payments')
       .select(`
@@ -617,8 +972,10 @@ const Reports = () => {
         )
       `)
       .eq('is_voided', false)
+      .gte('payment_date', `${startDate}T00:00:00`)
+      .lte('payment_date', `${endDate}T23:59:59`)
       .order('payment_date', { ascending: false })
-      .limit(50);
+      .limit(500);
 
     if (error) throw error;
 
@@ -630,25 +987,29 @@ const Reports = () => {
         paymentMethods: data?.reduce((acc, p) => {
           acc[p.payment_method] = (acc[p.payment_method] || 0) + (p.amount || 0);
           return acc;
-        }, {} as Record<string, number>) || {}
+        }, {} as Record<string, number>) || {},
+        dateRange: `${startDate} → ${endDate}`
       },
       data: data || []
     };
   };
 
-  const getRoomMoveReport = async () => {
+  const getRoomMoveReport = async (startDate: string, endDate: string) => {
     const { data, error } = await supabase
       .from('reservations')
       .select('*')
       .eq('status', 'CheckedIn')
+      .gte('updated_at', `${startDate}T00:00:00`)
+      .lte('updated_at', `${endDate}T23:59:59`)
       .order('updated_at', { ascending: false })
-      .limit(50);
+      .limit(500);
 
     if (error) throw error;
 
     return {
       summary: {
-        totalMoves: data?.length || 0
+        totalMoves: data?.length || 0,
+        dateRange: `${startDate} → ${endDate}`
       },
       data: data?.map(res => ({
         ...res,
@@ -779,7 +1140,7 @@ const Reports = () => {
     };
   };
 
-  const getLostFoundReport = async () => {
+  const getLostFoundReport = async (startDate: string, endDate: string) => {
     const { data, error } = await supabase
       .from('lost_found')
       .select(`
@@ -796,6 +1157,8 @@ const Reports = () => {
           room_number
         )
       `)
+      .gte('found_date', startDate)
+      .lte('found_date', endDate)
       .order('found_date', { ascending: false })
       .order('found_time', { ascending: false });
 
@@ -823,24 +1186,28 @@ const Reports = () => {
           acc[item.item_category] = (acc[item.item_category] || 0) + 1;
           return acc;
         }, {} as Record<string, number>) || {},
-        byStatus: statusCounts
+        byStatus: statusCounts,
+        dateRange: `${startDate} → ${endDate}`
       },
       data: data || []
     };
   };
 
-  const getConciergeActivityReport = async () => {
+  const getConciergeActivityReport = async (startDate: string, endDate: string) => {
     const { data, error } = await supabase
       .from('guest_services')
       .select('*')
+      .gte('created_at', `${startDate}T00:00:00`)
+      .lte('created_at', `${endDate}T23:59:59`)
       .order('created_at', { ascending: false })
-      .limit(100);
+      .limit(500);
 
     if (error) {
       return {
         summary: {
           totalServices: 0,
-          byType: {}
+          byType: {},
+          dateRange: `${startDate} → ${endDate}`
         },
         data: [],
         message: 'Guest services data not available'
@@ -853,25 +1220,29 @@ const Reports = () => {
         byType: data?.reduce((acc, service) => {
           acc[service.service_type || 'unknown'] = (acc[service.service_type || 'unknown'] || 0) + 1;
           return acc;
-        }, {} as Record<string, number>) || {}
+        }, {} as Record<string, number>) || {},
+        dateRange: `${startDate} → ${endDate}`
       },
       data: data || []
     };
   };
 
-  const getTransportationReport = async () => {
+  const getTransportationReport = async (startDate: string, endDate: string) => {
     const { data, error } = await supabase
-      .from('airport_shuttle_requests')
+      .from('transport_requests')
       .select('*')
+      .gte('created_at', `${startDate}T00:00:00`)
+      .lte('created_at', `${endDate}T23:59:59`)
       .order('created_at', { ascending: false })
-      .limit(100);
+      .limit(500);
 
     if (error) {
       return {
         summary: {
           totalRequests: 0,
           completedTrips: 0,
-          pendingTrips: 0
+          pendingTrips: 0,
+          dateRange: `${startDate} → ${endDate}`
         },
         data: [],
         message: 'Transportation data not available'
@@ -881,8 +1252,9 @@ const Reports = () => {
     return {
       summary: {
         totalRequests: data?.length || 0,
-        completedTrips: data?.filter((t: any) => t.status === 'completed').length || 0,
-        pendingTrips: data?.filter((t: any) => t.status === 'pending').length || 0
+        completedTrips: data?.filter((t: any) => t.status === 'Completed').length || 0,
+        pendingTrips: data?.filter((t: any) => t.status === 'Requested').length || 0,
+        dateRange: `${startDate} → ${endDate}`
       },
       data: data || []
     };
@@ -891,16 +1263,21 @@ const Reports = () => {
   const handleGenerateReport = async (report: Report) => {
     setIsLoading(true);
     setSelectedReport(report);
-    
+
+    // Resolve the active date range from the period toggle. If invalid,
+    // fall back to a single-day range so the report still runs.
+    const startDate = isRangeValid ? activeRange.from : activeRange.to;
+    const endDate = activeRange.to;
+
     try {
       let result;
-      
+
       switch(report.id) {
         case 'RPT-001': // Arrival Report
-          result = await getArrivalReport();
+          result = await getArrivalReport(startDate, endDate);
           break;
         case 'RPT-002': // Departure Report
-          result = await getDepartureReport();
+          result = await getDepartureReport(startDate, endDate);
           break;
         case 'RPT-003': // In-House Guests
           result = await getInHouseGuestsReport();
@@ -912,28 +1289,22 @@ const Reports = () => {
           result = await getHouseStatusReport();
           break;
         case 'RPT-006': // Occupancy Report
-          result = await getOccupancyReport();
+          result = await getOccupancyReport(startDate, endDate);
           break;
         case 'RPT-007': // Room Rack Report
           result = await getRoomRackReport();
           break;
         case 'RPT-008': // Pickup Report
-          const endDate = new Date();
-          const startDate = new Date();
-          startDate.setDate(startDate.getDate() - 30);
           result = await getPickupReport(startDate, endDate);
           break;
         case 'RPT-009': // Cancellation Report
-          const cancelEnd = new Date();
-          const cancelStart = new Date();
-          cancelStart.setDate(cancelStart.getDate() - 30);
-          result = await getCancellationReport(cancelStart, cancelEnd);
+          result = await getCancellationReport(startDate, endDate);
           break;
         case 'RPT-010': // No Show Report
-          result = await getNoShowReport();
+          result = await getNoShowReport(startDate, endDate);
           break;
         case 'RPT-011': // Forecast Report
-          result = await getForecastReport(30);
+          result = await getForecastReport(startDate, endDate);
           break;
         case 'RPT-012': // Group Report
           result = await getGroupReport();
@@ -945,16 +1316,16 @@ const Reports = () => {
           result = await getDepositLedgerReport();
           break;
         case 'RPT-015': // Cashier Summary
-          result = await getCashierSummaryReport();
+          result = await getCashierSummaryReport(startDate, endDate);
           break;
         case 'RPT-016': // Shift Report
-          result = await getShiftReport();
+          result = await getShiftReport(startDate, endDate);
           break;
         case 'RPT-017': // Folio Report
-          result = await getFolioReport();
+          result = await getFolioReport(startDate, endDate);
           break;
         case 'RPT-018': // Room Move Report
-          result = await getRoomMoveReport();
+          result = await getRoomMoveReport(startDate, endDate);
           break;
         case 'RPT-019': // Room Assignment Report
           result = await getRoomAssignmentReport();
@@ -969,13 +1340,13 @@ const Reports = () => {
           result = await getBlacklistedGuestsReport();
           break;
         case 'RPT-023': // Lost & Found Report
-          result = await getLostFoundReport();
+          result = await getLostFoundReport(startDate, endDate);
           break;
         case 'RPT-024': // Concierge Activity
-          result = await getConciergeActivityReport();
+          result = await getConciergeActivityReport(startDate, endDate);
           break;
         case 'RPT-025': // Transportation Report
-          result = await getTransportationReport();
+          result = await getTransportationReport(startDate, endDate);
           break;
         default:
           result = {
@@ -984,9 +1355,10 @@ const Reports = () => {
             message: `${report.name} is coming soon. Database integration in progress.`
           };
       }
-      
+
       setReportData(result);
       setShowReportModal(true);
+      addNotification(`${report.name} generated · ${activeLabel}`, 'success', 'Front Office');
     } catch (error) {
       console.error('Failed to generate report:', error);
       setReportData({
@@ -995,42 +1367,143 @@ const Reports = () => {
         message: `Error: ${error instanceof Error ? error.message : 'Unknown error'}`
       });
       setShowReportModal(true);
+      addNotification(`Failed to generate ${report.name}`, 'warning', 'Front Office');
     } finally {
       setIsLoading(false);
     }
   };
 
-  const handleDownloadReport = () => {
-    if (!reportData || !selectedReport) return;
-    
-    const csv = [
-      Object.keys(reportData.data[0]).join(','),
-      ...reportData.data.map((row: any) => Object.values(row).map((v: any) => {
-        if (v === null || v === undefined) return '';
-        if (typeof v === 'object') {
-          return Object.entries(v)
-            .map(([k, val]) => `${k}: ${val === null || val === undefined ? '-' : typeof val === 'object' ? JSON.stringify(val) : String(val)}`)
-            .join('; ');
+  // ── Download: generate a real file (PDF / Excel / CSV) ────────────
+  // Builds a ReportDocument from the flattened report data + summary, then
+  // delegates to the shared export helpers from reportExportUtils.
+  const buildReportDoc = (report: Report, data: any[]): ReportDocument => {
+    const flatRows = data.map((row: any) => flattenRow(row));
+    const flatKeys = flatRows.length > 0 ? Object.keys(flatRows[0]) : [];
+
+    const dataSection: ReportSection = {
+      title: `${report.name} — ${activeLabel}`,
+      columns: flatKeys.map(prettifyKey),
+      rows: flatRows.map((row: any) =>
+        flatKeys.map((key) => {
+          const v = row[key];
+          if (v === null || v === undefined) return '';
+          if (typeof v === 'number') return v;
+          return String(v);
+        }),
+      ),
+    };
+
+    // Build a summary section from the report's summary object so the
+    // exported document reads as a complete report, not just a data dump.
+    const summaryEntries = reportData?.summary
+      ? Object.entries(reportData.summary).filter(([k]) => k !== 'message' && k !== 'error')
+      : [];
+    const summarySection: ReportSection | null =
+      summaryEntries.length > 0
+        ? {
+            title: `Summary — ${activeLabel}`,
+            columns: ['Metric', 'Value'],
+            rows: summaryEntries.map(([key, value]: [string, any]) => {
+              const label = key.replace(/([A-Z])/g, ' $1').replace(/^./, (c) => c.toUpperCase()).trim();
+              const val =
+                value !== null && typeof value === 'object'
+                  ? Object.entries(value)
+                      .map(([k, v]) =>
+                        typeof v === 'object' && v !== null
+                          ? `${k}: ${Object.entries(v as any)
+                              .map(([kk, vv]) => `${kk}: ${vv}`)
+                              .join(', ')}`
+                          : `${k}: ${v}`,
+                      )
+                      .join('; ')
+                  : typeof value === 'number'
+                    ? value
+                    : String(value ?? '-');
+              return [label, val];
+            }),
+          }
+        : null;
+
+    return {
+      reportName: `${DEPT_TAG} ${report.name}`,
+      businessDate: new Date().toISOString().split('T')[0],
+      propertyName: 'SELEDA Hotel ERP — Front Office',
+      sections: summarySection ? [summarySection, dataSection] : [dataSection],
+    };
+  };
+
+  const handleDownloadReport = async (report: Report, fmt?: ReportFormat) => {
+    const useFormat = fmt ?? format;
+    setDownloadingId(report.id);
+    try {
+      // Ensure we have data — generate if not already loaded
+      let data = reportData?.data;
+      if (!data || selectedReport?.id !== report.id) {
+        const startDate = isRangeValid ? activeRange.from : activeRange.to;
+        const endDate = activeRange.to;
+        let result: any;
+        switch (report.id) {
+          case 'RPT-001': result = await getArrivalReport(startDate, endDate); break;
+          case 'RPT-002': result = await getDepartureReport(startDate, endDate); break;
+          case 'RPT-003': result = await getInHouseGuestsReport(); break;
+          case 'RPT-004': result = await getVipGuestsReport(); break;
+          case 'RPT-005': result = await getHouseStatusReport(); break;
+          case 'RPT-006': result = await getOccupancyReport(startDate, endDate); break;
+          case 'RPT-007': result = await getRoomRackReport(); break;
+          case 'RPT-008': result = await getPickupReport(startDate, endDate); break;
+          case 'RPT-009': result = await getCancellationReport(startDate, endDate); break;
+          case 'RPT-010': result = await getNoShowReport(startDate, endDate); break;
+          case 'RPT-011': result = await getForecastReport(startDate, endDate); break;
+          case 'RPT-012': result = await getGroupReport(); break;
+          case 'RPT-013': result = await getGuestLedgerReport(); break;
+          case 'RPT-014': result = await getDepositLedgerReport(); break;
+          case 'RPT-015': result = await getCashierSummaryReport(startDate, endDate); break;
+          case 'RPT-016': result = await getShiftReport(startDate, endDate); break;
+          case 'RPT-017': result = await getFolioReport(startDate, endDate); break;
+          case 'RPT-018': result = await getRoomMoveReport(startDate, endDate); break;
+          case 'RPT-019': result = await getRoomAssignmentReport(); break;
+          case 'RPT-020': result = await getGuestBalanceReport(); break;
+          case 'RPT-021': result = await getLongStayReport(); break;
+          case 'RPT-022': result = await getBlacklistedGuestsReport(); break;
+          case 'RPT-023': result = await getLostFoundReport(startDate, endDate); break;
+          case 'RPT-024': result = await getConciergeActivityReport(startDate, endDate); break;
+          case 'RPT-025': result = await getTransportationReport(startDate, endDate); break;
+          default: result = { summary: {}, data: [] };
         }
-        return String(v);
-      }).join(','))
-    ].join('\n');
-    
-    const blob = new Blob([csv], { type: 'text/csv' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${selectedReport.name.replace(/\s+/g, '_')}_${new Date().toISOString().split('T')[0]}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
+        data = result.data;
+        setReportData(result);
+        setSelectedReport(report);
+      }
+      if (!Array.isArray(data) || data.length === 0) {
+        addNotification(`No data to export for ${report.name}`, 'warning', 'Front Office');
+        return;
+      }
+      const doc = buildReportDoc(report, data);
+      if (useFormat === 'PDF') exportReportToPDF(doc);
+      else if (useFormat === 'Excel') exportReportToExcel(doc);
+      else exportReportToCSV(doc);
+      addNotification(`${report.name} downloaded as ${useFormat}`, 'success', 'Front Office');
+    } catch (e: any) {
+      addNotification(e.message || `Failed to download ${report.name}`, 'warning', 'Front Office');
+    } finally {
+      setDownloadingId(null);
+    }
   };
 
   const handlePrintReport = () => {
     if (!reportData || !selectedReport) return;
-    
+    if (!Array.isArray(reportData.data) || reportData.data.length === 0) return;
+
+    // Flatten rows so print has clean columns instead of JSON blobs
+    const flatRows = reportData.data.map((row: any) => flattenRow(row));
+    const flatKeys = Object.keys(flatRows[0]);
+
+    const escapeHtml = (s: string) =>
+      s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
     const printWindow = window.open('', '_blank');
     if (!printWindow) return;
-    
+
     const html = `
       <html>
         <head>
@@ -1046,25 +1519,23 @@ const Reports = () => {
           <h1>${selectedReport.name}</h1>
           <p>Generated: ${new Date().toLocaleString()}</p>
           <h2>Summary</h2>
-          <pre>${JSON.stringify(reportData.summary, null, 2)}</pre>
+          <pre>${escapeHtml(JSON.stringify(reportData.summary, null, 2))}</pre>
           <table>
             <thead>
               <tr>
-                ${Object.keys(reportData.data[0]).map(key => `<th>${key}</th>`).join('')}
+                ${flatKeys.map(key => `<th>${escapeHtml(prettifyKey(key))}</th>`).join('')}
               </tr>
             </thead>
             <tbody>
-              ${reportData.data.map((row: any) => `
+              ${flatRows.map((row: any) => `
                 <tr>
-                  ${Object.values(row).map((val: any) => {
+                  ${flatKeys.map((key) => {
+                    const val = row[key];
                     let cell: string;
                     if (val === null || val === undefined) cell = '';
-                    else if (typeof val === 'object') {
-                      cell = Object.entries(val)
-                        .map(([k, v]) => `${k}: ${v === null || v === undefined ? '-' : typeof v === 'object' ? JSON.stringify(v) : String(v)}`)
-                        .join('<br>');
-                    } else cell = String(val);
-                    return `<td>${cell}</td>`;
+                    else if (typeof val === 'number') cell = val.toLocaleString();
+                    else cell = String(val);
+                    return `<td>${escapeHtml(cell)}</td>`;
                   }).join('')}
                 </tr>
               `).join('')}
@@ -1073,217 +1544,393 @@ const Reports = () => {
         </body>
       </html>
     `;
-    
+
     printWindow.document.write(html);
     printWindow.document.close();
     printWindow.print();
   };
 
   return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold text-gray-900 dark:text-white">Reports</h1>
-          <p className="text-gray-600 dark:text-gray-400 mt-1">Daily, reservation, financial, and operational reports</p>
-        </div>
-        <div className="flex items-center gap-3">
-          <button className="flex items-center gap-2 px-4 py-2 bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-lg hover:bg-gray-50 dark:hover:bg-slate-700 transition-colors">
-            <RefreshCw className="w-4 h-4" />
-            Refresh
-          </button>
-          <button className="flex items-center gap-2 px-4 py-2 bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-lg hover:bg-gray-50 dark:hover:bg-slate-700 transition-colors">
-            <Filter className="w-4 h-4" />
-            Filter
-          </button>
-        </div>
-      </div>
-
-      {/* Category Tabs */}
-      <div className="flex items-center gap-2 border-b border-gray-200 dark:border-slate-700">
-        {categories.map((category) => {
-          const Icon = category.icon;
-          return (
-            <button
-              key={category.id}
-              onClick={() => setActiveCategory(category.id as ReportCategory)}
-              className={`flex items-center gap-2 px-4 py-3 border-b-2 transition-colors ${
-                activeCategory === category.id
-                  ? 'border-blue-600 text-blue-600 dark:text-blue-400'
-                  : 'border-transparent text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
-              }`}
-            >
-              <Icon className="w-4 h-4" />
-              {category.label}
-              <span className="px-2 py-0.5 bg-gray-100 dark:bg-slate-700 text-gray-600 dark:text-gray-400 text-xs font-medium rounded-full">
-                {reports.filter(r => r.category === category.id).length}
-              </span>
-            </button>
-          );
-        })}
-      </div>
-
-      {/* Reports Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        {filteredReports.map((report) => {
-          const Icon = report.icon;
-          return (
-            <div
-              key={report.id}
-              className="bg-white dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-slate-700 shadow-sm p-6 hover:shadow-md transition-shadow cursor-pointer"
-            >
-              <div className="flex items-start justify-between mb-4">
-                <div className="w-12 h-12 bg-blue-100 dark:bg-blue-900/30 rounded-lg flex items-center justify-center">
-                  <Icon className="w-6 h-6 text-blue-600 dark:text-blue-400" />
-                </div>
-                <div className="flex items-center gap-2">
-                  <button className="p-2 hover:bg-gray-100 dark:hover:bg-slate-700 rounded-lg transition-colors">
-                    <Download className="w-5 h-5 text-gray-600 dark:text-gray-400" />
+    <div className={layout.sectionStack}>
+      <PageHeader
+        title="Front Office Reports"
+        subtitle="Daily, reservation, financial & operational reports — select a period to view and export"
+        icon={FileBarChart}
+        actions={
+          <>
+            {/* Period toggle + custom dates */}
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="flex rounded-xl overflow-hidden border border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-800">
+                {PERIODS.map(p => (
+                  <button
+                    key={p}
+                    onClick={() => {
+                      if (p === 'Custom') {
+                        const range = defaultCustomRange();
+                        setCustomFrom(range.from);
+                        setCustomTo(range.to);
+                      }
+                      setPeriod(p);
+                    }}
+                    className={`px-3 py-1.5 text-sm font-medium transition-colors ${
+                      period === p
+                        ? 'bg-[var(--color-accent-operations)] text-white'
+                        : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700'
+                    }`}
+                  >
+                    {p}
                   </button>
-                  <button className="p-2 hover:bg-gray-100 dark:hover:bg-slate-700 rounded-lg transition-colors">
-                    <Printer className="w-5 h-5 text-gray-600 dark:text-gray-400" />
-                  </button>
-                </div>
+                ))}
               </div>
-              <h3 className="text-lg font-bold text-gray-900 dark:text-white mb-2">{report.name}</h3>
-              <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">{report.description}</p>
-              <div className="flex items-center gap-2 mb-4">
-                <span className="px-2 py-1 bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400 text-xs font-medium rounded-full">
-                  Live Data
-                </span>
-              </div>
-              <button 
-                onClick={() => handleGenerateReport(report)}
-                disabled={isLoading}
-                className="w-full mt-4 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm disabled:opacity-50"
-              >
-                {isLoading && selectedReport?.id === report.id ? 'Generating...' : 'Generate Report'}
-              </button>
-            </div>
-          );
-        })}
-      </div>
-
-      {/* Quick Stats */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <StatCard label="Total Reports" value="25" icon={FileBarChart} variant="primary" />
-        <StatCard label="Daily Reports" value="7" icon={Calendar} variant="primary" />
-        <StatCard label="Financial Reports" value="5" icon={DollarSign} variant="revenue" />
-        <StatCard label="Operational Reports" value="8" icon={Activity} variant="rooms" />
-      </div>
-
-      {/* Report Data Modal */}
-      {showReportModal && selectedReport && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white dark:bg-slate-800 rounded-xl max-w-4xl w-full max-h-[90vh] overflow-hidden">
-            <div className="flex items-center justify-between p-6 border-b border-gray-200 dark:border-slate-700">
-              <div>
-                <h2 className="text-xl font-bold text-gray-900 dark:text-white">{selectedReport.name}</h2>
-                <p className="text-sm text-gray-500 dark:text-gray-400">
-                  Generated: {new Date().toLocaleString()}
-                </p>
-              </div>
-              <button 
-                onClick={() => setShowReportModal(false)}
-                className="p-2 hover:bg-gray-100 dark:hover:bg-slate-700 rounded-lg transition-colors"
-              >
-                <X className="w-5 h-5 text-gray-600 dark:text-gray-400" />
-              </button>
-            </div>
-
-            <div className="p-6 overflow-y-auto max-h-[60vh]">
-              {reportData?.summary && !reportData.summary.error && (
-                <div className="mb-6 p-4 bg-gray-50 dark:bg-slate-900/50 rounded-lg">
-                  <h3 className="font-semibold text-gray-900 dark:text-white mb-3">Summary</h3>
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                    {Object.entries(reportData.summary)
-                      .filter(([key]) => key !== 'message' && key !== 'error')
-                      .map(([key, value]: [string, any]) => (
-                      <div key={key}>
-                        <div className="text-xs text-gray-500 dark:text-gray-400 capitalize">
-                          {key.replace(/([A-Z])/g, ' $1').trim()}
-                        </div>
-                        <div className="text-lg font-semibold text-gray-900 dark:text-white">
-                          {typeof value === 'number' ? value.toLocaleString() : value}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {reportData?.summary?.error && (
-                <div className="mb-6 p-4 bg-red-50 dark:bg-red-900/20 rounded-lg border border-red-200 dark:border-red-800">
-                  <h3 className="font-semibold text-red-900 dark:text-red-400 mb-2">Error</h3>
-                  <p className="text-red-700 dark:text-red-300">{reportData.summary.error}</p>
-                </div>
-              )}
-
-              {reportData?.data && reportData.data.length > 0 ? (
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
-                    <thead>
-                      <tr className="border-b border-gray-200 dark:border-slate-700">
-                        {Object.keys(reportData.data[0]).map((key) => (
-                          <th key={key} className="text-left py-3 px-4 font-semibold text-gray-900 dark:text-white capitalize">
-                            {key.replace(/([A-Z])/g, ' $1').trim()}
-                          </th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {reportData.data.map((row: any, index: number) => (
-                        <tr key={index} className="border-b border-gray-100 dark:border-slate-800 hover:bg-gray-50 dark:hover:bg-slate-900/30">
-                          {Object.values(row).map((value: any, cellIndex: number) => (
-                            <td key={cellIndex} className="py-3 px-4 text-gray-600 dark:text-gray-400 whitespace-pre-line break-words">
-                              {formatCellValue(value)}
-                            </td>
-                          ))}
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              ) : (
-                <div className="text-center py-8">
-                  {reportData?.message ? (
-                    <div className="text-gray-500 dark:text-gray-400">
-                      {reportData.message}
-                    </div>
-                  ) : (
-                    <div className="text-gray-500 dark:text-gray-400">
-                      No data available for this report
-                    </div>
+              {period === 'Custom' && (
+                <div className="flex items-center gap-1.5 text-sm">
+                  <input
+                    type="date"
+                    value={customFrom}
+                    onChange={e => setCustomFrom(e.target.value)}
+                    className="px-2 py-1.5 text-sm border border-gray-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-gray-900 dark:text-white"
+                  />
+                  <span className="text-slate-400">→</span>
+                  <input
+                    type="date"
+                    value={customTo}
+                    onChange={e => setCustomTo(e.target.value)}
+                    className="px-2 py-1.5 text-sm border border-gray-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-gray-900 dark:text-white"
+                  />
+                  {!isRangeValid && (
+                    <span className="flex items-center text-amber-500" title="End date must be on or after start date">
+                      <AlertTriangle className="w-3.5 h-3.5" />
+                    </span>
                   )}
                 </div>
               )}
+              {/* Format selector */}
+              <select
+                value={format}
+                onChange={e => setFormat(e.target.value as ReportFormat)}
+                className="px-3 py-1.5 text-sm border border-gray-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-gray-900 dark:text-white"
+                title="Export format"
+              >
+                {ALL_FORMATS.map(f => <option key={f} value={f}>{f}</option>)}
+              </select>
             </div>
+          </>
+        }
+      />
 
-            <div className="flex items-center justify-end gap-3 p-6 border-t border-gray-200 dark:border-slate-700">
-              <button 
-                onClick={handleDownloadReport}
-                className="flex items-center gap-2 px-4 py-2 bg-white dark:bg-slate-700 border border-gray-200 dark:border-slate-600 rounded-lg hover:bg-gray-50 dark:hover:bg-slate-600 transition-colors"
-              >
-                <Download className="w-4 h-4" />
-                Download CSV
-              </button>
-              <button 
+      {/* ── Live KPI cards (period-aware) ──── */}
+      <div className={layout.kpiGrid}>
+        <StatCard
+          title="In-House Guests"
+          value={kpiLoading ? '—' : (kpis?.inHouse ?? '—')}
+          icon={BedDouble}
+          tone="accent"
+          caption={activeLabel}
+        />
+        <StatCard
+          title="Occupancy"
+          value={kpiLoading ? '—' : (kpis ? `${kpis.occupancy}%` : '—')}
+          icon={Percent}
+          tone="success"
+          caption={kpis ? `${kpis.inHouse}/${kpis.totalRooms} rooms` : activeLabel}
+        />
+        <StatCard
+          title="Arrivals"
+          value={kpiLoading ? '—' : (kpis?.arrivals ?? '—')}
+          icon={Users}
+          tone="info"
+          caption={activeLabel}
+        />
+        <StatCard
+          title="Departures"
+          value={kpiLoading ? '—' : (kpis?.departures ?? '—')}
+          icon={TrendingUp}
+          tone="warning"
+          caption={activeLabel}
+        />
+      </div>
+
+      {/* ── Report count KPIs ──── */}
+      <div className={layout.kpiGrid}>
+        <StatCard title="Total Reports" value={REPORTS.length} icon={FileBarChart} tone="accent" />
+        <StatCard title="Daily Reports" value={categoryCounts.daily} icon={Calendar} tone="info" />
+        <StatCard title="Financial Reports" value={categoryCounts.financial} icon={DollarSign} tone="success" />
+        <StatCard title="Operational Reports" value={categoryCounts.operational} icon={Activity} tone="warning" />
+      </div>
+
+      {/* ── Unified toolbar: refresh + search ──── */}
+      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            onClick={() => fetchKpis(activeRange)}
+            disabled={kpiLoading}
+            className={[button.ghost, 'flex items-center gap-2'].join(' ')}
+            title="Refresh KPIs"
+          >
+            {kpiLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+          </button>
+          <div className="relative w-full sm:w-56">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+            <input
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              placeholder="Search reports..."
+              className="w-full pl-9 pr-3 py-2 text-sm border border-gray-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-gray-900 dark:text-white"
+            />
+          </div>
+        </div>
+      </div>
+
+      {/* ── Reports grouped by category ──── */}
+      {filteredReports.length === 0 ? (
+        <SectionCard title="No Reports" icon={FileBarChart} tone="accent">
+          <div className="px-6 py-10 text-center text-slate-500">No reports match your search.</div>
+        </SectionCard>
+      ) : (
+        CATEGORY_ORDER.map(cat => {
+          const groupReports = reportsByCategory[cat];
+          if (groupReports.length === 0) return null;
+          const CatIcon = CATEGORY_ICONS[cat];
+          return (
+            <SectionCard
+              key={cat}
+              title={`${CATEGORY_LABELS[cat]} · ${activeLabel}`}
+              icon={CatIcon}
+              tone="accent"
+            >
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead className="bg-slate-50 dark:bg-slate-900/40 text-left text-xs uppercase text-slate-500">
+                    <tr>
+                      <th className="px-6 py-3 font-medium">Report ID</th>
+                      <th className="px-6 py-3 font-medium">Report</th>
+                      <th className="px-6 py-3 font-medium">Description</th>
+                      <th className="px-6 py-3 font-medium">Period</th>
+                      <th className="px-6 py-3 font-medium">Format</th>
+                      <th className="px-6 py-3 font-medium text-right">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-200 dark:divide-slate-700">
+                    {groupReports.map(r => {
+                      const isGenerating = isLoading && selectedReport?.id === r.id;
+                      return (
+                        <tr key={r.id} className="hover:bg-slate-50 dark:hover:bg-slate-700/40">
+                          <td className="px-6 py-3 whitespace-nowrap">
+                            <span className="inline-flex items-center gap-1.5">
+                              <span className="text-xs font-mono font-semibold px-2 py-0.5 rounded-md bg-indigo-50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800">
+                                {DEPT_TAG}
+                              </span>
+                              <span className="text-sm font-mono text-slate-600 dark:text-slate-400">{r.id}</span>
+                            </span>
+                          </td>
+                          <td className="px-6 py-3 font-medium text-gray-900 dark:text-white">{r.name}</td>
+                          <td className="px-6 py-3 text-slate-600 dark:text-slate-400">{r.description}</td>
+                          <td className="px-6 py-3 whitespace-nowrap">
+                            {period === 'Custom' ? (
+                              <span className="text-xs text-slate-500 dark:text-slate-400 font-mono">
+                                {activeRange.from} → {activeRange.to}
+                              </span>
+                            ) : (
+                              <div className="flex flex-col gap-0.5">
+                                <Badge tone={period === 'Today' ? 'info' : period === 'WTD' ? 'warning' : period === 'MTD' ? 'success' : 'accent'}>
+                                  {period}
+                                </Badge>
+                                <span className="text-[10px] text-slate-400 font-mono">{activeRange.from} → {activeRange.to}</span>
+                              </div>
+                            )}
+                          </td>
+                          <td className="px-6 py-3"><Badge tone={FORMAT_TONE[format]}>{format}</Badge></td>
+                          <td className="px-6 py-3 text-right">
+                            <div className="inline-flex gap-2">
+                              <button
+                                onClick={() => handleGenerateReport(r)}
+                                disabled={isGenerating}
+                                className={button.ghost}
+                                title="View report"
+                              >
+                                {isGenerating ? <Loader2 className="w-4 h-4 animate-spin" /> : <Eye className="w-4 h-4" />}
+                                View
+                              </button>
+                              <button
+                                onClick={() => handleDownloadReport(r)}
+                                disabled={isGenerating || downloadingId === r.id}
+                                className={button.ghost}
+                                title={`Download as ${format}`}
+                              >
+                                {downloadingId === r.id ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+                                {downloadingId === r.id ? 'Downloading' : 'Download'}
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </SectionCard>
+          );
+        })
+      )}
+
+      <div className="bg-gradient-to-r from-amber-50 to-orange-50 dark:from-amber-900/20 dark:to-orange-900/20 rounded-xl p-6 border border-amber-200 dark:border-amber-800">
+        <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-2 flex items-center gap-2">
+          <AlertTriangle className="w-5 h-5 text-amber-600 dark:text-amber-400" />
+          Report Delivery
+        </h3>
+        <p className="text-sm text-slate-600 dark:text-slate-400">
+          All reports pull live data from the property database for the selected period. Export to PDF, Excel, or CSV using the format selector above. Point-in-time reports (In-House, House Status, VIP, Room Rack) reflect the current state regardless of period.
+        </p>
+      </div>
+
+      {/* ── View Modal ─────────────────────────────────────────────── */}
+      <ModalSystem
+        isOpen={showReportModal}
+        onClose={() => setShowReportModal(false)}
+        title={selectedReport?.name || 'Report'}
+        subtitle={selectedReport ? `${DEPT_TAG}-${selectedReport.id} · ${CATEGORY_LABELS[selectedReport.category]} · ${activeLabel}` : ''}
+        variant="info"
+        size="xl"
+        showFooter={true}
+        cancelLabel="Close"
+        footer={
+          <div className="flex items-center justify-between gap-3">
+            <div className="text-xs text-slate-500">
+              {selectedReport && `Generated: ${new Date().toLocaleString()}`}
+            </div>
+            <div className="flex gap-2">
+              <button
                 onClick={handlePrintReport}
-                className="flex items-center gap-2 px-4 py-2 bg-white dark:bg-slate-700 border border-gray-200 dark:border-slate-600 rounded-lg hover:bg-gray-50 dark:hover:bg-slate-600 transition-colors"
+                disabled={!reportData?.data?.length}
+                className="px-4 py-2 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 rounded-xl font-bold text-xs uppercase tracking-widest hover:bg-slate-200 dark:hover:bg-slate-700 transition disabled:opacity-50 flex items-center gap-2"
               >
-                <Printer className="w-4 h-4" />
+                <Printer size={14} />
                 Print
               </button>
-              <button 
+              <button
+                onClick={() => selectedReport && handleDownloadReport(selectedReport)}
+                disabled={!!downloadingId || !reportData?.data?.length}
+                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold text-xs uppercase tracking-widest transition disabled:opacity-50 flex items-center gap-2"
+              >
+                {downloadingId ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
+                Download {format}
+              </button>
+              <button
                 onClick={() => setShowReportModal(false)}
-                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+                className="px-4 py-2 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 rounded-xl font-bold text-xs uppercase tracking-widest hover:bg-slate-200 dark:hover:bg-slate-700 transition"
               >
                 Close
               </button>
             </div>
           </div>
-        </div>
-      )}
+        }
+      >
+        {selectedReport && (
+          <div className="space-y-5">
+            {/* Metadata grid */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <div className="bg-slate-50 dark:bg-slate-800/60 rounded-lg p-3">
+                <div className="text-xs text-slate-500 mb-1">Category</div>
+                <div className="text-sm font-medium text-slate-700 dark:text-slate-200">{CATEGORY_LABELS[selectedReport.category]}</div>
+              </div>
+              <div className="bg-slate-50 dark:bg-slate-800/60 rounded-lg p-3">
+                <div className="text-xs text-slate-500 mb-1">Period</div>
+                <div className="text-sm font-medium text-slate-700 dark:text-slate-200">{activeLabel}</div>
+              </div>
+              <div className="bg-slate-50 dark:bg-slate-800/60 rounded-lg p-3">
+                <div className="text-xs text-slate-500 mb-1">Format</div>
+                <Badge tone={FORMAT_TONE[format]}>{format}</Badge>
+              </div>
+              <div className="bg-slate-50 dark:bg-slate-800/60 rounded-lg p-3">
+                <div className="text-xs text-slate-500 mb-1">Report ID</div>
+                <div className="text-sm font-mono font-medium text-slate-700 dark:text-slate-200">{DEPT_TAG}-{selectedReport.id}</div>
+              </div>
+            </div>
+
+            <div>
+              <div className="text-xs text-slate-500 mb-1">Description</div>
+              <p className="text-sm text-slate-700 dark:text-slate-300">{selectedReport.description}</p>
+            </div>
+
+            {/* Summary panel */}
+            {reportData?.summary && !reportData.summary.error && (
+              <div className="border-t border-slate-100 dark:border-slate-800 pt-4">
+                <h4 className="text-sm font-semibold text-slate-700 dark:text-slate-200 mb-3 flex items-center gap-2">
+                  <FileText className="w-4 h-4" /> Summary
+                </h4>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                  {Object.entries(reportData.summary)
+                    .filter(([key]) => key !== 'message' && key !== 'error')
+                    .map(([key, value]: [string, any]) => {
+                      const isObject = value !== null && typeof value === 'object';
+                      return (
+                        <div key={key} className={`bg-slate-50 dark:bg-slate-800/60 rounded-lg p-2.5 ${isObject ? 'sm:col-span-2' : ''}`}>
+                          <div className="text-[10px] text-slate-500 uppercase tracking-wide">
+                            {key.replace(/([A-Z])/g, ' $1').trim()}
+                          </div>
+                          <div className="text-sm font-semibold text-slate-800 dark:text-slate-100">
+                            {renderSummaryValue(value)}
+                          </div>
+                        </div>
+                      );
+                    })}
+                </div>
+              </div>
+            )}
+
+            {reportData?.summary?.error && (
+              <div className="p-4 bg-red-50 dark:bg-red-900/20 rounded-lg border border-red-200 dark:border-red-800">
+                <h4 className="font-semibold text-red-900 dark:text-red-400 mb-1">Error</h4>
+                <p className="text-sm text-red-700 dark:text-red-300">{reportData.summary.error}</p>
+              </div>
+            )}
+
+            {/* Data table */}
+            <div className="border-t border-slate-100 dark:border-slate-800 pt-4">
+              <h4 className="text-sm font-semibold text-slate-700 dark:text-slate-200 mb-3 flex items-center gap-2">
+                <Eye className="w-4 h-4" /> Data Preview
+              </h4>
+              {isLoading ? (
+                <div className="text-sm text-slate-500 py-6 text-center">
+                  <Loader2 className="w-4 h-4 animate-spin inline-block mr-2" />
+                  Loading report…
+                </div>
+              ) : reportData?.data && reportData.data.length > 0 ? (() => {
+                const flatRows = reportData.data.map((row: any) => flattenRow(row));
+                const flatKeys = Object.keys(flatRows[0]);
+                return (
+                  <div className="overflow-x-auto overflow-y-auto max-h-96 rounded-lg border border-slate-200 dark:border-slate-700">
+                    <table className="w-full text-xs">
+                      <thead className="bg-slate-50 dark:bg-slate-800/60 text-left text-slate-500 sticky top-0">
+                        <tr>
+                          {flatKeys.map(key => (
+                            <th key={key} className="px-3 py-2 font-medium whitespace-nowrap">{prettifyKey(key)}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 dark:divide-slate-700">
+                        {flatRows.map((row: any, index: number) => (
+                          <tr key={index} className="hover:bg-slate-50 dark:hover:bg-slate-700/40">
+                            {flatKeys.map(key => (
+                              <td key={key} className="px-3 py-2 text-slate-700 dark:text-slate-200 whitespace-pre-line break-words">
+                                {formatCellValue(row[key])}
+                              </td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                );
+              })() : (
+                <div className="text-sm text-slate-500 dark:text-slate-400 py-6 text-center">
+                  {reportData?.message || 'No data available for this report in the selected period.'}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+      </ModalSystem>
     </div>
   );
 };

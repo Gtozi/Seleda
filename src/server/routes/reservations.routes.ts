@@ -7,6 +7,7 @@ import { writeAuditEvent } from '../services/sharedServices';
 import { getRequestUser } from '../services/sessionService';
 import { setAuditContext } from '../authHelpers';
 import { mapFolioFromDb, mapFolioLineFromDb, mapFolioPaymentFromDb } from '../../services/dataMapper';
+import { getTaxRates } from '../services/adminConfigService';
 import { roomApiSchema, guestApiSchema, reservationApiSchema, roomTypeApiSchema, ratePlanApiSchema, seasonApiSchema, packageApiSchema, yieldPolicyApiSchema, airportShuttleApiSchema } from '../../schemas/backendSchemas';
 
 const router = Router();
@@ -447,7 +448,7 @@ router.post('/:id/check-in', async (req, res) => {
     }
 
     const reservationId = req.params.id;
-    const { roomNumber } = req.body;
+    const { roomNumber, routingPolicy } = req.body;
 
     if (!roomNumber || typeof roomNumber !== 'string') {
       return res.status(400).json({ error: 'roomNumber is required' });
@@ -459,7 +460,7 @@ router.post('/:id/check-in', async (req, res) => {
         // Check-in is only permitted on the reservation's check-in date.
         const { data: existingReservation, error: fetchError } = await supabaseAdmin
           .from('reservations')
-          .select('id, check_in_date, status')
+          .select('id, check_in_date, status, guest_id, property_id')
           .eq('id', reservationId)
           .maybeSingle();
 
@@ -528,115 +529,438 @@ router.post('/:id/check-in', async (req, res) => {
           return res.status(500).json({ error: updateError.message });
         }
 
+        // Step 1b: Atomically update the assigned room's status to 'Occupied Clean'.
+        // This MUST happen server-side (not via a fire-and-forget client call) so
+        // that the Front Office Dashboard occupancy/available-room KPIs stay in
+        // sync with reservation check-ins regardless of which client or code path
+        // initiated the check-in. Without this, rooms.status can drift to
+        // 'Vacant Clean' while the reservation is 'CheckedIn', causing the
+        // dashboard to under-report occupancy.
+        const { error: roomStatusError } = await supabaseAdmin
+          .from('rooms')
+          .update({ status: 'Occupied Clean' })
+          .eq('number', roomNumber);
+
+        if (roomStatusError) {
+          console.error('[check-in] Failed to update room status to Occupied Clean:', roomStatusError);
+          // Non-fatal: reservation is already CheckedIn and folio creation below
+          // must proceed. Log so ops can reconcile, but do not abort check-in.
+        }
+
+        // Step 1c: Tell the guest they're checked in (guest portal feed).
+        if (existingReservation.guest_id) {
+          try {
+            await supabaseAdmin.from('guest_notifications').insert({
+              property_id: existingReservation.property_id || null,
+              guest_id: existingReservation.guest_id,
+              reservation_id: reservationId,
+              category: 'checkin',
+              title: 'You are checked in',
+              message: `Welcome! You're now checked in to room ${roomNumber}.`,
+              priority: 'high',
+            });
+          } catch (e: any) {
+            console.warn('[check-in] guest notification failed:', e?.message);
+          }
+        }
+
         // Step 2: Check if folio already exists
         const { data: existingFolio } = await supabaseAdmin
           .from('folios')
-          .select('id')
+          .select('id, folio_type, parent_folio_id')
           .eq('reservation_id', reservationId)
           .eq('status', 'Open')
           .maybeSingle();
 
         let folioId = existingFolio?.id;
 
-        // Step 3: Create folio if it doesn't exist
-        if (!folioId) {
-          // Get reservation details
-          const { data: reservation } = await supabaseAdmin
-            .from('reservations')
-            .select('total_amount, discount_percent, room_type, channel, group_booking_id')
-            .eq('id', reservationId)
+        // Step 2b: Always ensure folio hierarchy for group reservations,
+        // even if a Guest folio already exists from a prior check-in.
+        // This fixes reservations that were checked in before the hierarchy
+        // logic was added.
+        const { data: reservationForHierarchy } = await supabaseAdmin
+          .from('reservations')
+          .select('total_amount, discount_percent, room_type, channel, group_booking_id, booking_group_id, group_profile_id, corporate_account_id, billing_mode, deposit_amount, is_deposit_paid, guest_name')
+          .eq('id', reservationId)
+          .maybeSingle();
+
+        if (!reservationForHierarchy) {
+          return res.status(404).json({ error: 'Reservation not found' });
+        }
+
+        const reservation = reservationForHierarchy;
+
+        // ── Determine billing mode ──────────────────────────────────
+        // Priority: corporate_account_id > group fields > explicit billing_mode
+        // Note: explicit billing_mode='individual' is overridden when group
+        // fields are present, because group reservations created via the
+        // public booking flow default to 'individual' even though they're groups.
+        // 'corporate' → ONE Master folio per company + Guest (B) per room
+        // 'group'     → Company folio (if parent) + Group folio + Master folio + Guest folio per room
+        // 'individual'→ single Guest folio
+        const hasGroupFields = !!(reservation.corporate_account_id
+          || reservation.booking_group_id
+          || reservation.group_booking_id
+          || reservation.group_profile_id);
+        const billingMode = reservation.corporate_account_id ? 'corporate'
+          : hasGroupFields ? 'group'
+          : (reservation.billing_mode || 'individual');
+
+        // groupId should be a group_profiles.code for consistency with
+        // existing folios (migration 244 stores codes in group_id/owner_id).
+        // If only group_profile_id (an id) is set, resolve it to a code.
+        let groupId: string | null = reservation.booking_group_id || reservation.group_booking_id || null;
+        if (!groupId && reservation.group_profile_id) {
+          const { data: gp } = await supabaseAdmin
+            .from('group_profiles')
+            .select('code')
+            .eq('id', reservation.group_profile_id)
             .maybeSingle();
+          if (gp?.code) groupId = gp.code;
+        }
+        const rawTotal = reservation.total_amount || 0;
+        const discountPct = reservation.discount_percent || 0;
+        const userId = req.user?.id || 'system';
 
-          if (!reservation) {
-            return res.status(404).json({ error: 'Reservation not found' });
+        // ── Helper: find or create a Company folio for a group_profile code ──
+        async function ensureCompanyFolio(profileCode: string): Promise<string | null> {
+          const { data: existing } = await supabaseAdmin
+            .from('folios')
+            .select('id')
+            .eq('owner_type', 'group_profile')
+            .eq('owner_id', profileCode)
+            .eq('folio_type', 'Company')
+            .eq('status', 'Open')
+            .maybeSingle();
+          if (existing) return existing.id;
+
+          const companyFolioId = crypto.randomUUID();
+          await supabaseAdmin.from('folios').insert({
+            id: companyFolioId,
+            folio_type: 'Company',
+            status: 'Open',
+            balance: 0,
+            total_charges: 0,
+            total_payments: 0,
+            currency: 'USD',
+            owner_type: 'group_profile',
+            owner_id: profileCode,
+            opened_at: new Date().toISOString(),
+            created_by: userId,
+            notes: `Company folio for ${profileCode}`,
+          });
+          return companyFolioId;
+        }
+
+        // ── Helper: find or create ONE Master folio per company ──
+        async function ensureMasterFolio(companyCode: string, parentFolioId: string | null): Promise<string | null> {
+          const { data: existing } = await supabaseAdmin
+            .from('folios')
+            .select('id')
+            .eq('folio_type', 'Master')
+            .eq('owner_type', 'group_profile')
+            .eq('owner_id', companyCode)
+            .eq('status', 'Open')
+            .maybeSingle();
+          if (existing) return existing.id;
+
+          const masterFolioId = crypto.randomUUID();
+          await supabaseAdmin.from('folios').insert({
+            id: masterFolioId,
+            folio_type: 'Master',
+            target_folio: 'A',
+            status: 'Open',
+            balance: 0,
+            total_charges: 0,
+            total_payments: 0,
+            currency: 'USD',
+            owner_type: 'group_profile',
+            owner_id: companyCode,
+            parent_folio_id: parentFolioId,
+            opened_at: new Date().toISOString(),
+            created_by: userId,
+            notes: `Master folio for company ${companyCode}`,
+          });
+          return masterFolioId;
+        }
+
+        // ── Helper: find or create a Group folio linked to a Company folio ──
+        async function ensureGroupFolio(groupCode: string, parentCompanyFolioId: string | null): Promise<string | null> {
+          const { data: existing } = await supabaseAdmin
+            .from('folios')
+            .select('id')
+            .eq('folio_type', 'Group')
+            .eq('group_id', groupCode)
+            .eq('status', 'Open')
+            .maybeSingle();
+          if (existing) return existing.id;
+
+          const groupFolioId = crypto.randomUUID();
+          await supabaseAdmin.from('folios').insert({
+            id: groupFolioId,
+            folio_type: 'Group',
+            status: 'Open',
+            balance: 0,
+            total_charges: 0,
+            total_payments: 0,
+            currency: 'USD',
+            group_id: groupCode,
+            parent_folio_id: parentCompanyFolioId,
+            opened_at: new Date().toISOString(),
+            created_by: userId,
+            notes: `Group folio for ${groupCode}`,
+          });
+          return groupFolioId;
+        }
+
+        // ── Resolve the parent group_profile (TravelAgent / CorporateAccount) ──
+        let parentProfileId: string | null = reservation.corporate_account_id || null;
+        let groupProfileCode: string | null = null;
+        if (!parentProfileId && groupId) {
+          const { data: groupProfile } = await supabaseAdmin
+            .from('group_profiles')
+            .select('id, code, name, type, organization_name')
+            .or(`id.eq.${groupId},code.eq.${groupId}`)
+            .maybeSingle();
+          if (groupProfile) {
+            groupProfileCode = groupProfile.code;
+            if (['CorporateAccount', 'TravelAgent', 'TourOperator', 'LongTermContract'].includes(groupProfile.type)) {
+              parentProfileId = groupProfile.code;
+            } else if (groupProfile.organization_name) {
+              const { data: corpProfile } = await supabaseAdmin
+                .from('group_profiles')
+                .select('code, type, organization_name')
+                .eq('organization_name', groupProfile.organization_name)
+                .in('type', ['CorporateAccount', 'TravelAgent', 'TourOperator', 'LongTermContract'])
+                .limit(1)
+                .maybeSingle();
+              if (corpProfile) {
+                parentProfileId = corpProfile.code;
+              }
+            }
           }
+        }
 
-          const isCorporate = reservation.channel === 'Corporate' || reservation.group_booking_id != null;
-          const rawTotal = reservation.total_amount || 0;
-          const discountPct = reservation.discount_percent || 0;
+        // ── Always ensure hierarchy for group/corporate reservations ──
+        // This runs even if the Guest folio already exists (fixing
+        // reservations checked in before the hierarchy logic was added).
+        let masterFolioId: string | null = null;
+        let groupFolioId: string | null = null;
+        let companyFolioId: string | null = null;
 
-          if (isCorporate) {
-            // Create split folios for corporate
-            const folioA = crypto.randomUUID();
-            const folioB = crypto.randomUUID();
-            const userId = req.user?.id || 'system'; // Fallback for development
-            
-            await supabaseAdmin.from('folios').insert({
-              id: folioA,
-              reservation_id: reservationId,
-              folio_type: 'Master',
-              target_folio: 'A',
-              status: 'Open',
-              balance: 0,
-              total_charges: 0,
-              total_payments: 0,
-              currency: 'USD',
-              opened_at: new Date().toISOString(),
-              created_by: userId,
+        if (billingMode === 'corporate' || billingMode === 'group') {
+          if (parentProfileId) {
+            companyFolioId = await ensureCompanyFolio(parentProfileId);
+          }
+          if (groupId) {
+            groupFolioId = await ensureGroupFolio(groupId, companyFolioId);
+          }
+          if (billingMode === 'corporate' && parentProfileId) {
+            masterFolioId = await ensureMasterFolio(parentProfileId, groupFolioId || companyFolioId);
+          } else if (billingMode === 'group') {
+            // Master folio — one per group (or per company if no group)
+            const masterLookupCode = parentProfileId || groupProfileCode || groupId;
+            if (masterLookupCode) {
+              const { data: existingMaster } = await supabaseAdmin
+                .from('folios')
+                .select('id')
+                .eq('folio_type', 'Master')
+                .eq('status', 'Open')
+                .or(`owner_id.eq.${masterLookupCode},group_id.eq.${masterLookupCode}`)
+                .maybeSingle();
+              if (existingMaster) {
+                masterFolioId = existingMaster.id;
+              } else {
+                masterFolioId = crypto.randomUUID();
+                await supabaseAdmin.from('folios').insert({
+                  id: masterFolioId,
+                  folio_type: 'Master',
+                  target_folio: 'A',
+                  status: 'Open',
+                  balance: 0,
+                  total_charges: 0,
+                  total_payments: 0,
+                  currency: 'USD',
+                  owner_type: parentProfileId ? 'group_profile' : null,
+                  owner_id: parentProfileId || null,
+                  group_id: groupProfileCode || groupId || null,
+                  parent_folio_id: groupFolioId || companyFolioId,
+                  opened_at: new Date().toISOString(),
+                  created_by: userId,
+                  notes: `Master folio for ${masterLookupCode}`,
+                });
+              }
+            }
+          }
+        }
+
+        // ── Create Guest folio if it doesn't exist, or link existing one ──
+        const guestParentId = masterFolioId || groupFolioId || companyFolioId || null;
+
+        if (!folioId) {
+          // Create new Guest folio
+          folioId = crypto.randomUUID();
+          await supabaseAdmin.from('folios').insert({
+            id: folioId,
+            reservation_id: reservationId,
+            folio_type: 'Guest',
+            target_folio: billingMode === 'corporate' ? 'B' : null,
+            status: 'Open',
+            balance: 0,
+            total_charges: 0,
+            total_payments: 0,
+            currency: 'USD',
+            group_id: groupId || null,
+            parent_folio_id: guestParentId,
+            opened_at: new Date().toISOString(),
+            created_by: userId,
+          });
+
+          // Post room charge
+          if (billingMode === 'corporate' && rawTotal > 0 && masterFolioId) {
+            // Corporate: room charge goes to the shared Master folio
+            // Use routing-enabled RPC so routing rules on the Master are honored
+            await supabaseAdmin.rpc('post_folio_charge_with_routing', {
+              p_origin_folio_id: folioId,
+              p_description: `Room charge - ${reservation.room_type || 'reservation'} - ${reservation.guest_name || ''}`.trim(),
+              p_amount: rawTotal,
+              p_quantity: 1,
+              p_line_type: 'Room',
+              p_revenue_account_code: null,
+              p_user_id: userId,
+              p_source_reference: reservationId,
+              p_discount_percent: discountPct,
+              p_reservation_id: reservationId,
+              p_source_module: 'frontoffice',
             });
-
-            await supabaseAdmin.from('folios').insert({
-              id: folioB,
-              reservation_id: reservationId,
-              folio_type: 'Guest',
-              target_folio: 'B',
-              status: 'Open',
-              balance: 0,
-              total_charges: 0,
-              total_payments: 0,
-              currency: 'USD',
-              opened_at: new Date().toISOString(),
-              created_by: userId,
+          } else if (rawTotal > 0) {
+            // Group/Individual: post to Guest folio with routing evaluation
+            // If a routing rule matches (e.g. "Room → Master"), the charge
+            // will be routed to the Master folio automatically.
+            await supabaseAdmin.rpc('post_folio_charge_with_routing', {
+              p_origin_folio_id: folioId,
+              p_description: `Room charge - ${reservation.room_type || 'reservation'}`,
+              p_amount: rawTotal,
+              p_quantity: 1,
+              p_line_type: 'Room',
+              p_revenue_account_code: null,
+              p_user_id: userId,
+              p_source_reference: reservationId,
+              p_discount_percent: discountPct,
+              p_reservation_id: reservationId,
+              p_source_module: 'frontoffice',
             });
+          }
+        } else if (guestParentId && !existingFolio?.parent_folio_id) {
+          // Guest folio already exists but isn't linked to the hierarchy — link it now
+          await supabaseAdmin
+            .from('folios')
+            .update({ parent_folio_id: guestParentId, group_id: groupId || existingFolio?.folio_type })
+            .eq('id', folioId);
+        }
 
-            // Post room charge to Master folio
-            if (rawTotal > 0) {
-              await supabaseAdmin.rpc('post_folio_charge', {
-                p_folio_id: folioA,
-                p_description: `Room charge - ${reservation.room_type || 'reservation'}`,
-                p_amount: rawTotal,
-                p_quantity: 1,
-                p_line_type: 'Room',
-                p_revenue_account_code: null,
-                p_user_id: userId,
-                p_source_reference: null,
-                p_discount_percent: discountPct,
+        // For corporate mode, return the Master folio id as the primary
+        if (billingMode === 'corporate' && masterFolioId) {
+          folioId = masterFolioId;
+        }
+
+        // ── Seed existing deposit as a folio_payment (backward compat) ──────
+        // If the reservation had a deposit collected before this fix (stored
+        // only on reservations.deposit_amount), seed it as a real folio_payment
+        // now so the folio balance reflects it. We use a tagged reference_number
+        // to make this idempotent.
+        if (folioId) {
+          try {
+            const { data: resForDeposit } = await supabaseAdmin
+              .from('reservations')
+              .select('deposit_amount, is_deposit_paid, guest_name')
+              .eq('id', reservationId)
+              .maybeSingle();
+
+            const depositAmount = Number(resForDeposit?.deposit_amount || 0);
+            const isDepositPaid = resForDeposit?.is_deposit_paid;
+
+            if (isDepositPaid && depositAmount > 0) {
+              const depositRef = `DEPOSIT-${reservationId}`;
+              // Check if the deposit payment already exists on this folio
+              const { data: existingDepositPayment } = await supabaseAdmin
+                .from('folio_payments')
+                .select('id')
+                .eq('folio_id', folioId)
+                .eq('is_voided', false)
+                .eq('reference_number', depositRef)
+                .maybeSingle();
+
+              if (!existingDepositPayment) {
+                await supabaseAdmin.from('folio_payments').insert({
+                  id: crypto.randomUUID(),
+                  folio_id: folioId,
+                  amount: depositAmount,
+                  payment_method: 'Deposit',
+                  reference_number: depositRef,
+                  cashier_id: req.user?.id || 'system',
+                  created_by: req.user?.id || 'system',
+                  created_at: new Date().toISOString(),
+                });
+                await supabaseAdmin.rpc('recompute_folio_totals', { p_folio_id: folioId });
+                console.log(`[check-in] Seeded existing deposit of ${depositAmount} onto folio ${folioId}`);
+              }
+            }
+          } catch (seedErr: any) {
+            console.error('[check-in] Failed to seed deposit (non-fatal):', seedErr.message);
+          }
+        }
+
+        // ── Apply routing policy if provided ───────────────────────
+        // Creates routing_rules entries on the Master folio that the
+        // post_folio_charge RPC honors via evaluate_routing_rules().
+        if (routingPolicy && routingPolicy.entries && masterFolioId) {
+          try {
+            // Delete any existing routing rules on this Master folio first
+            await supabaseAdmin
+              .from('routing_rules')
+              .delete()
+              .eq('scope_folio_id', masterFolioId);
+
+            // Group entries by target to create efficient rules
+            const masterCategories = routingPolicy.entries
+              .filter((e: any) => e.target === 'master')
+              .map((e: any) => e.category);
+
+            // If all charges go to master, create a single 'all_charges' rule
+            // If all go to guest, don't create any rules (default behavior)
+            // Otherwise, create a 'charge_category' rule for master categories
+            if (masterCategories.length === routingPolicy.entries.length) {
+              // All → Master
+              await supabaseAdmin.from('routing_rules').insert({
+                id: crypto.randomUUID(),
+                scope_folio_id: masterFolioId,
+                applies_to: 'all_charges',
+                charge_category_filter: JSON.stringify([]),
+                target_folio_id: masterFolioId,
+                is_active: true,
+                priority: 10,
+                created_by: req.user?.id || 'system',
+                notes: routingPolicy.reason || `Auto-created at check-in: all charges to Master`,
+              });
+            } else if (masterCategories.length > 0) {
+              // Selected categories → Master
+              await supabaseAdmin.from('routing_rules').insert({
+                id: crypto.randomUUID(),
+                scope_folio_id: masterFolioId,
+                applies_to: 'charge_category',
+                charge_category_filter: JSON.stringify(masterCategories),
+                target_folio_id: masterFolioId,
+                is_active: true,
+                priority: 10,
+                created_by: req.user?.id || 'system',
+                notes: routingPolicy.reason || `Auto-created at check-in: ${masterCategories.join(', ')} to Master`,
               });
             }
-
-            folioId = folioA; // Return Master folio ID
-          } else {
-            // Create single folio for individual bookings
-            folioId = crypto.randomUUID();
-            const userId = req.user?.id || 'system'; // Fallback for development
-            
-            await supabaseAdmin.from('folios').insert({
-              id: folioId,
-              reservation_id: reservationId,
-              folio_type: 'Guest',
-              status: 'Open',
-              balance: 0,
-              total_charges: 0,
-              total_payments: 0,
-              currency: 'USD',
-              opened_at: new Date().toISOString(),
-              created_by: userId,
-            });
-
-            // Post room charge
-            if (rawTotal > 0) {
-              await supabaseAdmin.rpc('post_folio_charge', {
-                p_folio_id: folioId,
-                p_description: `Room charge - ${reservation.room_type || 'reservation'}`,
-                p_amount: rawTotal,
-                p_quantity: 1,
-                p_line_type: 'Room',
-                p_revenue_account_code: null,
-                p_user_id: userId,
-                p_source_reference: null,
-                p_discount_percent: discountPct,
-              });
-            }
+            // If masterCategories.length === 0, all charges stay on Guest (no rules needed)
+            console.log(`[check-in] Applied routing policy: ${masterCategories.length}/${routingPolicy.entries.length} categories → Master`);
+          } catch (routingErr: any) {
+            console.error('[check-in] Failed to create routing rules (non-fatal):', routingErr.message);
           }
         }
 
@@ -648,6 +972,97 @@ router.post('/:id/check-in', async (req, res) => {
     }
 
     return res.status(503).json({ error: 'Database not configured' });
+  });
+
+  // Check-Out: persist reservation status = 'CheckedOut' and release the room
+  // to 'Vacant Dirty' server-side. Previously check-out only updated local
+  // React state + a fire-and-forget upsert, so a page reload or a different
+  // client could leave the reservation stuck at 'CheckedIn' in the DB and the
+  // room stuck at 'Occupied Clean' — causing the dashboard to over-report
+  // occupancy and under-report available rooms.
+  router.post('/:id/check-out', authenticate, requirePermission('reservation:update'), async (req, res) => {
+    if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
+
+    const reservationId = req.params.id;
+    try {
+      // Fetch the reservation to get the assigned room number and current status.
+      const { data: reservation, error: fetchError } = await supabaseAdmin
+        .from('reservations')
+        .select('id, status, room_number, property_id')
+        .eq('id', reservationId)
+        .maybeSingle();
+
+      if (fetchError) return res.status(500).json({ error: fetchError.message });
+      if (!reservation) return res.status(404).json({ error: 'Reservation not found' });
+      if (reservation.status !== 'CheckedIn') {
+        return res.status(400).json({ error: `Reservation is not CheckedIn (current status: ${reservation.status})` });
+      }
+
+      // Step 1: Mark reservation as CheckedOut.
+      const { error: updateError } = await supabaseAdmin
+        .from('reservations')
+        .update({
+          status: 'CheckedOut',
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', reservationId);
+
+      if (updateError) {
+        console.error('[check-out] Failed to update reservation status:', updateError);
+        return res.status(500).json({ error: updateError.message });
+      }
+
+      // Step 2: Release the room to 'Vacant Dirty' (housekeeping will clean it).
+      if (reservation.room_number) {
+        const { error: roomStatusError } = await supabaseAdmin
+          .from('rooms')
+          .update({ status: 'Vacant Dirty' })
+          .eq('number', reservation.room_number);
+
+        if (roomStatusError) {
+          console.error('[check-out] Failed to update room status to Vacant Dirty:', roomStatusError);
+          // Non-fatal: reservation is already CheckedOut. Log so ops can reconcile.
+        }
+      }
+
+      // Step 3: Auto-create a 'Checkout Cleaning' housekeeping task (docs §2/§6).
+      // This closes the loop: check-out → room dirty → cleaning task assigned.
+      if (reservation.room_number) {
+        try {
+          const taskId = `TSK-${Date.now()}-CO`;
+          await supabaseAdmin.from('housekeeping_task_mgmt').insert({
+            id: taskId,
+            property_id: reservation.property_id || null,
+            type: 'Checkout Cleaning',
+            category: 'Automatic',
+            location: reservation.room_number,
+            priority: 'High',
+            due_date: new Date().toISOString().slice(0, 16).replace('T', ' '),
+            status: 'Pending',
+            progress: 0,
+            notes: `Auto-created on checkout of reservation ${reservationId.slice(0, 8)}.`,
+          });
+        } catch (hkErr: any) {
+          // Non-fatal: checkout already succeeded; log so ops can reconcile.
+          console.warn('[check-out] Auto-create Checkout Cleaning task failed:', hkErr?.message);
+        }
+      }
+
+      await writeAuditEvent({
+        req,
+        user: req.user!,
+        action: 'reservation.check_out',
+        entityType: 'Reservation',
+        entityId: reservationId,
+        module: 'reservations',
+        details: { roomNumber: reservation.room_number }
+      });
+
+      return res.json({ success: true, reservationId, status: 'CheckedOut', roomNumber: reservation.room_number });
+    } catch (error: any) {
+      console.error('Check-out error:', error);
+      return res.status(500).json({ error: error.message || 'Check-out failed' });
+    }
   });
 
   // No-Show: mark reservation as NoShow with auto penalty charge
@@ -732,112 +1147,254 @@ router.post('/:id/cancel', authenticate, requirePermission('reservation:update')
 
     const { data: reservation } = await supabaseAdmin
       .from('reservations')
-      .select('status, total_amount, channel, group_booking_id, discount_percent, room_type')
+      .select('status, total_amount, channel, group_booking_id, booking_group_id, corporate_account_id, billing_mode, discount_percent, room_type, guest_name')
       .eq('id', reservationId)
       .maybeSingle();
 
     if (!reservation) return null;
 
-    const isCorporate = reservation.channel === 'Corporate' || reservation.group_booking_id != null;
+    // ── Determine billing mode (same logic as check-in) ──────────────
+    const billingMode = reservation.billing_mode
+      || (reservation.corporate_account_id ? 'corporate'
+        : (reservation.booking_group_id || reservation.group_booking_id) ? 'group'
+        : 'individual');
 
-    // Pre-tax base amount for the initial charge. The discount is now applied
-    // inside post_folio_charge RPC via p_discount_percent parameter, ensuring
-    // consistent fee/tax calculation with the backend. This folio-creation fallback
-    // path runs whenever a charge/payment is posted BEFORE check_in_reservation
-    // has run (e.g., collecting a pre-arrival deposit), so without seeding a real
-    // charge line here the folio would sit at $0.00 total_charges forever.
+    const groupId = reservation.booking_group_id || reservation.group_booking_id;
     const rawTotal = reservation.total_amount || 0;
     const discountPct = reservation.discount_percent || 0;
 
-    if (isCorporate) {
-      // Create split folios: Master (A) + Guest (B). The `folios.balance`/
-      // `total_charges` columns start at 0 (they're just a cache); the real
-      // room charge is posted as an actual folio_line via post_folio_charge
-      // below so /folio-balance and /payments (which sum folio_lines/
-      // folio_payments directly) see the true amount due.
-      const folioA = crypto.randomUUID();
-      const folioB = crypto.randomUUID();
-      const { error: errA } = await supabaseAdmin.from('folios').insert({
-        id: folioA,
-        reservation_id: reservationId,
+    // ── Resolve parent group_profile (company) ──
+    let parentProfileId: string | null = reservation.corporate_account_id || null;
+    if (!parentProfileId && groupId) {
+      const { data: groupProfile } = await supabaseAdmin
+        .from('group_profiles')
+        .select('id, parent_group_id, type')
+        .eq('id', groupId)
+        .maybeSingle();
+      if (groupProfile?.parent_group_id) {
+        parentProfileId = groupProfile.parent_group_id;
+      }
+    }
+
+    // ── Helper: find or create Company folio ──
+    async function ensureCompanyFolio(profileId: string): Promise<string | null> {
+      const { data: existing } = await supabaseAdmin
+        .from('folios')
+        .select('id')
+        .eq('owner_type', 'group_profile')
+        .eq('owner_id', profileId)
+        .eq('status', 'Open')
+        .maybeSingle();
+      if (existing) return existing.id;
+
+      const id = crypto.randomUUID();
+      await supabaseAdmin.from('folios').insert({
+        id,
+        folio_type: 'Company',
+        status: 'Open',
+        balance: 0, total_charges: 0, total_payments: 0,
+        currency: 'USD',
+        owner_type: 'group_profile', owner_id: profileId,
+        opened_at: new Date().toISOString(),
+        created_by: userId,
+        notes: `Company folio for ${profileId}`,
+      });
+      return id;
+    }
+
+    // ── Helper: find or create ONE Master folio per company ──
+    async function ensureMasterFolio(companyProfileId: string, parentCompanyFolioId: string | null): Promise<string | null> {
+      const { data: existing } = await supabaseAdmin
+        .from('folios')
+        .select('id')
+        .eq('folio_type', 'Master')
+        .eq('owner_type', 'group_profile')
+        .eq('owner_id', companyProfileId)
+        .eq('status', 'Open')
+        .maybeSingle();
+      if (existing) return existing.id;
+
+      const id = crypto.randomUUID();
+      await supabaseAdmin.from('folios').insert({
+        id,
         folio_type: 'Master',
         target_folio: 'A',
         status: 'Open',
-        balance: 0,
-        total_charges: 0,
-        total_payments: 0,
+        balance: 0, total_charges: 0, total_payments: 0,
         currency: 'USD',
+        owner_type: 'group_profile', owner_id: companyProfileId,
+        parent_folio_id: parentCompanyFolioId,
         opened_at: new Date().toISOString(),
         created_by: userId,
+        notes: `Master folio for company ${companyProfileId}`,
       });
-      if (errA?.code === '23505') {
-        // Lost the creation race - another request created it concurrently.
-        const raceWinner = await findOpenFolio(reservationId, targetFolio);
-        if (raceWinner) return raceWinner;
-      }
+      return id;
+    }
+
+    // ── Helper: find or create Group folio ──
+    async function ensureGroupFolio(groupBookingId: string, parentCompanyFolioId: string | null): Promise<string | null> {
+      const { data: existing } = await supabaseAdmin
+        .from('folios')
+        .select('id')
+        .eq('folio_type', 'Group')
+        .eq('group_id', groupBookingId)
+        .eq('status', 'Open')
+        .maybeSingle();
+      if (existing) return existing.id;
+
+      const id = crypto.randomUUID();
       await supabaseAdmin.from('folios').insert({
+        id,
+        reservation_id: reservationId,
+        folio_type: 'Group',
+        status: 'Open',
+        balance: 0, total_charges: 0, total_payments: 0,
+        currency: 'USD',
+        group_id: groupBookingId,
+        parent_folio_id: parentCompanyFolioId,
+        opened_at: new Date().toISOString(),
+        created_by: userId,
+        notes: `Group folio for ${groupBookingId}`,
+      });
+      return id;
+    }
+
+    if (billingMode === 'corporate') {
+      // ── Corporate: Company → ONE Master per company + Guest (B) per room ──
+      let companyFolioId: string | null = null;
+      if (parentProfileId) {
+        companyFolioId = await ensureCompanyFolio(parentProfileId);
+      }
+
+      let groupFolioId: string | null = null;
+      if (groupId) {
+        groupFolioId = await ensureGroupFolio(groupId, companyFolioId);
+      }
+
+      let masterFolioId: string | null = null;
+      if (parentProfileId) {
+        masterFolioId = await ensureMasterFolio(parentProfileId, groupFolioId || companyFolioId);
+      }
+
+      // Per-reservation Guest (B) folio
+      const folioB = crypto.randomUUID();
+      const { error: errB } = await supabaseAdmin.from('folios').insert({
         id: folioB,
         reservation_id: reservationId,
         folio_type: 'Guest',
         target_folio: 'B',
         status: 'Open',
-        balance: 0,
-        total_charges: 0,
-        total_payments: 0,
+        balance: 0, total_charges: 0, total_payments: 0,
         currency: 'USD',
+        group_id: groupId || null,
+        parent_folio_id: masterFolioId || groupFolioId || companyFolioId,
         opened_at: new Date().toISOString(),
         created_by: userId,
       });
+      if (errB?.code === '23505') {
+        const raceWinner = await findOpenFolio(reservationId, targetFolio);
+        if (raceWinner) return raceWinner;
+      }
 
-      // Corporate stays put the room charge on the Master (A) folio, same as
-      // check_in_reservation - the Guest (B) folio stays at $0 for incidentals.
+      // Post room charge to the shared Master folio (company pays)
+      // Use routing-enabled RPC so routing rules are honored
+      if (rawTotal > 0 && masterFolioId) {
+        await supabaseAdmin.rpc('post_folio_charge_with_routing', {
+          p_origin_folio_id: folioB,
+          p_description: `Room charge - ${reservation.room_type || 'reservation'} - ${reservation.guest_name || ''}`.trim(),
+          p_amount: rawTotal,
+          p_quantity: 1,
+          p_line_type: 'Room',
+          p_revenue_account_code: null,
+          p_user_id: userId,
+          p_source_reference: reservationId,
+          p_discount_percent: discountPct,
+          p_reservation_id: reservationId,
+          p_source_module: 'frontoffice',
+        });
+      }
+      return targetFolio === 'B' ? folioB : (masterFolioId || folioB);
+    }
+
+    if (billingMode === 'group') {
+      // ── Group: Company (if parent) → ONE Group folio → Guest folio per room ──
+      let companyFolioId: string | null = null;
+      if (parentProfileId) {
+        companyFolioId = await ensureCompanyFolio(parentProfileId);
+      }
+
+      let groupFolioId: string | null = null;
+      if (groupId) {
+        groupFolioId = await ensureGroupFolio(groupId, companyFolioId);
+      }
+
+      // Per-reservation Guest folio, linked to the Group folio
+      const folioId = crypto.randomUUID();
+      const { error: errGuest } = await supabaseAdmin.from('folios').insert({
+        id: folioId,
+        reservation_id: reservationId,
+        folio_type: 'Guest',
+        status: 'Open',
+        balance: 0, total_charges: 0, total_payments: 0,
+        currency: 'USD',
+        group_id: groupId || null,
+        parent_folio_id: groupFolioId,
+        opened_at: new Date().toISOString(),
+        created_by: userId,
+      });
+      if (errGuest?.code === '23505') {
+        const raceWinner = await findOpenFolio(reservationId, targetFolio);
+        if (raceWinner) return raceWinner;
+      }
+
       if (rawTotal > 0) {
-        await supabaseAdmin.rpc('post_folio_charge', {
-          p_folio_id: folioA,
+        await supabaseAdmin.rpc('post_folio_charge_with_routing', {
+          p_origin_folio_id: folioId,
           p_description: `Room charge - ${reservation.room_type || 'reservation'} (pre-arrival)`,
           p_amount: rawTotal,
           p_quantity: 1,
           p_line_type: 'Room',
           p_revenue_account_code: null,
           p_user_id: userId,
-          p_source_reference: null,
+          p_source_reference: reservationId,
           p_discount_percent: discountPct,
+          p_reservation_id: reservationId,
+          p_source_module: 'frontoffice',
         });
       }
-      return targetFolio === 'B' ? folioB : folioA;
+      return folioId;
     }
 
-    // Individual booking: single Guest folio
+    // ── Individual: single Guest folio ──
     const folioId = crypto.randomUUID();
     const { error: errGuest } = await supabaseAdmin.from('folios').insert({
       id: folioId,
       reservation_id: reservationId,
       folio_type: 'Guest',
       status: 'Open',
-      balance: 0,
-      total_charges: 0,
-      total_payments: 0,
+      balance: 0, total_charges: 0, total_payments: 0,
       currency: 'USD',
       opened_at: new Date().toISOString(),
       created_by: userId,
     });
     if (errGuest?.code === '23505') {
-      // Lost the creation race - another request created it concurrently.
       const raceWinner = await findOpenFolio(reservationId, targetFolio);
       if (raceWinner) return raceWinner;
     }
 
     if (rawTotal > 0) {
-      await supabaseAdmin.rpc('post_folio_charge', {
-        p_folio_id: folioId,
+      await supabaseAdmin.rpc('post_folio_charge_with_routing', {
+        p_origin_folio_id: folioId,
         p_description: `Room charge - ${reservation.room_type || 'reservation'} (pre-arrival)`,
         p_amount: rawTotal,
         p_quantity: 1,
         p_line_type: 'Room',
         p_revenue_account_code: null,
         p_user_id: userId,
-        p_source_reference: null,
+        p_source_reference: reservationId,
         p_discount_percent: discountPct,
+        p_reservation_id: reservationId,
+        p_source_module: 'frontoffice',
       });
     }
     return folioId;
@@ -855,11 +1412,12 @@ router.post('/:id/charges', authenticate, async (req, res) => {
     }
 
     if (hasSupabaseAdminConfig && supabaseAdmin) {
-      const folioId = await ensureFolio(reservationId, req.user!.id);
+      // If targetFolio is specified (A or B), route to the correct split folio
+      const folioId = await ensureFolio(reservationId, req.user!.id, targetFolio);
       if (!folioId) return res.status(404).json({ error: 'Reservation not found or cannot create folio' });
 
-      const { data, error } = await supabaseAdmin.rpc('post_folio_charge', {
-        p_folio_id: folioId,
+      const { data, error } = await supabaseAdmin.rpc('post_folio_charge_with_routing', {
+        p_origin_folio_id: folioId,
         p_description: description,
         p_amount: amount,
         p_quantity: quantity || 1,
@@ -868,6 +1426,8 @@ router.post('/:id/charges', authenticate, async (req, res) => {
         p_user_id: req.user!.id,
         p_source_reference: sourceReference || null,
         p_discount_percent: discountPercent || 0,
+        p_reservation_id: reservationId,
+        p_source_module: department || 'frontoffice',
       });
 
       if (error) return res.status(500).json({ error: error.message });
@@ -1002,12 +1562,32 @@ router.get('/:id/balance', authenticate, async (req, res) => {
     return res.status(503).json({ error: 'Database not configured' });
   });
 
+// Guest-role callers may only touch their own reservation's folio data — they
+// must present the matching guestId (query for GETs, body or query for POSTs).
+// All staff roles are unaffected.
+async function assertGuestFolioAccess(req: any, reservationId: string): Promise<boolean> {
+    if (req.user?.role !== 'guest') return true;
+    const claimed =
+      req.query?.guestId || req.query?.guest_id || req.body?.guestId || req.body?.guest_id;
+    if (typeof claimed !== 'string' || !claimed || !supabaseAdmin) return false;
+    const { data } = await supabaseAdmin
+      .from('reservations')
+      .select('guest_id')
+      .eq('id', reservationId)
+      .maybeSingle();
+    return !!data && data.guest_id === claimed;
+}
+
   // Canonical folio read endpoint (Phase 2)
   // Returns the folios, itemized charges/payments and computed balances for a reservation
   // so the frontend no longer needs to parse the legacy reservations.charges/payments JSONB.
   // Also returns a billing breakdown from get_reservation_billing RPC (Step 2.2).
 router.get('/:id/folio', authenticate, async (req, res) => {
     const reservationId = req.params.id;
+
+    if (!(await assertGuestFolioAccess(req, reservationId))) {
+      return res.status(403).json({ error: 'Not authorized for this reservation' });
+    }
 
     if (hasSupabaseAdminConfig && supabaseAdmin) {
       try {
@@ -1021,7 +1601,13 @@ router.get('/:id/folio', authenticate, async (req, res) => {
 
         const folioIds = (folios || []).map(f => f.id);
 
-        const [{ data: lines }, { data: payments }, { data: billingBreakdown, error: rpcError }] = await Promise.all([
+        const [
+          { data: lines },
+          { data: payments },
+          { data: billingBreakdown, error: rpcError },
+          { data: billingBreakdownA, error: rpcErrorA },
+          { data: billingBreakdownB, error: rpcErrorB },
+        ] = await Promise.all([
           supabaseAdmin
             .from('folio_lines')
             .select('*')
@@ -1035,10 +1621,21 @@ router.get('/:id/folio', authenticate, async (req, res) => {
             .eq('is_voided', false)
             .order('payment_date', { ascending: true }),
           supabaseAdmin.rpc('get_reservation_billing', { p_reservation_id: reservationId }),
+          // Per-target-folio breakdowns (canonical, DB-sourced) so the frontend
+          // A/B split view no longer has to recompute fees/tax/discount itself
+          // via the deprecated calculateFolioComponents().
+          supabaseAdmin.rpc('get_reservation_billing', { p_reservation_id: reservationId, p_target_folio: 'A' }),
+          supabaseAdmin.rpc('get_reservation_billing', { p_reservation_id: reservationId, p_target_folio: 'B' }),
         ]);
 
         if (rpcError) {
           console.error('[folio endpoint] get_reservation_billing RPC error:', rpcError.message);
+        }
+        if (rpcErrorA) {
+          console.error('[folio endpoint] get_reservation_billing (A) RPC error:', rpcErrorA.message);
+        }
+        if (rpcErrorB) {
+          console.error('[folio endpoint] get_reservation_billing (B) RPC error:', rpcErrorB.message);
         }
 
         return res.json({
@@ -1058,6 +1655,8 @@ router.get('/:id/folio', authenticate, async (req, res) => {
             0
           ),
           billingBreakdown: billingBreakdown || null,
+          billingBreakdownA: billingBreakdownA || null,
+          billingBreakdownB: billingBreakdownB || null,
         });
       } catch (error: any) {
         return res.status(500).json({ error: error.message });
@@ -1087,9 +1686,243 @@ router.get('/:id/total', authenticate, async (req, res) => {
     return res.status(503).json({ error: 'Database not configured' });
   });
 
+// ── Process Deposit ──────────────────────────────────────────────────────
+// Collects a pre-arrival / check-in deposit on a reservation. Unlike the
+// general /payments endpoint, this also stamps deposit_amount + is_deposit_paid
+// on the reservation row so the Check-In flow can track the deposit step.
+// The deposit is inserted as a real folio_payment so the folio balance
+// reflects it (folio balance = total_charges - total_payments).
+router.post('/:id/deposit', authenticate, async (req, res) => {
+  const reservationId = req.params.id;
+  const { amount, paymentMethod, reference, bankAccountId } = req.body;
+
+  if (typeof amount !== 'number' || amount <= 0) {
+    return res.status(400).json({ error: 'A positive deposit amount is required' });
+  }
+  if (!paymentMethod) {
+    return res.status(400).json({ error: 'Payment method is required' });
+  }
+
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) {
+    return res.status(503).json({ error: 'Database not configured' });
+  }
+
+  try {
+    // 1. Fetch the reservation to check for an existing deposit
+    const { data: reservation, error: resError } = await supabaseAdmin
+      .from('reservations')
+      .select('id, deposit_amount, is_deposit_paid, total_amount, guest_name')
+      .eq('id', reservationId)
+      .maybeSingle();
+
+    if (resError || !reservation) {
+      return res.status(404).json({ error: 'Reservation not found' });
+    }
+
+    // 2. Ensure a folio exists (creates one if needed, posting the room charge)
+    const folioId = await ensureFolio(reservationId, req.user!.id);
+    if (!folioId) {
+      return res.status(500).json({ error: 'Could not create or find folio for reservation' });
+    }
+
+    // 3. Check if a deposit payment already exists on this folio to avoid duplicates
+    //    We tag deposit payments with reference_number = 'DEPOSIT-{reservationId}'
+    const depositRef = `DEPOSIT-${reservationId}`;
+    const { data: existingDeposit } = await supabaseAdmin
+      .from('folio_payments')
+      .select('id, amount')
+      .eq('folio_id', folioId)
+      .eq('is_voided', false)
+      .eq('reference_number', depositRef)
+      .maybeSingle();
+
+    if (existingDeposit) {
+      // Deposit already recorded — just update the reservation fields and return
+      await supabaseAdmin
+        .from('reservations')
+        .update({
+          deposit_amount: Number(existingDeposit.amount),
+          is_deposit_paid: true,
+          payment_status: 'Partial',
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', reservationId);
+
+      return res.json({
+        success: true,
+        folioId,
+        paymentId: existingDeposit.id,
+        amount: Number(existingDeposit.amount),
+        message: 'Deposit already recorded on folio',
+      });
+    }
+
+    // 4. Insert the deposit as a folio_payment (linked to the folio)
+    const paymentId = crypto.randomUUID();
+    const now = new Date().toISOString();
+
+    const { error: payError } = await supabaseAdmin
+      .from('folio_payments')
+      .insert({
+        id: paymentId,
+        folio_id: folioId,
+        amount,
+        payment_method: paymentMethod,
+        reference_number: depositRef,
+        cashier_id: req.user?.id,
+        created_by: req.user?.id,
+        bank_account_id: bankAccountId || null,
+        created_at: now,
+      });
+
+    if (payError) {
+      console.error('[deposit] Failed to insert folio_payment:', payError);
+      return res.status(500).json({ error: 'Failed to record deposit payment', details: payError.message });
+    }
+
+    // 5. Update the reservation's deposit fields
+    await supabaseAdmin
+      .from('reservations')
+      .update({
+        deposit_amount: amount,
+        is_deposit_paid: true,
+        payment_status: 'Partial',
+        updated_at: now,
+      })
+      .eq('id', reservationId);
+
+    // 6. Recompute folio totals so balance reflects the deposit
+    try {
+      await supabaseAdmin.rpc('recompute_folio_totals', { p_folio_id: folioId });
+      await supabaseAdmin.rpc('sync_reservation_payment_status', { p_folio_id: folioId });
+    } catch { /* non-fatal */ }
+
+    // 7. Settle accounting: Debit Cash/Bank, Credit Guest Deposits (2030)
+    try {
+      const cdCode = '2030';
+      const cdName = 'Guest Deposits & Advances';
+      const journalId = crypto.randomUUID();
+
+      try {
+        await supabaseAdmin.from('journal_entries').insert({
+          id: journalId,
+          date: now.split('T')[0],
+          reference: `DEPOSIT-${paymentId}`,
+          description: `Deposit collected — ${reservation.guest_name || 'Guest'} (reservation ${reservationId})`,
+          status: 'Posted',
+          created_by: req.user?.id,
+          amount,
+          department: 'Front Office',
+        });
+      } catch {
+        await supabaseAdmin.from('journal_entries').insert({
+          id: journalId,
+          date: now.split('T')[0],
+          period: now.slice(0, 7),
+          source: 'Deposit',
+          reference: `DEPOSIT-${paymentId}`,
+          description: `Deposit collected — ${reservation.guest_name || 'Guest'} (reservation ${reservationId})`,
+          status: 'Posted',
+          total_debit: amount,
+          total_credit: amount,
+          department: 'Front Office',
+          created_by: req.user?.id,
+          posted_at: now,
+        });
+      }
+
+      // Journal lines: Credit Guest Deposits (liability), Debit Cash/Bank (asset)
+      const bankAccountName = bankAccountId ? 'Bank' : 'Cash';
+      const bankCode = bankAccountId ? '1010' : '1000';
+      try {
+        await supabaseAdmin.from('journal_lines').insert([
+          {
+            id: crypto.randomUUID(),
+            journal_id: journalId,
+            account_id: bankCode,
+            account_name: bankAccountName,
+            description: `Deposit — ${reservation.guest_name || 'Guest'}`,
+            debit: amount,
+            credit: 0,
+          },
+          {
+            id: crypto.randomUUID(),
+            journal_id: journalId,
+            account_id: cdCode,
+            account_name: cdName,
+            description: `Deposit — ${reservation.guest_name || 'Guest'}`,
+            debit: 0,
+            credit: amount,
+          },
+        ]);
+      } catch {
+        await supabaseAdmin.from('journal_lines').insert([
+          {
+            id: crypto.randomUUID(),
+            journal_id: journalId,
+            account_code: bankCode,
+            account_name: bankAccountName,
+            description: `Deposit — ${reservation.guest_name || 'Guest'}`,
+            debit: amount,
+            credit: 0,
+          },
+          {
+            id: crypto.randomUUID(),
+            journal_id: journalId,
+            account_code: cdCode,
+            account_name: cdName,
+            description: `Deposit — ${reservation.guest_name || 'Guest'}`,
+            debit: 0,
+            credit: amount,
+          },
+        ]);
+      }
+
+      // Update CoA balances
+      const settleCoaBalance = async (table: string, code: string, delta: number) => {
+        try {
+          const { data: row } = await supabaseAdmin
+            .from(table)
+            .select('balance')
+            .eq('code', code)
+            .single();
+          if (row) {
+            await supabaseAdmin
+              .from(table)
+              .update({ balance: Number(row.balance || 0) + delta })
+              .eq('code', code);
+          }
+        } catch { /* table or row may not exist — skip */ }
+      };
+
+      await settleCoaBalance('chart_of_accounts', bankCode, amount);
+      await settleCoaBalance('usali_chart_of_accounts', bankCode, amount);
+      await settleCoaBalance('chart_of_accounts', cdCode, amount);
+      await settleCoaBalance('usali_chart_of_accounts', cdCode, amount);
+    } catch (acctErr: any) {
+      console.error('[deposit] Accounting settlement failed (non-fatal):', acctErr.message);
+    }
+
+    return res.json({
+      success: true,
+      folioId,
+      paymentId,
+      amount,
+    });
+  } catch (err: any) {
+    console.error('[deposit] UNEXPECTED ERROR:', err);
+    return res.status(500).json({ error: 'Failed to process deposit', details: err.message });
+  }
+});
+
 router.post('/:id/payments', authenticate, async (req, res) => {
 
     const reservationId = req.params.id;
+
+    if (!(await assertGuestFolioAccess(req, reservationId))) {
+      return res.status(403).json({ error: 'Not authorized for this reservation' });
+    }
+
     const { amount, paymentMethod, reference, receiptUrl, idempotencyKey, bankAccountId, paymentSplits } = req.body;
 
     // Support both single payment and split payments
@@ -1170,7 +2003,7 @@ router.post('/:id/payments', authenticate, async (req, res) => {
         .eq('id', 'main')
         .single();
 
-      const vatRate = (settings?.tax_percent || 15) / 100;
+      const vatRate = ((await getTaxRates({ appliesTo: 'rooms' })).vat ?? (settings?.tax_percent || 15)) / 100;
       const revenueAccountCode = settings?.revenue_mappings?.roomRevenueAccount || '4010';
 
       // Process each payment split
@@ -1331,6 +2164,134 @@ router.post('/:id/payments', authenticate, async (req, res) => {
           // Continue anyway - payment was successful
         }
 
+        // ── A/R Settlement: if this folio has invoiced lines, clear the receivable ──
+        // When an invoice was generated, we posted: Debit AR (1100), Credit Guest Deposits (2030)
+        // Now that payment is received, we reverse: Credit AR (1100), Debit Guest Deposits (2030)
+        // This settles the receivable against the payment.
+        try {
+          // Check if this folio has any invoiced lines (invoice_id IS NOT NULL)
+          const { data: invoicedLines } = await supabaseAdmin
+            .from('folio_lines')
+            .select('invoice_id, amount')
+            .eq('folio_id', folioId)
+            .eq('is_voided', false)
+            .not('invoice_id', 'is', null);
+
+          if (invoicedLines && invoicedLines.length > 0) {
+            // The payment settles AR up to the payment amount
+            const settlementAmount = Math.min(splitAmount, splitAmount);
+
+            // Create AR settlement journal entry
+            const arJournalId = crypto.randomUUID();
+            try {
+              await supabaseAdmin.from('journal_entries').insert({
+                id: arJournalId,
+                date: now.split('T')[0],
+                reference: `AR-SETTLE-${data.paymentId}`,
+                description: `A/R settlement — Payment against invoiced folio ${folioId}`,
+                status: 'Posted',
+                created_by: req.user!.id,
+                amount: settlementAmount,
+                department: 'Front Office',
+              });
+            } catch {
+              // Try migration 074 schema
+              await supabaseAdmin.from('journal_entries').insert({
+                id: arJournalId,
+                date: now.split('T')[0],
+                period: now.slice(0, 7),
+                source: 'AR',
+                reference: `AR-SETTLE-${data.paymentId}`,
+                description: `A/R settlement — Payment against invoiced folio ${folioId}`,
+                status: 'Posted',
+                total_debit: settlementAmount,
+                total_credit: settlementAmount,
+                department: 'Front Office',
+                created_by: req.user!.id,
+                posted_at: now,
+              });
+            }
+
+            // Journal lines: Credit AR (1100), Debit Guest Deposits (2030)
+            const arCode = '1100';
+            const arName = 'Accounts Receivable - Guests';
+            const cdCode = '2030';
+            const cdName = 'Guest Deposits & Advances';
+
+            try {
+              await supabaseAdmin.from('journal_lines').insert([
+                {
+                  id: crypto.randomUUID(),
+                  journal_id: arJournalId,
+                  account_id: cdCode,
+                  account_name: cdName,
+                  description: `A/R settlement — payment ${data.paymentId}`,
+                  debit: settlementAmount,
+                  credit: 0,
+                },
+                {
+                  id: crypto.randomUUID(),
+                  journal_id: arJournalId,
+                  account_id: arCode,
+                  account_name: arName,
+                  description: `A/R settlement — payment ${data.paymentId}`,
+                  debit: 0,
+                  credit: settlementAmount,
+                },
+              ]);
+            } catch {
+              // Try account_code column
+              await supabaseAdmin.from('journal_lines').insert([
+                {
+                  id: crypto.randomUUID(),
+                  journal_id: arJournalId,
+                  account_code: cdCode,
+                  account_name: cdName,
+                  description: `A/R settlement — payment ${data.paymentId}`,
+                  debit: settlementAmount,
+                  credit: 0,
+                },
+                {
+                  id: crypto.randomUUID(),
+                  journal_id: arJournalId,
+                  account_code: arCode,
+                  account_name: arName,
+                  description: `A/R settlement — payment ${data.paymentId}`,
+                  debit: 0,
+                  credit: settlementAmount,
+                },
+              ]);
+            }
+
+            // Update CoA balances: Credit AR → decrease asset, Debit Guest Deposits → decrease liability
+            // Update both chart_of_accounts and usali_chart_of_accounts
+            const settleCoaBalance = async (table: string, code: string, delta: number) => {
+              try {
+                const { data: row } = await supabaseAdmin
+                  .from(table)
+                  .select('balance')
+                  .eq('code', code)
+                  .single();
+                if (row) {
+                  await supabaseAdmin
+                    .from(table)
+                    .update({ balance: Number(row.balance || 0) + delta })
+                    .eq('code', code);
+                }
+              } catch { /* table or row may not exist — skip */ }
+            };
+
+            await settleCoaBalance('chart_of_accounts', arCode, -settlementAmount);
+            await settleCoaBalance('usali_chart_of_accounts', arCode, -settlementAmount);
+            await settleCoaBalance('chart_of_accounts', cdCode, -settlementAmount);
+            await settleCoaBalance('usali_chart_of_accounts', cdCode, -settlementAmount);
+
+            console.log(`[payment] Settled ${settlementAmount} from A/R (1100) for folio ${folioId}`);
+          }
+        } catch (arSettleErr: any) {
+          console.error('[payment] A/R settlement failed (non-fatal):', arSettleErr.message);
+        }
+
         paymentResults.push({
           success: true,
           folioId,
@@ -1392,7 +2353,7 @@ router.post('/:reservationId/charges/:chargeId/void', authenticate, async (req, 
 
 router.patch('/:reservationId/charges/:chargeId', authenticate, async (req, res) => {
     const { chargeId } = req.params;
-    const { targetFolio, amount } = req.body;
+    const { targetFolio, amount, description, quantity, lineType } = req.body;
 
     if (hasSupabaseAdminConfig && supabaseAdmin) {
       const updates: Record<string, any> = {};
@@ -1402,9 +2363,32 @@ router.patch('/:reservationId/charges/:chargeId', authenticate, async (req, res)
       if (typeof amount === 'number' && amount > 0) {
         updates.amount = amount;
       }
+      if (typeof description === 'string' && description.trim()) {
+        updates.description = description.trim();
+      }
+      if (typeof quantity === 'number' && quantity > 0) {
+        updates.quantity = quantity;
+      }
+      if (typeof lineType === 'string' && lineType.trim()) {
+        updates.line_type = lineType.trim();
+      }
 
       if (Object.keys(updates).length === 0) {
         return res.status(400).json({ error: 'No valid fields to update' });
+      }
+
+      // Recompute unit_price if amount or quantity changed
+      if (updates.amount !== undefined || updates.quantity !== undefined) {
+        const { data: current } = await supabaseAdmin
+          .from('folio_lines')
+          .select('amount, quantity')
+          .eq('id', chargeId)
+          .single();
+        if (current) {
+          const newAmount = updates.amount !== undefined ? updates.amount : Number(current.amount);
+          const newQty = updates.quantity !== undefined ? updates.quantity : Number(current.quantity);
+          updates.unit_price = newQty > 0 ? Math.round((newAmount / newQty) * 100) / 100 : newAmount;
+        }
       }
 
       const { error } = await supabaseAdmin

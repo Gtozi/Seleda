@@ -1,27 +1,36 @@
 /**
  * Reservations Module
  * Search availability, book rooms, modify/cancel reservations, view booking history
+ *
+ * DB-integrated via /api/guest-portal/reservations/* — reads/writes the shared
+ * `reservations` table the front office manages. "New Reservation" hands off to
+ * the public booking flow at /public-portal?section=booking.
  */
 
-import { useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   Calendar,
-  Search,
   Plus,
   Edit,
   X,
-  Users,
-  Bed,
-  CreditCard,
-  CheckCircle2,
   Clock,
   AlertCircle,
   Filter,
-  ChevronRight
+  Loader2
 } from 'lucide-react';
 
 interface ReservationsModuleProps {
+  reservationId?: string;
   guestId?: string;
+}
+
+function authHeaders(json = false): Record<string, string> {
+  const token = typeof window !== 'undefined' ? localStorage.getItem('auth_token') : null;
+  const headers: Record<string, string> = {};
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+  if (json) headers['Content-Type'] = 'application/json';
+  return headers;
 }
 
 interface Reservation {
@@ -32,87 +41,80 @@ interface Reservation {
   checkOutDate: string;
   guests: number;
   roomType: string;
-  ratePlan: string;
-  package?: string;
+  roomNumber?: string | null;
+  ratePlan?: string | null;
+  packages: string[];
   totalAmount: number;
   currency: string;
-  paymentStatus: 'Pending' | 'Partial' | 'Paid' | 'Refunded';
-  status: 'Confirmed' | 'Pending' | 'Cancelled' | 'Completed';
-}
-
-interface SearchCriteria {
-  destination: string;
-  checkIn: string;
-  checkOut: string;
-  guests: number;
-  rooms: number;
+  paymentStatus: 'Unpaid' | 'Partial' | 'Paid' | 'Refunded' | string;
+  status: 'Reserved' | 'Pending' | 'Confirmed' | 'CheckedIn' | 'CheckedOut' | 'Cancelled' | 'NoShow' | string;
 }
 
 const ReservationsModule: React.FC<ReservationsModuleProps> = ({
+  reservationId: contextReservationId,
   guestId
 }) => {
-  const [activeTab, setActiveTab] = useState<'search' | 'bookings' | 'history'>('bookings');
-  const [searchCriteria, setSearchCriteria] = useState<SearchCriteria>({
-    destination: '',
-    checkIn: '',
-    checkOut: '',
-    guests: 2,
-    rooms: 1
-  });
-  const [reservations, setReservations] = useState<Reservation[]>([
-    {
-      id: 'RES-001',
-      confirmationNumber: 'CONF-2026-001',
-      hotelName: 'SELEDA Grand Hotel',
-      checkInDate: '2026-08-15',
-      checkOutDate: '2026-08-20',
-      guests: 2,
-      roomType: 'Deluxe King Room',
-      ratePlan: 'Best Available Rate',
-      package: 'Bed & Breakfast',
-      totalAmount: 1250.00,
-      currency: 'USD',
-      paymentStatus: 'Paid',
-      status: 'Confirmed'
-    },
-    {
-      id: 'RES-002',
-      confirmationNumber: 'CONF-2026-002',
-      hotelName: 'SELEDA Grand Hotel',
-      checkInDate: '2026-06-10',
-      checkOutDate: '2026-06-15',
-      guests: 2,
-      roomType: 'Executive Suite',
-      ratePlan: 'Corporate Rate',
-      package: 'All Inclusive',
-      totalAmount: 2500.00,
-      currency: 'USD',
-      paymentStatus: 'Paid',
-      status: 'Completed'
-    }
-  ]);
+  const navigate = useNavigate();
+  const [activeTab, setActiveTab] = useState<'bookings' | 'history'>('bookings');
+  const [reservations, setReservations] = useState<Reservation[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<string>('All');
   const [showModifyModal, setShowModifyModal] = useState(false);
   const [selectedReservation, setSelectedReservation] = useState<Reservation | null>(null);
+  const [modifyForm, setModifyForm] = useState({ checkIn: '', checkOut: '' });
+  const [modifyError, setModifyError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [cancellingId, setCancellingId] = useState<string | null>(null);
+
+  const loadReservations = useCallback(async () => {
+    if (!guestId) {
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    try {
+      const cred = contextReservationId ? `?reservationId=${encodeURIComponent(contextReservationId)}` : '';
+      const res = await fetch(`/api/guest-portal/reservations/${encodeURIComponent(guestId)}${cred}`, {
+        headers: authHeaders(), credentials: 'include',
+      });
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(payload.error || `Failed to load reservations (${res.status})`);
+      setReservations(payload.reservations || []);
+    } catch (e: any) {
+      setError(e?.message || 'Failed to load reservations');
+    } finally {
+      setLoading(false);
+    }
+  }, [guestId, contextReservationId]);
+
+  useEffect(() => { loadReservations(); }, [loadReservations]);
 
   const getStatusColor = (status: string) => {
-    const colors = {
+    const colors: Record<string, string> = {
       'Confirmed': 'bg-emerald-100 text-emerald-700 border-emerald-200 dark:bg-emerald-900/20 dark:border-emerald-700/50 dark:text-emerald-400',
+      'Reserved': 'bg-amber-100 text-amber-700 border-amber-200 dark:bg-amber-900/20 dark:border-amber-700/50 dark:text-amber-400',
       'Pending': 'bg-amber-100 text-amber-700 border-amber-200 dark:bg-amber-900/20 dark:border-amber-700/50 dark:text-amber-400',
+      'CheckedIn': 'bg-blue-100 text-blue-700 border-blue-200 dark:bg-blue-900/20 dark:border-blue-700/50 dark:text-blue-400',
+      'CheckedOut': 'bg-slate-100 text-slate-700 border-slate-200 dark:bg-slate-900/20 dark:border-slate-700/50 dark:text-slate-400',
+      'Completed': 'bg-slate-100 text-slate-700 border-slate-200 dark:bg-slate-900/20 dark:border-slate-700/50 dark:text-slate-400',
       'Cancelled': 'bg-red-100 text-red-700 border-red-200 dark:bg-red-900/20 dark:border-red-700/50 dark:text-red-400',
-      'Completed': 'bg-slate-100 text-slate-700 border-slate-200 dark:bg-slate-900/20 dark:border-slate-700/50 dark:text-slate-400'
+      'NoShow': 'bg-red-100 text-red-700 border-red-200 dark:bg-red-900/20 dark:border-red-700/50 dark:text-red-400'
     };
-    return colors[status as keyof typeof colors] || colors['Pending'];
+    return colors[status] || colors['Pending'];
   };
 
   const getPaymentStatusColor = (status: string) => {
-    const colors = {
+    const colors: Record<string, string> = {
       'Paid': 'bg-emerald-100 text-emerald-700 border-emerald-200 dark:bg-emerald-900/20 dark:border-emerald-700/50 dark:text-emerald-400',
       'Partial': 'bg-amber-100 text-amber-700 border-amber-200 dark:bg-amber-900/20 dark:border-amber-700/50 dark:text-amber-400',
+      'Unpaid': 'bg-slate-100 text-slate-700 border-slate-200 dark:bg-slate-900/20 dark:border-slate-700/50 dark:text-slate-400',
       'Pending': 'bg-slate-100 text-slate-700 border-slate-200 dark:bg-slate-900/20 dark:border-slate-700/50 dark:text-slate-400',
       'Refunded': 'bg-blue-100 text-blue-700 border-blue-200 dark:bg-blue-900/20 dark:border-blue-700/50 dark:text-blue-400'
     };
-    return colors[status as keyof typeof colors] || colors['Pending'];
+    return colors[status] || colors['Unpaid'];
   };
 
   const filteredReservations = reservations.filter(res => {
@@ -120,22 +122,58 @@ const ReservationsModule: React.FC<ReservationsModuleProps> = ({
     return res.status === statusFilter;
   });
 
-  const handleSearch = () => {
-    setActiveTab('search');
-  };
-
   const handleModify = (reservation: Reservation) => {
     setSelectedReservation(reservation);
+    setModifyForm({ checkIn: reservation.checkInDate, checkOut: reservation.checkOutDate });
+    setModifyError(null);
     setShowModifyModal(true);
   };
 
-  const handleCancel = (reservationId: string) => {
-    if (confirm('Are you sure you want to cancel this reservation?')) {
-      setReservations(reservations.map(res => 
-        res.id === reservationId 
-          ? { ...res, status: 'Cancelled' as const }
-          : res
-      ));
+  const handleSaveModify = async () => {
+    if (!selectedReservation || !guestId) return;
+    setSaving(true);
+    setModifyError(null);
+    try {
+      const res = await fetch(`/api/guest-portal/reservations/${encodeURIComponent(selectedReservation.id)}`, {
+        method: 'PATCH',
+        headers: authHeaders(true),
+        credentials: 'include',
+        body: JSON.stringify({
+          reservationId: contextReservationId || selectedReservation.id,
+          checkInDate: modifyForm.checkIn,
+          checkOutDate: modifyForm.checkOut,
+        }),
+      });
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(payload.error || `Modify failed (${res.status})`);
+      setShowModifyModal(false);
+      setSelectedReservation(null);
+      loadReservations();
+    } catch (e: any) {
+      setModifyError(e?.message || 'Failed to modify reservation');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleCancel = async (reservation: Reservation) => {
+    if (!confirm(`Cancel reservation ${reservation.confirmationNumber}? This cannot be undone.`)) return;
+    setCancellingId(reservation.id);
+    setActionError(null);
+    try {
+      const res = await fetch(`/api/guest-portal/reservations/${encodeURIComponent(reservation.id)}/cancel`, {
+        method: 'PATCH',
+        headers: authHeaders(true),
+        credentials: 'include',
+        body: JSON.stringify({ reservationId: contextReservationId || reservation.id }),
+      });
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(payload.error || `Cancel failed (${res.status})`);
+      loadReservations();
+    } catch (e: any) {
+      setActionError(e?.message || 'Failed to cancel reservation');
+    } finally {
+      setCancellingId(null);
     }
   };
 
@@ -146,8 +184,27 @@ const ReservationsModule: React.FC<ReservationsModuleProps> = ({
     return Math.ceil(diffTime / (1000 * 60 * 60 * 24));
   };
 
+  const isMutable = (status: string) => ['Reserved', 'Pending', 'Confirmed'].includes(status);
+
+  if (!guestId) {
+    return (
+      <div className="p-4 sm:p-6">
+        <p className="text-slate-500 dark:text-slate-400">Sign in to view your reservations.</p>
+      </div>
+    );
+  }
+
+  if (loading) {
+    return (
+      <div className="p-4 sm:p-6 flex items-center gap-3 text-slate-500 dark:text-slate-400">
+        <Loader2 size={20} className="animate-spin" />
+        <span className="text-sm">Loading your reservations…</span>
+      </div>
+    );
+  }
+
   return (
-    <div className="p-6 space-y-6">
+    <div className="p-4 sm:p-6 space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
@@ -157,13 +214,20 @@ const ReservationsModule: React.FC<ReservationsModuleProps> = ({
           </p>
         </div>
         <button
-          onClick={handleSearch}
+          onClick={() => navigate('/public-portal?section=booking')}
           className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition text-sm font-medium"
         >
           <Plus size={16} />
           New Reservation
         </button>
       </div>
+
+      {(error || actionError) && (
+        <div className="flex items-center gap-2 p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-700/50 rounded-lg text-red-700 dark:text-red-400 text-sm">
+          <AlertCircle size={16} />
+          {error || actionError}
+        </div>
+      )}
 
       {/* Tabs */}
       <div className="flex gap-2 border-b border-slate-200 dark:border-slate-700">
@@ -191,82 +255,6 @@ const ReservationsModule: React.FC<ReservationsModuleProps> = ({
         </button>
       </div>
 
-      {/* Search Tab */}
-      {activeTab === 'search' && (
-        <div className="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 p-6">
-          <h2 className="text-lg font-semibold text-slate-900 dark:text-white mb-4">Search Availability</h2>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-            <div>
-              <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
-                Destination
-              </label>
-              <input
-                type="text"
-                placeholder="Enter destination"
-                value={searchCriteria.destination}
-                onChange={(e) => setSearchCriteria({ ...searchCriteria, destination: e.target.value })}
-                className="w-full px-4 py-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-900 text-slate-900 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
-                Check-in Date
-              </label>
-              <input
-                type="date"
-                value={searchCriteria.checkIn}
-                onChange={(e) => setSearchCriteria({ ...searchCriteria, checkIn: e.target.value })}
-                className="w-full px-4 py-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-900 text-slate-900 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
-                Check-out Date
-              </label>
-              <input
-                type="date"
-                value={searchCriteria.checkOut}
-                onChange={(e) => setSearchCriteria({ ...searchCriteria, checkOut: e.target.value })}
-                className="w-full px-4 py-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-900 text-slate-900 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
-                Guests & Rooms
-              </label>
-              <div className="flex gap-2">
-                <div className="flex-1 relative">
-                  <Users size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-                  <input
-                    type="number"
-                    min="1"
-                    value={searchCriteria.guests}
-                    onChange={(e) => setSearchCriteria({ ...searchCriteria, guests: parseInt(e.target.value) })}
-                    className="w-full pl-10 pr-4 py-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-900 text-slate-900 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                  />
-                </div>
-                <div className="flex-1 relative">
-                  <Bed size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-                  <input
-                    type="number"
-                    min="1"
-                    value={searchCriteria.rooms}
-                    onChange={(e) => setSearchCriteria({ ...searchCriteria, rooms: parseInt(e.target.value) })}
-                    className="w-full pl-10 pr-4 py-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-900 text-slate-900 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                  />
-                </div>
-              </div>
-            </div>
-          </div>
-          <div className="mt-6 flex justify-end">
-            <button className="flex items-center gap-2 px-6 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition text-sm font-medium">
-              <Search size={18} />
-              Search Available Rooms
-            </button>
-          </div>
-        </div>
-      )}
-
       {/* Bookings Tab */}
       {activeTab === 'bookings' && (
         <div className="space-y-4">
@@ -281,16 +269,23 @@ const ReservationsModule: React.FC<ReservationsModuleProps> = ({
               >
                 <option value="All">All Status</option>
                 <option value="Confirmed">Confirmed</option>
+                <option value="Reserved">Reserved</option>
                 <option value="Pending">Pending</option>
+                <option value="CheckedIn">Checked In</option>
                 <option value="Cancelled">Cancelled</option>
               </select>
             </div>
           </div>
 
-          {/* Reservations List */}
+          {/* Reservations List — bookings tab shows upcoming/active stays */}
           <div className="space-y-4">
+            {filteredReservations.length === 0 && (
+              <div className="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 p-4 sm:p-6 text-center text-sm text-slate-500 dark:text-slate-400">
+                No reservations found{statusFilter !== 'All' ? ` with status "${statusFilter}"` : ''}.
+              </div>
+            )}
             {filteredReservations.map((reservation) => (
-              <div key={reservation.id} className="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 p-6">
+              <div key={reservation.id} className="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 p-4 sm:p-6">
                 <div className="flex items-start justify-between">
                   <div className="flex-1">
                     <div className="flex items-center gap-3 mb-3">
@@ -332,16 +327,20 @@ const ReservationsModule: React.FC<ReservationsModuleProps> = ({
                       </div>
                       <div>
                         <div className="text-slate-500 dark:text-slate-400">Room Type</div>
-                        <div className="font-medium text-slate-900 dark:text-white">{reservation.roomType}</div>
+                        <div className="font-medium text-slate-900 dark:text-white">
+                          {reservation.roomType || 'Any'}{reservation.roomNumber ? ` · Room ${reservation.roomNumber}` : ''}
+                        </div>
                       </div>
-                      <div>
-                        <div className="text-slate-500 dark:text-slate-400">Rate Plan</div>
-                        <div className="font-medium text-slate-900 dark:text-white">{reservation.ratePlan}</div>
-                      </div>
-                      {reservation.package && (
+                      {reservation.ratePlan && (
+                        <div>
+                          <div className="text-slate-500 dark:text-slate-400">Rate Plan</div>
+                          <div className="font-medium text-slate-900 dark:text-white">{reservation.ratePlan}</div>
+                        </div>
+                      )}
+                      {reservation.packages.length > 0 && (
                         <div>
                           <div className="text-slate-500 dark:text-slate-400">Package</div>
-                          <div className="font-medium text-slate-900 dark:text-white">{reservation.package}</div>
+                          <div className="font-medium text-slate-900 dark:text-white">{reservation.packages.join(', ')}</div>
                         </div>
                       )}
                       <div>
@@ -353,7 +352,7 @@ const ReservationsModule: React.FC<ReservationsModuleProps> = ({
                     </div>
                   </div>
                   <div className="flex items-center gap-2 ml-4">
-                    {reservation.status === 'Confirmed' && (
+                    {isMutable(reservation.status) && (
                       <>
                         <button
                           onClick={() => handleModify(reservation)}
@@ -363,10 +362,11 @@ const ReservationsModule: React.FC<ReservationsModuleProps> = ({
                           Modify
                         </button>
                         <button
-                          onClick={() => handleCancel(reservation.id)}
-                          className="flex items-center gap-2 px-3 py-2 text-sm border border-red-200 dark:border-red-700/50 text-red-700 dark:text-red-400 rounded-lg hover:bg-red-50 dark:hover:bg-red-900/20 transition"
+                          onClick={() => handleCancel(reservation)}
+                          disabled={cancellingId === reservation.id}
+                          className="flex items-center gap-2 px-3 py-2 text-sm border border-red-200 dark:border-red-700/50 text-red-700 dark:text-red-400 rounded-lg hover:bg-red-50 dark:hover:bg-red-900/20 transition disabled:opacity-50"
                         >
-                          <X size={16} />
+                          {cancellingId === reservation.id ? <Loader2 size={16} className="animate-spin" /> : <X size={16} />}
                           Cancel
                         </button>
                       </>
@@ -381,10 +381,13 @@ const ReservationsModule: React.FC<ReservationsModuleProps> = ({
 
       {/* History Tab */}
       {activeTab === 'history' && (
-        <div className="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 p-6">
+        <div className="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 p-4 sm:p-6">
           <h2 className="text-lg font-semibold text-slate-900 dark:text-white mb-4">Booking History</h2>
           <div className="space-y-4">
-            {reservations.filter(r => r.status === 'Completed' || r.status === 'Cancelled').map((reservation) => (
+            {reservations.filter(r => ['CheckedOut', 'Completed', 'Cancelled', 'NoShow'].includes(r.status)).length === 0 && (
+              <p className="text-sm text-slate-500 dark:text-slate-400">No past bookings yet.</p>
+            )}
+            {reservations.filter(r => ['CheckedOut', 'Completed', 'Cancelled', 'NoShow'].includes(r.status)).map((reservation) => (
               <div key={reservation.id} className="p-4 border border-slate-200 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-900/20">
                 <div className="flex items-center justify-between">
                   <div>
@@ -406,8 +409,10 @@ const ReservationsModule: React.FC<ReservationsModuleProps> = ({
       {/* Modify Modal */}
       {showModifyModal && selectedReservation && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="bg-white dark:bg-slate-800 rounded-xl p-6 max-w-md w-full mx-4">
-            <h3 className="text-lg font-semibold text-slate-900 dark:text-white mb-4">Modify Reservation</h3>
+          <div className="bg-white dark:bg-slate-800 rounded-xl p-4 sm:p-6 max-w-md w-full mx-4">
+            <h3 className="text-lg font-semibold text-slate-900 dark:text-white mb-4">
+              Modify Reservation {selectedReservation.confirmationNumber}
+            </h3>
             <div className="space-y-4">
               <div>
                 <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
@@ -415,7 +420,8 @@ const ReservationsModule: React.FC<ReservationsModuleProps> = ({
                 </label>
                 <input
                   type="date"
-                  defaultValue={selectedReservation.checkInDate}
+                  value={modifyForm.checkIn}
+                  onChange={(e) => setModifyForm({ ...modifyForm, checkIn: e.target.value })}
                   className="w-full px-4 py-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-900 text-slate-900 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
                 />
               </div>
@@ -425,26 +431,32 @@ const ReservationsModule: React.FC<ReservationsModuleProps> = ({
                 </label>
                 <input
                   type="date"
-                  defaultValue={selectedReservation.checkOutDate}
+                  value={modifyForm.checkOut}
+                  onChange={(e) => setModifyForm({ ...modifyForm, checkOut: e.target.value })}
                   className="w-full px-4 py-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-900 text-slate-900 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
                 />
               </div>
             </div>
+            {modifyError && (
+              <p className="mt-4 text-sm text-red-600 dark:text-red-400 flex items-center gap-2">
+                <AlertCircle size={14} /> {modifyError}
+              </p>
+            )}
             <div className="flex justify-end gap-3 mt-6">
               <button
                 onClick={() => setShowModifyModal(false)}
-                className="px-4 py-2 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-900/20 transition text-sm font-medium"
+                disabled={saving}
+                className="px-4 py-2 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-900/20 transition text-sm font-medium disabled:opacity-50"
               >
                 Cancel
               </button>
               <button
-                onClick={() => {
-                  setShowModifyModal(false);
-                  // Handle modification logic
-                }}
-                className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition text-sm font-medium"
+                onClick={handleSaveModify}
+                disabled={saving || !modifyForm.checkIn || !modifyForm.checkOut}
+                className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition text-sm font-medium disabled:opacity-50"
               >
-                Save Changes
+                {saving && <Loader2 size={14} className="animate-spin" />}
+                {saving ? 'Saving…' : 'Save Changes'}
               </button>
             </div>
           </div>

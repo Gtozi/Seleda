@@ -1,10 +1,13 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import {
   RefreshCw, Play, Clock, CheckCircle2, XCircle, Settings2,
-  Calendar, Zap, AlertCircle,
+  Calendar, Zap, AlertCircle, History, Timer, ListChecks, AlertTriangle,
 } from 'lucide-react';
+import StatCard from '../FrontOffice/StatCard';
+import { PageHeader, SectionCard, Badge } from '../FrontOffice/ui';
+import { button } from '../FrontOffice/brandTheme';
 import { ModalSystem } from '../Shared/ModalSystem';
-import { DataTable, Column } from '../Shared/DataTable';
+import { adminAuthHeaders } from './shared/ResourceManager';
 
 interface ScheduledJob {
   id: string;
@@ -15,6 +18,7 @@ interface ScheduledJob {
   enabled: boolean;
   last_run: string | null;
   next_run: string | null;
+  created_at?: string;
 }
 
 interface JobRun {
@@ -28,41 +32,47 @@ interface JobRun {
   created_at: string;
 }
 
-const JOB_TYPE_ICONS: Record<string, any> = {
-  night_audit: Moon,
-  allotment_release: Zap,
-  report_email: Calendar,
-  backup: Settings2,
+interface SchedulerStats {
+  total: number;
+  active: number;
+  disabled: number;
+  runs24h: number;
+  failed24h: number;
+}
+
+const TYPE_TONES: Record<string, 'info' | 'accent' | 'success' | 'warning' | 'danger' | 'neutral'> = {
+  night_audit: 'accent',
+  allotment_release: 'warning',
+  report_email: 'info',
+  backup: 'success',
 };
 
-const STATUS_STYLES: Record<string, string> = {
-  success: 'bg-emerald-50 text-emerald-600',
-  failed: 'bg-rose-50 text-rose-600',
-  running: 'bg-indigo-50 text-indigo-600',
-  pending: 'bg-amber-50 text-amber-600',
-};
-
-function Moon(props: any) { return <Calendar {...props} />; }
+const runTone = (s?: string) =>
+  s === 'success' || s === 'completed' ? 'success' as const
+  : s === 'failed' ? 'danger' as const
+  : s === 'running' ? 'info' as const
+  : 'warning' as const;
 
 const SchedulerManager: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [jobs, setJobs] = useState<ScheduledJob[]>([]);
+  const [stats, setStats] = useState<SchedulerStats | null>(null);
   const [runs, setRuns] = useState<Record<string, JobRun[]>>({});
   const [expandedJob, setExpandedJob] = useState<string | null>(null);
   const [showEditModal, setShowEditModal] = useState(false);
   const [editJob, setEditJob] = useState<ScheduledJob | null>(null);
   const [editForm, setEditForm] = useState({ name: '', scheduleCron: '', enabled: true });
-
-  const token = localStorage.getItem('erp_token');
-  const headers = { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) };
+  const [busy, setBusy] = useState<string | null>(null);
 
   const loadData = useCallback(async () => {
     setLoading(true); setError(null);
     try {
-      const res = await fetch('/api/admin/scheduler/jobs', { headers });
+      const res = await fetch('/api/admin/scheduler/jobs', { headers: adminAuthHeaders() });
       const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || 'Failed to load jobs');
       setJobs(data.jobs || []);
+      setStats(data.stats || null);
     } catch (err: any) { setError(err.message || 'Failed to load jobs'); }
     finally { setLoading(false); }
   }, []);
@@ -71,110 +81,148 @@ const SchedulerManager: React.FC = () => {
 
   const loadRuns = async (jobId: string) => {
     try {
-      const res = await fetch(`/api/admin/scheduler/jobs/${jobId}/runs`, { headers });
+      const res = await fetch(`/api/admin/scheduler/jobs/${jobId}/runs`, { headers: adminAuthHeaders() });
       const data = await res.json();
       setRuns(prev => ({ ...prev, [jobId]: data.runs || [] }));
     } catch (err: any) { setError(err.message); }
   };
 
-  const handleToggle = async (job: ScheduledJob) => {
-    try {
-      await fetch(`/api/admin/scheduler/jobs/${job.id}`, {
-        method: 'PATCH', headers, body: JSON.stringify({ enabled: !job.enabled }),
-      });
-      loadData();
-    } catch (err: any) { setError(err.message); }
+  const run = async (key: string, fn: () => Promise<void>) => {
+    setBusy(key);
+    try { await fn(); await loadData(); }
+    catch (err: any) { setError(err.message); }
+    finally { setBusy(null); }
   };
 
-  const handleTrigger = async (job: ScheduledJob) => {
-    try {
-      await fetch(`/api/admin/scheduler/jobs/${job.id}/trigger`, { method: 'POST', headers });
-      loadData();
-      if (expandedJob === job.id) loadRuns(job.id);
-    } catch (err: any) { setError(err.message); }
-  };
+  const handleToggle = (job: ScheduledJob) => run(`toggle-${job.id}`, async () => {
+    await fetch(`/api/admin/scheduler/jobs/${job.id}`, {
+      method: 'PATCH', headers: adminAuthHeaders(), body: JSON.stringify({ enabled: !job.enabled }),
+    });
+  });
 
-  const handleEditSave = async () => {
+  const handleTrigger = (job: ScheduledJob) => run(`trigger-${job.id}`, async () => {
+    const res = await fetch(`/api/admin/scheduler/jobs/${job.id}/trigger`, { method: 'POST', headers: adminAuthHeaders() });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data?.error || 'Trigger failed');
+    if (expandedJob === job.id) loadRuns(job.id);
+  });
+
+  const handleEditSave = () => run('edit-save', async () => {
     if (!editJob) return;
-    try {
-      await fetch(`/api/admin/scheduler/jobs/${editJob.id}`, {
-        method: 'PATCH', headers, body: JSON.stringify(editForm),
-      });
-      setShowEditModal(false);
-      loadData();
-    } catch (err: any) { setError(err.message); }
-  };
+    const res = await fetch(`/api/admin/scheduler/jobs/${editJob.id}`, {
+      method: 'PATCH', headers: adminAuthHeaders(), body: JSON.stringify(editForm),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data?.error || 'Save failed');
+    setShowEditModal(false);
+  });
 
-  const jobColumns: Column<ScheduledJob>[] = [
-    { key: 'name', label: 'Job Name', render: (j) => <span className="text-xs font-black text-slate-900 dark:text-white">{j.name}</span> },
-    { key: 'type', label: 'Type', align: 'center', render: (j) => <span className="text-[10px] font-mono font-black text-slate-400 uppercase">{j.type}</span> },
-    { key: 'schedule_cron', label: 'Schedule', align: 'center', render: (j) => <span className="text-[10px] font-mono font-bold text-indigo-600">{j.schedule_cron}</span> },
-    { key: 'enabled', label: 'Status', align: 'center', render: (j) => (
-      <button onClick={() => handleToggle(j)} className={`px-2 py-0.5 rounded text-[8px] font-black uppercase tracking-widest transition ${j.enabled ? 'bg-emerald-50 text-emerald-600' : 'bg-slate-100 text-slate-400'}`}>
-        {j.enabled ? 'Active' : 'Disabled'}
-      </button>
-    ) },
-    { key: 'last_run', label: 'Last Run', align: 'center', render: (j) => <span className="text-[10px] font-bold text-slate-500">{j.last_run ? new Date(j.last_run).toLocaleString() : 'Never'}</span> },
-    { key: 'actions', label: 'Actions', align: 'center', sortable: false, render: (j) => (
-      <div className="flex justify-center gap-1">
-        <button onClick={() => handleTrigger(j)} className="p-1.5 text-slate-400 hover:text-emerald-600 transition" title="Run now"><Play size={14} /></button>
-        <button onClick={() => { setEditJob(j); setEditForm({ name: j.name, scheduleCron: j.schedule_cron, enabled: j.enabled }); setShowEditModal(true); }} className="p-1.5 text-slate-400 hover:text-indigo-600 transition" title="Edit"><Settings2 size={14} /></button>
-        <button onClick={() => { if (expandedJob === j.id) { setExpandedJob(null); } else { setExpandedJob(j.id); loadRuns(j.id); } }} className="p-1.5 text-slate-400 hover:text-amber-600 transition" title="History"><Clock size={14} /></button>
-      </div>
-    ) },
+  const cards = [
+    { title: 'Total Jobs', value: stats?.total ?? jobs.length, icon: ListChecks, tone: 'accent' as const },
+    { title: 'Active', value: stats?.active ?? '—', icon: CheckCircle2, tone: 'success' as const },
+    { title: 'Disabled', value: stats?.disabled ?? '—', icon: XCircle, tone: 'neutral' as const },
+    { title: 'Runs (24h)', value: stats?.runs24h ?? '—', icon: Timer, tone: 'info' as const },
+    { title: 'Failed (24h)', value: stats?.failed24h ?? '—', icon: AlertTriangle, tone: 'danger' as const },
   ];
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-xl font-black text-slate-900 dark:text-white leading-tight">Scheduler & Job Engine</h2>
-          <p className="text-xs text-slate-400 font-medium">Automated cron-based job runner for night audit, allotment release, reports, and backups</p>
-        </div>
-        <button onClick={loadData} className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white font-bold py-2.5 px-4 rounded-2xl flex items-center gap-2 text-xs hover:bg-slate-50 transition shadow-sm">
-          <RefreshCw size={16} className={loading ? 'animate-spin' : ''} /> Refresh
-        </button>
-      </div>
+    <div className="space-y-6 animate-fade-in pt-4">
+      <PageHeader
+        title="Scheduler & Job Engine"
+        subtitle="Live cron job runner — night audit, allotment release, reports, and backups"
+        icon={Calendar}
+        actions={
+          <button onClick={loadData} disabled={loading} className={button.secondary}>
+            <RefreshCw size={16} className={loading ? 'animate-spin' : ''} /> Refresh
+          </button>
+        }
+      />
 
-      {error && <div className="p-4 bg-rose-50 dark:bg-rose-500/10 border border-rose-100 dark:border-rose-500/20 rounded-2xl"><p className="text-xs font-bold text-rose-600 dark:text-rose-400">{error}</p></div>}
-
-      <DataTable columns={jobColumns} data={jobs} rowKey={(row) => row.id} sortable filterable filterPlaceholder="Search jobs..." filterKeys={['name', 'type']} emptyMessage="No scheduled jobs." />
-
-      {/* Run History */}
-      {expandedJob && runs[expandedJob] && (
-        <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-100 dark:border-slate-800 shadow-sm overflow-hidden">
-          <div className="p-4 border-b border-slate-50 dark:border-slate-800">
-            <h3 className="text-sm font-black text-slate-900 dark:text-white uppercase tracking-tight flex items-center gap-2">
-              <Clock size={16} className="text-amber-500" /> Run History — {jobs.find(j => j.id === expandedJob)?.name}
-            </h3>
-          </div>
-          {runs[expandedJob].length === 0 ? (
-            <div className="p-6 text-center text-[10px] font-bold text-slate-400">No runs recorded.</div>
-          ) : (
-            <div className="divide-y divide-slate-50 dark:divide-slate-800">
-              {runs[expandedJob].map(run => (
-                <div key={run.id} className="p-3 flex items-start justify-between">
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <span className={`px-2 py-0.5 rounded text-[8px] font-black uppercase tracking-widest ${STATUS_STYLES[run.status] || STATUS_STYLES['pending']}`}>
-                        {run.status === 'success' && <CheckCircle2 size={9} className="inline mr-1" />}
-                        {run.status === 'failed' && <XCircle size={9} className="inline mr-1" />}
-                        {run.status}
-                      </span>
-                      <span className="text-[10px] font-bold text-slate-400">{new Date(run.created_at).toLocaleString()}</span>
-                    </div>
-                    {run.error && <p className="text-[10px] font-bold text-rose-600 mt-1 flex items-center gap-1"><AlertCircle size={9} /> {run.error}</p>}
-                    {run.result && <p className="text-[10px] font-bold text-slate-500 mt-1">{JSON.stringify(run.result)}</p>}
-                  </div>
-                  <span className="text-[9px] font-bold text-slate-400">
-                    {run.started_at && run.completed_at ? `${Math.round((new Date(run.completed_at).getTime() - new Date(run.started_at).getTime()) / 1000)}s` : '—'}
-                  </span>
-                </div>
-              ))}
-            </div>
-          )}
+      {error && (
+        <div className="p-4 rounded-xl text-sm font-bold flex items-center gap-2 bg-rose-50 dark:bg-rose-500/10 text-rose-700 dark:text-rose-400 border border-rose-100 dark:border-rose-500/20">
+          <AlertTriangle size={16} /> {error}
         </div>
       )}
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
+        {cards.map(c => <StatCard key={c.title} title={c.title} value={c.value} icon={c.icon} tone={c.tone} />)}
+      </div>
+
+      <SectionCard
+        title="Scheduled Jobs"
+        subtitle={`${jobs.length} jobs · node-cron engine`}
+        icon={Zap}
+        tone="info"
+        pad="none"
+      >
+        {jobs.length === 0 ? (
+          <div className="p-8 text-center text-sm text-gray-400">{loading ? 'Loading jobs…' : 'No scheduled jobs.'}</div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-left text-xs font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 border-b border-gray-200 dark:border-slate-700">
+                  <th className="px-5 py-3">Job</th>
+                  <th className="px-5 py-3">Type</th>
+                  <th className="px-5 py-3">Schedule</th>
+                  <th className="px-5 py-3">Status</th>
+                  <th className="px-5 py-3">Last Run</th>
+                  <th className="px-5 py-3">Next Run</th>
+                  <th className="px-5 py-3 text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100 dark:divide-slate-700">
+                {jobs.map(j => (
+                  <React.Fragment key={j.id}>
+                    <tr className={`hover:bg-slate-50 dark:hover:bg-slate-700/30 ${expandedJob === j.id ? 'bg-slate-50 dark:bg-slate-800/40' : ''}`}>
+                      <td className="px-5 py-3">
+                        <button onClick={() => { if (expandedJob === j.id) setExpandedJob(null); else { setExpandedJob(j.id); loadRuns(j.id); } }}
+                          className="text-left">
+                          <span className="text-sm font-bold text-gray-900 dark:text-white hover:text-indigo-600 dark:hover:text-indigo-400">{j.name}</span>
+                          <span className="block text-[10px] font-mono text-gray-400">{j.id.slice(0, 8)}</span>
+                        </button>
+                      </td>
+                      <td className="px-5 py-3"><Badge tone={TYPE_TONES[j.type] || 'neutral'}>{j.type?.replace(/_/g, ' ') || 'job'}</Badge></td>
+                      <td className="px-5 py-3"><code className="text-xs font-mono font-bold text-indigo-600 dark:text-indigo-400">{j.schedule_cron}</code></td>
+                      <td className="px-5 py-3">
+                        <button onClick={() => handleToggle(j)}
+                          className={`px-2.5 py-1 rounded-lg text-[10px] font-black uppercase tracking-widest transition ${j.enabled ? 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400' : 'bg-slate-100 dark:bg-slate-700 text-slate-400'}`}>
+                          {j.enabled ? 'Active' : 'Disabled'}
+                        </button>
+                      </td>
+                      <td className="px-5 py-3 text-xs text-gray-500 dark:text-gray-400">{j.last_run ? new Date(j.last_run).toLocaleString() : 'Never'}</td>
+                      <td className="px-5 py-3 text-xs text-gray-500 dark:text-gray-400">{j.next_run ? new Date(j.next_run).toLocaleString() : '—'}</td>
+                      <td className="px-5 py-3">
+                        <div className="flex justify-end gap-1">
+                          <button onClick={() => handleTrigger(j)} disabled={busy === `trigger-${j.id}`}
+                            className={`${button.ghost} disabled:opacity-40`} title="Run now">
+                            {busy === `trigger-${j.id}` ? <RefreshCw size={14} className="animate-spin" /> : <Play size={14} />}
+                          </button>
+                          <button onClick={() => { setEditJob(j); setEditForm({ name: j.name, scheduleCron: j.schedule_cron, enabled: j.enabled }); setShowEditModal(true); }}
+                            className={button.ghost} title="Edit">
+                            <Settings2 size={14} />
+                          </button>
+                          <button onClick={() => { if (expandedJob === j.id) setExpandedJob(null); else { setExpandedJob(j.id); loadRuns(j.id); } }}
+                            className={button.ghost} title="Run history">
+                            <History size={14} />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                    {expandedJob === j.id && (
+                      <tr>
+                        <td colSpan={7} className="px-5 py-4 bg-slate-50/60 dark:bg-slate-800/30">
+                          <RunHistory runs={runs[j.id] || []} loading={!runs[j.id]} />
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </SectionCard>
 
       {/* Edit Modal */}
       <ModalSystem isOpen={showEditModal} onClose={() => setShowEditModal(false)} title="Edit Scheduled Job" subtitle="Modify schedule and settings" variant="form" size="md" showFooter={false}>
@@ -197,11 +245,44 @@ const SchedulerManager: React.FC = () => {
         </div>
         <div className="p-6 border-t border-slate-100 dark:border-slate-800 flex justify-end gap-3 bg-slate-50 dark:bg-slate-950">
           <button onClick={() => setShowEditModal(false)} className="px-6 py-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-slate-50 transition">Cancel</button>
-          <button onClick={handleEditSave} className="px-6 py-2.5 bg-indigo-600 text-white rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-indigo-700 transition">Save</button>
+          <button onClick={handleEditSave} disabled={busy === 'edit-save'} className="px-6 py-2.5 bg-indigo-600 text-white rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-indigo-700 transition disabled:opacity-50">
+            {busy === 'edit-save' ? 'Saving…' : 'Save'}
+          </button>
         </div>
       </ModalSystem>
     </div>
   );
 };
+
+function RunHistory({ runs, loading }: { runs: JobRun[]; loading: boolean }) {
+  if (loading) return <div className="py-4 text-center text-xs text-gray-400">Loading run history…</div>;
+  if (runs.length === 0) return <div className="py-4 text-center text-xs text-gray-400">No runs recorded.</div>;
+  return (
+    <div className="space-y-2">
+      <div className="text-[10px] font-black uppercase tracking-widest text-gray-400 flex items-center gap-1.5">
+        <Clock size={11} /> Recent Runs ({runs.length})
+      </div>
+      <div className="divide-y divide-gray-100 dark:divide-slate-700">
+        {runs.slice(0, 10).map(run => (
+          <div key={run.id} className="flex items-start justify-between gap-3 py-2">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <Badge tone={runTone(run.status)}>{run.status}</Badge>
+                <span className="text-[10px] font-bold text-gray-400">{new Date(run.created_at).toLocaleString()}</span>
+              </div>
+              {run.error && <p className="text-[10px] font-bold text-rose-600 dark:text-rose-400 mt-1 flex items-center gap-1"><AlertCircle size={9} /> {run.error}</p>}
+              {run.result != null && <p className="text-[10px] font-bold text-gray-500 dark:text-gray-400 mt-1 truncate max-w-xl">{typeof run.result === 'string' ? run.result : JSON.stringify(run.result)}</p>}
+            </div>
+            <span className="text-[9px] font-bold text-gray-400 shrink-0">
+              {run.started_at && run.completed_at
+                ? `${Math.round((new Date(run.completed_at).getTime() - new Date(run.started_at).getTime()) / 1000)}s`
+                : '—'}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 export default SchedulerManager;

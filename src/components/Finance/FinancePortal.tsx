@@ -21,6 +21,8 @@ import BusinessIntelligence from './BusinessIntelligence';
 import FinancialReports from './FinancialReports';
 import FinanceConfiguration from './FinanceConfiguration';
 import ChartOfAccounts from './ChartOfAccounts';
+import FolioManagementPage from '../FolioManagement/FolioManagementPage';
+import DepartmentRequisitionForm from '../Inventory/DepartmentRequisitionForm';
 
 const FinancePortal = ({ activeModule = 'dashboard' }: { activeModule?: string }) => {
 
@@ -31,6 +33,7 @@ const FinancePortal = ({ activeModule = 'dashboard' }: { activeModule?: string }
         {activeModule === 'dashboard' && <FinanceDashboard />}
         {activeModule === 'gl' && <GeneralLedger />}
         {activeModule === 'coa' && <ChartOfAccounts />}
+        {activeModule === 'folio-billing' && <FolioManagementPage />}
         {activeModule === 'ar' && <AccountsReceivable />}
         {activeModule === 'ap' && <AccountsPayable />}
         {activeModule === 'cash_bank' && <BankReconciliation />}
@@ -49,6 +52,7 @@ const FinancePortal = ({ activeModule = 'dashboard' }: { activeModule?: string }
         {activeModule === 'documents' && <DocumentManagement />}
         {activeModule === 'approval' && <ApprovalWorkflow />}
         {activeModule === 'bi' && <BusinessIntelligence />}
+        {activeModule === 'requisitions' && <DepartmentRequisitionForm department="Finance" />}
         {activeModule === 'reports' && <FinancialReports />}
         {activeModule === 'config' && <FinanceConfiguration />}
       </div>

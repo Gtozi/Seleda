@@ -95,6 +95,7 @@ export interface MappedReservation {
   corporateAccountId?: string;
   bookingGroupId?: string;
   bookingType?: string;
+  billingMode?: 'individual' | 'group' | 'corporate';
   roomTypeId?: string;
   folioRoutingOverrides?: Record<string, unknown>;
   createdAt?: string;
@@ -122,8 +123,43 @@ export interface MappedFolio {
   ownerId?: string;
   operatorId?: string;
   groupId?: string;
+  parentFolioId?: string;
   creditLimit?: number;
   createdAt?: string;
+  folioNumber?: string;
+  splitRules?: any;
+  billToEntityId?: string;
+}
+
+export interface MappedFolioWindow {
+  id: string;
+  folioId: string;
+  windowNumber: number;
+  label: string;
+  paymentMethodId?: string;
+  routingRuleId?: string;
+  isDefault: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface MappedRoutingRule {
+  id: string;
+  scopeFolioId: string;
+  appliesTo: 'all_charges' | 'charge_category' | 'specific_reservation';
+  chargeCategoryFilter: string[];
+  specificReservationId?: string;
+  targetFolioId?: string;
+  targetWindowId?: string;
+  effectiveFrom?: string;
+  effectiveTo?: string;
+  maxAmount?: number;
+  isActive: boolean;
+  priority: number;
+  createdBy?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  notes?: string;
 }
 
 export interface MappedFolioLine {
@@ -157,6 +193,16 @@ export interface MappedFolioLine {
   usaliRevenueCode?: string;
   usaliCostCode?: string;
   department?: string;
+  invoiceId?: string;
+  windowId?: string;
+  originFolioId?: string;
+  isRouted?: boolean;
+  routedFromFolioId?: string;
+  routedFromWindowId?: string;
+  isDisputed?: boolean;
+  disputeReason?: string;
+  disputedAt?: string;
+  disputedBy?: string;
 }
 
 export interface MappedFolioPayment {
@@ -376,6 +422,7 @@ export function mapReservationFromDb(row: Record<string, unknown>): MappedReserv
     corporateAccountId: row.corporate_account_id ? String(row.corporate_account_id) : undefined,
     bookingGroupId: row.booking_group_id ? String(row.booking_group_id) : undefined,
     bookingType: String(row.booking_type ?? '') as MappedReservation['bookingType'],
+    billingMode: row.billing_mode ? String(row.billing_mode) as MappedReservation['billingMode'] : undefined,
     roomTypeId: row.room_type_id ? String(row.room_type_id) : undefined,
     folioRoutingOverrides: typeof row.folio_routing_overrides === 'object' && row.folio_routing_overrides !== null
       ? row.folio_routing_overrides as MappedReservation['folioRoutingOverrides']
@@ -437,6 +484,7 @@ export function mapReservationToDb(reservation: Partial<MappedReservation>): Rec
   if (reservation.corporateAccountId !== undefined) row.corporate_account_id = reservation.corporateAccountId;
   if (reservation.bookingGroupId !== undefined) row.booking_group_id = reservation.bookingGroupId;
   if (reservation.bookingType !== undefined) row.booking_type = reservation.bookingType;
+  if (reservation.billingMode !== undefined) row.billing_mode = reservation.billingMode;
   if (reservation.roomTypeId !== undefined) row.room_type_id = reservation.roomTypeId;
   if (reservation.folioRoutingOverrides !== undefined) row.folio_routing_overrides = reservation.folioRoutingOverrides;
   return row;
@@ -470,6 +518,9 @@ export function mapFolioFromDb(row: Record<string, unknown>): MappedFolio {
     groupId: row.group_id ? String(row.group_id) : undefined,
     creditLimit: toNumber(row.credit_limit),
     createdAt: row.created_at ? String(row.created_at) : undefined,
+    folioNumber: row.folio_number ? String(row.folio_number) : undefined,
+    splitRules: row.split_rules ?? undefined,
+    billToEntityId: row.bill_to_entity_id ? String(row.bill_to_entity_id) : undefined,
   } as MappedFolio;
 }
 
@@ -505,6 +556,16 @@ export function mapFolioLineFromDb(row: Record<string, unknown>): MappedFolioLin
     usaliRevenueCode: row.usali_revenue_code ? String(row.usali_revenue_code) : undefined,
     usaliCostCode: row.usali_cost_code ? String(row.usali_cost_code) : undefined,
     department: row.department ? String(row.department) : undefined,
+    invoiceId: row.invoice_id ? String(row.invoice_id) : undefined,
+    windowId: row.window_id ? String(row.window_id) : undefined,
+    originFolioId: row.origin_folio_id ? String(row.origin_folio_id) : undefined,
+    isRouted: toBoolean(row.is_routed) ?? false,
+    routedFromFolioId: row.routed_from_folio_id ? String(row.routed_from_folio_id) : undefined,
+    routedFromWindowId: row.routed_from_window_id ? String(row.routed_from_window_id) : undefined,
+    isDisputed: toBoolean(row.is_disputed) ?? false,
+    disputeReason: row.dispute_reason ? String(row.dispute_reason) : undefined,
+    disputedAt: row.disputed_at ? String(row.disputed_at) : undefined,
+    disputedBy: row.disputed_by ? String(row.disputed_by) : undefined,
   } as MappedFolioLine;
 }
 

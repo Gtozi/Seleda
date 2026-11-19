@@ -71,6 +71,29 @@ async function getCurrentUserName(): Promise<string> {
   }
 }
 
+// Normalize status from DB format to kebab-case format expected by calendar
+function normalizeStatus(status: string): string {
+  if (!status) return 'confirmed';
+  const statusMap: Record<string, string> = {
+    'CheckedIn': 'checked-in',
+    'CheckedOut': 'checked-out',
+    'Confirmed': 'confirmed',
+    'Cancelled': 'cancelled',
+    'Waitlisted': 'waitlist',
+    'NoShow': 'no-show',
+    'Tentative': 'tentative',
+    // Already normalized formats
+    'checked-in': 'checked-in',
+    'checked-out': 'checked-out',
+    'confirmed': 'confirmed',
+    'cancelled': 'cancelled',
+    'waitlist': 'waitlist',
+    'no-show': 'no-show',
+    'tentative': 'tentative',
+  };
+  return statusMap[status] || status.toLowerCase();
+}
+
 type ReservationSource = 'website' | 'walk-in' | 'ota' | 'corporate' | 'travel-agent' | 'group' | 'call-center' | 'mobile-app';
 type ReservationStatus = 'confirmed' | 'tentative' | 'waitlist' | 'cancelled' | 'no-show' | 'checked-in' | 'checked-out';
 
@@ -154,7 +177,7 @@ const Reservations = ({ onNavigateToCheckIn, onNavigateToCheckOut, onNavigateToG
   // Track which groups are expanded (collapsible group reservations)
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
 
-  // Fetch guest ID by email when viewing a reservation that doesn't have guest_id
+  // Fetch guest ID by email AND name when viewing a reservation that doesn't have guest_id
   useEffect(() => {
     const fetchGuestId = async () => {
       if (viewingReservation && !viewingReservation.guest_id && viewingReservation.guestEmail && supabase) {
@@ -162,6 +185,7 @@ const Reservations = ({ onNavigateToCheckIn, onNavigateToCheckOut, onNavigateToG
           .from('guests')
           .select('id')
           .eq('email', viewingReservation.guestEmail)
+          .eq('name', viewingReservation.guestName)
           .maybeSingle();
         if (guest) {
           setViewingReservationGuestId(guest.id);
@@ -204,8 +228,19 @@ const Reservations = ({ onNavigateToCheckIn, onNavigateToCheckOut, onNavigateToG
     paymentStatus: 'Unpaid',
     notes: ''
   });
-  // Explicit booking type toggle: 'individual' or 'group'
+  // Explicit booking type toggle: 'individual' or 'group'.
+  // A user may opt into 'group' even with a single room; selecting more than
+  // one room auto-promotes to 'group' (see effect below).
   const [bookingType, setBookingType] = useState<'individual' | 'group'>('individual');
+
+  // Auto-promote to Group when more than one room is selected. The user can
+  // still explicitly pick Group with a single room — that path is not demoted.
+  useEffect(() => {
+    const totalRooms = newReservationRoomTypes.reduce((sum, sel) => sum + sel.quantity, 0);
+    if (totalRooms > 1 && bookingType !== 'group') {
+      setBookingType('group');
+    }
+  }, [newReservationRoomTypes, bookingType]);
 
   // Group auto-suggest: when the guest email matches an existing guest, look up
   // their active group memberships so the user can attach the reservation to a
@@ -719,7 +754,7 @@ const Reservations = ({ onNavigateToCheckIn, onNavigateToCheckOut, onNavigateToG
             totalAdults: res.adults || 1,
             totalChildren: res.children || 0,
             source: res.channel || 'walk-in',
-            status: res.status.toLowerCase(),
+            status: normalizeStatus(res.status),
             totalAmount: res.total_amount,
             deposit: res.deposit_amount,
             balance: res.total_amount - (res.deposit_amount || 0),
@@ -2581,8 +2616,35 @@ const Reservations = ({ onNavigateToCheckIn, onNavigateToCheckOut, onNavigateToG
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 lg:divide-x lg:divide-gray-200 dark:lg:divide-slate-700">
                 {/* Left Column: Guest + Dates + Source */}
                 <div className="space-y-5 lg:pr-6">
+                {/* Booking Type selector — lets the user opt into a Group booking
+                    even when only one room is selected. Auto-promotes to Group
+                    when more than one room is chosen. */}
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setBookingType('individual')}
+                    className={`flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl border text-xs font-bold transition ${
+                      bookingType === 'individual'
+                        ? 'bg-blue-50 dark:bg-blue-900/30 border-blue-300 dark:border-blue-600 text-blue-700 dark:text-blue-300'
+                        : 'bg-white dark:bg-slate-900/40 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:border-slate-300'
+                    }`}
+                  >
+                    <User size={12} /> Individual
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setBookingType('group')}
+                    className={`flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl border text-xs font-bold transition ${
+                      bookingType === 'group'
+                        ? 'bg-purple-50 dark:bg-purple-900/30 border-purple-300 dark:border-purple-600 text-purple-700 dark:text-purple-300'
+                        : 'bg-white dark:bg-slate-900/40 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:border-slate-300'
+                    }`}
+                  >
+                    <Users2 size={12} /> Group
+                  </button>
+                </div>
                 {/* Conditional section: Group Info for group bookings, Guest Info for individual */}
-                {newReservationRoomTypes.reduce((sum, sel) => sum + sel.quantity, 0) > 1 ? (
+                {(bookingType === 'group' || newReservationRoomTypes.reduce((sum, sel) => sum + sel.quantity, 0) > 1) ? (
                   /* Group Booking Information */
                   <div className="p-4 bg-purple-50 dark:bg-purple-900/20 rounded-xl border border-purple-200 dark:border-purple-800">
                     <div className="flex items-center gap-2 mb-3">
@@ -3462,7 +3524,10 @@ const Reservations = ({ onNavigateToCheckIn, onNavigateToCheckOut, onNavigateToG
                   try {
                     // Validate form
                     const totalRooms = newReservationRoomTypes.reduce((sum, sel) => sum + sel.quantity, 0);
-                    const isGroupBooking = totalRooms > 1;
+                    // A booking is a Group booking when the user explicitly chose
+                    // Group OR when more than one room is selected (auto-promote).
+                    // This allows a Group booking to optionally include a single room.
+                    const isGroupBooking = bookingType === 'group' || totalRooms > 1;
                     const errors: Record<string, string> = {};
 
                     if (isGroupBooking) {
@@ -3636,6 +3701,20 @@ const Reservations = ({ onNavigateToCheckIn, onNavigateToCheckOut, onNavigateToG
                       let groupId: string | null = null;
                       // Array to hold per-room guest IDs (one guest profile per room)
                       const roomGuestIds: string[] = [];
+                      // Track guest profiles we actually CREATE in this attempt so that
+                      // if reservation creation fails we can clean them up. Pre-existing
+                      // guests that were reused are NOT included (we must not delete those).
+                      const createdGuestIds: string[] = [];
+                      // Track travel agency / corporate profiles created in this attempt
+                      // so they can be cleaned up on failure too.
+                      let createdTravelAgencyId: string | null = null;
+                      let createdCorporateAccountId: string | null = null;
+                      // IDs resolved during profile creation that are needed later when
+                      // inserting reservations. Declared in the outer scope so they are
+                      // accessible from the reservation-creation try block below.
+                      let travelAgencyProfileId: string | null = null;
+                      let corporateAccountId: string | null = null;
+                      let corporateProfileId: string | null = null;
 
                       try {
                         if (isGroupBooking) {
@@ -3659,6 +3738,152 @@ const Reservations = ({ onNavigateToCheckIn, onNavigateToCheckOut, onNavigateToG
                             });
 
                           // 2. Create group_profile record with all required fields
+                          //
+                          // Travel Agency & Corporation linkage:
+                          //   - If a travel agency name is provided, find or create a
+                          //     group_profile with type='TravelAgent' and store its ID
+                          //     in the group reservation's custom_fields.travelAgencyId.
+                          //   - If a corporation name is provided, find or create a
+                          //     corporate_account record and store its ID for linking
+                          //     on each reservation via corporate_account_id.
+                          // ── Find or create Travel Agent group_profile ──
+                          if (newReservationForm.travelAgency && newReservationForm.travelAgency.trim()) {
+                            const agencyName = newReservationForm.travelAgency.trim();
+                            const { data: existingAgency } = await supabase
+                              .from('group_profiles')
+                              .select('id')
+                              .eq('type', 'TravelAgent')
+                              .ilike('name', agencyName)
+                              .maybeSingle();
+
+                            if (existingAgency) {
+                              travelAgencyProfileId = existingAgency.id;
+                            } else {
+                              travelAgencyProfileId = 'TA-' + Math.random().toString(36).substring(2, 8).toUpperCase();
+                              await supabase
+                                .from('group_profiles')
+                                .insert({
+                                  id: travelAgencyProfileId,
+                                  code: travelAgencyProfileId,
+                                  name: agencyName,
+                                  type: 'TravelAgent',
+                                  status: 'Active',
+                                  contact_name: primaryContactName,
+                                  contact_email: guestEmail,
+                                  contact_phone: guestPhone,
+                                  billing_address: {},
+                                  credit_limit: 0,
+                                  current_balance: 0,
+                                  payment_terms: 'Net 30',
+                                  discount_percent: 0,
+                                  commission_percent: 0,
+                                  total_revenue: 0,
+                                  total_room_nights: 0,
+                                  total_stays: 0,
+                                  average_daily_rate: 0,
+                                  total_rooms_used: 0,
+                                  preferences: {},
+                                  notes: `Travel agent profile auto-created from group booking — ${newReservationForm.groupName}`
+                                });
+                              createdTravelAgencyId = travelAgencyProfileId;
+                            }
+                          }
+
+                          // ── Find or create Corporate Account ──
+                          // Create in BOTH group_profiles (type='CorporateAccount') for
+                          // the hierarchy AND corporate_accounts table for Sales module
+                          // compatibility.
+                          if (newReservationForm.corporation && newReservationForm.corporation.trim()) {
+                            const corpName = newReservationForm.corporation.trim();
+                            // Check group_profiles for existing CorporateAccount profile
+                            const { data: existingCorpProfile } = await supabase
+                              .from('group_profiles')
+                              .select('id')
+                              .eq('type', 'CorporateAccount')
+                              .ilike('name', corpName)
+                              .maybeSingle();
+
+                            if (existingCorpProfile) {
+                              corporateProfileId = existingCorpProfile.id;
+                              // Also check if a corporate_accounts row exists; create if missing
+                              const { data: existingCorpAcct } = await supabase
+                                .from('corporate_accounts')
+                                .select('id')
+                                .eq('id', corporateProfileId)
+                                .maybeSingle();
+                              if (!existingCorpAcct) {
+                                await supabase
+                                  .from('corporate_accounts')
+                                  .insert({
+                                    id: corporateProfileId,
+                                    company_name: corpName,
+                                    contact_person: primaryContactName,
+                                    contact_email: guestEmail,
+                                    contact_phone: guestPhone || null,
+                                    discount_percent: 0,
+                                    active_bookings: 0,
+                                    unpaid_balance: 0,
+                                    credit_limit: 0,
+                                    credit_terms: 'Net 30',
+                                    notes: `Corporate account auto-created from group booking — ${newReservationForm.groupName}`
+                                  });
+                              }
+                              corporateAccountId = corporateProfileId;
+                            } else {
+                              corporateProfileId = 'CORP-' + Math.random().toString(36).substring(2, 8).toUpperCase();
+                              corporateAccountId = corporateProfileId;
+                              // Create group_profile with type='CorporateAccount'
+                              await supabase
+                                .from('group_profiles')
+                                .insert({
+                                  id: corporateProfileId,
+                                  code: corporateProfileId,
+                                  name: corpName,
+                                  type: 'CorporateAccount',
+                                  status: 'Active',
+                                  contact_name: primaryContactName,
+                                  contact_email: guestEmail,
+                                  contact_phone: guestPhone,
+                                  organization_name: corpName,
+                                  billing_address: {},
+                                  credit_limit: 0,
+                                  current_balance: 0,
+                                  payment_terms: 'Net 30',
+                                  discount_percent: 0,
+                                  commission_percent: 0,
+                                  total_revenue: 0,
+                                  total_room_nights: 0,
+                                  total_stays: 0,
+                                  average_daily_rate: 0,
+                                  total_rooms_used: 0,
+                                  preferences: {},
+                                  notes: `Corporate account profile auto-created from group booking — ${newReservationForm.groupName}`
+                                });
+                              // Also create in corporate_accounts for Sales module
+                              await supabase
+                                .from('corporate_accounts')
+                                .insert({
+                                  id: corporateProfileId,
+                                  company_name: corpName,
+                                  contact_person: primaryContactName,
+                                  contact_email: guestEmail,
+                                  contact_phone: guestPhone || null,
+                                  discount_percent: 0,
+                                  active_bookings: 0,
+                                  unpaid_balance: 0,
+                                  credit_limit: 0,
+                                  credit_terms: 'Net 30',
+                                  notes: `Corporate account auto-created from group booking — ${newReservationForm.groupName}`
+                                });
+                              createdCorporateAccountId = corporateProfileId;
+                            }
+                          }
+
+                          // ── Determine parent_group_id for the GroupReservation ──
+                          // Priority: TravelAgent > CorporateAccount (a booking can have
+                          // both, but the travel agency is the more specific channel).
+                          const parentGroupId = travelAgencyProfileId || corporateProfileId;
+
                           await supabase
                             .from('group_profiles')
                             .insert({
@@ -3667,6 +3892,7 @@ const Reservations = ({ onNavigateToCheckIn, onNavigateToCheckOut, onNavigateToG
                               name: newReservationForm.groupName,
                               type: 'GroupReservation',
                               status: 'Active',
+                              parent_group_id: parentGroupId,
                               contact_name: primaryContactName,
                               contact_email: guestEmail,
                               contact_phone: guestPhone,
@@ -3682,7 +3908,10 @@ const Reservations = ({ onNavigateToCheckIn, onNavigateToCheckOut, onNavigateToG
                               total_stays: 0,
                               average_daily_rate: 0,
                               total_rooms_used: 0,
-                              preferences: {},
+                              preferences: {
+                                travelAgencyId: travelAgencyProfileId,
+                                corporateAccountId: corporateAccountId,
+                              },
                               notes: `Group booking created from FrontOffice — ${totalRooms} rooms`
                             });
 
@@ -3699,11 +3928,13 @@ const Reservations = ({ onNavigateToCheckIn, onNavigateToCheckOut, onNavigateToG
                             const guestId = 'GST-' + Math.random().toString(36).substring(2, 8).toUpperCase();
                             const isPrimary = i === 0;
 
-                            // Check if guest with this email already exists
+                            // Check if guest with this email AND name already exists
+                            // FIXED: Check both email AND name to prevent wrong profile reuse
                             const { data: existingGuest } = await supabase
                               .from('guests')
                               .select('id')
                               .eq('email', memberEmail)
+                              .eq('name', memberName)
                               .maybeSingle();
 
                             const actualGuestId = existingGuest?.id || guestId;
@@ -3728,6 +3959,7 @@ const Reservations = ({ onNavigateToCheckIn, onNavigateToCheckOut, onNavigateToG
                                   preferences: {},
                                   identification_doc: {}
                                 });
+                              createdGuestIds.push(guestId);
                             } else {
                               // Link existing guest to the group
                               await supabase
@@ -3756,13 +3988,36 @@ const Reservations = ({ onNavigateToCheckIn, onNavigateToCheckOut, onNavigateToG
                             } catch (linkErr) {
                               console.warn(`Member ${i + 1} group-link failed (non-fatal):`, linkErr);
                             }
+
+                            // ── Also link this member to the parent TravelAgent /
+                            //    CorporateAccount profile so that future bookings
+                            //    through the same agency/corporation can find all
+                            //    associated guests. ──
+                            if (parentGroupId) {
+                              try {
+                                await fetch(`/api/group-profiles/${parentGroupId}/link-guest`, {
+                                  method: 'POST',
+                                  headers: { 'Content-Type': 'application/json' },
+                                  credentials: 'include',
+                                  body: JSON.stringify({
+                                    guestId: actualGuestId,
+                                    relationshipType: 'TravelAgent',
+                                    isPrimaryContact: isPrimary,
+                                  }),
+                                });
+                              } catch (parentLinkErr) {
+                                console.warn(`Member ${i + 1} parent-link failed (non-fatal):`, parentLinkErr);
+                              }
+                            }
                           }
                         } else {
                           // Individual booking → create or find one guest profile
+                          // FIXED: Check both email AND name to prevent wrong profile reuse
                           const { data: existingGuest } = await supabase
                             .from('guests')
                             .select('id')
                             .eq('email', guestEmail)
+                            .eq('name', primaryContactName)
                             .maybeSingle();
 
                           if (existingGuest) {
@@ -3787,6 +4042,7 @@ const Reservations = ({ onNavigateToCheckIn, onNavigateToCheckOut, onNavigateToG
                                 identification_doc: {}
                               });
                             roomGuestIds.push(guestId);
+                            createdGuestIds.push(guestId);
                           }
                         }
                       } catch (profileError) {
@@ -3800,6 +4056,7 @@ const Reservations = ({ onNavigateToCheckIn, onNavigateToCheckOut, onNavigateToG
                       //   to the primary contact guest and to the group. Individual room
                       //   occupants can be linked later from the group profile detail.
                       // For INDIVIDUAL bookings: create a single reservation.
+                      try {
                       if (isGroupBooking && roomGuestIds.length > 0) {
                         // Create one reservation per room — each linked to its own
                         // member guest profile and to the group.
@@ -3842,6 +4099,9 @@ const Reservations = ({ onNavigateToCheckIn, onNavigateToCheckOut, onNavigateToG
                                 groupName: newReservationForm.groupName,
                                 primaryContact: primaryContactName,
                                 travelAgency: newReservationForm.travelAgency,
+                                travelAgencyId: travelAgencyProfileId,
+                                corporation: newReservationForm.corporation,
+                                corporateAccountId: corporateAccountId,
                                 roomNumber: i + 1,
                                 createdBy: createdBy || null
                               }),
@@ -3857,6 +4117,7 @@ const Reservations = ({ onNavigateToCheckIn, onNavigateToCheckOut, onNavigateToG
                               guest_id: roomGuestId,
                               booking_group_id: groupId,
                               group_booking_id: groupId,
+                              corporate_account_id: corporateAccountId,
                               is_group: true
                             });
 
@@ -3975,6 +4236,34 @@ const Reservations = ({ onNavigateToCheckIn, onNavigateToCheckOut, onNavigateToG
                             console.warn('Auto group-link failed (non-fatal):', linkErr);
                           }
                         }
+                      }
+                      } catch (resError) {
+                        // Cleanup orphaned profiles created above so a failed attempt
+                        // does not leave a dangling group profile with no
+                        // members/reservations (the "duplicate group profile" bug).
+                        console.error('Reservation creation failed — cleaning up orphaned group/guest profiles:', resError);
+                        try {
+                          if (groupId) {
+                            await supabase.from('guest_group_relationships').delete().eq('group_id', groupId);
+                          }
+                          if (createdGuestIds.length > 0) {
+                            await supabase.from('guests').delete().in('id', createdGuestIds);
+                          }
+                          if (groupId) {
+                            await supabase.from('group_profiles').delete().eq('id', groupId);
+                            await supabase.from('group_bookings').delete().eq('id', groupId);
+                          }
+                          if (createdTravelAgencyId) {
+                            await supabase.from('group_profiles').delete().eq('id', createdTravelAgencyId);
+                          }
+                          if (createdCorporateAccountId) {
+                            await supabase.from('group_profiles').delete().eq('id', createdCorporateAccountId);
+                            await supabase.from('corporate_accounts').delete().eq('id', createdCorporateAccountId);
+                          }
+                        } catch (cleanupErr) {
+                          console.error('Cleanup of orphaned profiles failed:', cleanupErr);
+                        }
+                        throw resError;
                       }
                     }
                     
@@ -4129,7 +4418,7 @@ const Reservations = ({ onNavigateToCheckIn, onNavigateToCheckOut, onNavigateToG
                           totalAdults: res.adults || 1,
                           totalChildren: res.children || 0,
                           source: res.channel || 'walk-in',
-                          status: res.status.toLowerCase(),
+                          status: normalizeStatus(res.status),
                           totalAmount: res.total_amount,
                           deposit: res.deposit_amount,
                           balance: res.total_amount - (res.deposit_amount || 0),

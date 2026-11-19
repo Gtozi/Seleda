@@ -1,386 +1,497 @@
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Engineering Dashboard — Engineering Portal
+ * (/erp/maintenance/dashboard).
+ *
+ * DB-integrated: fetches KPIs, alerts, and productivity from
+ * /api/eng-portal/dashboard/* routes. Mimics the Housekeeping dashboard
+ * pattern (HKDashboard.tsx). Alerts can be acknowledged and snoozed,
+ * persisted back to the eng_dashboard_alerts table.
+ */
 
-import React from 'react';
-import { 
-  ClipboardList, 
-  Wrench, 
-  AlertTriangle, 
-  Users, 
-  Zap, 
-  Droplets, 
-  Activity, 
-  TrendingUp, 
-  BarChart3,
+import { useState, useEffect, useCallback } from 'react';
+import {
+  ClipboardList,
   CheckCircle2,
+  AlertTriangle,
+  Wrench,
   Clock,
-  DollarSign,
   Heart,
-  Box,
-  Flame,
-  Radio,
-  ShieldAlert,
-  Package,
-  Factory,
-  Thermometer,
-  Gauge,
+  Users,
+  Activity,
+  TrendingUp,
   Bell,
+  Flame,
+  ShieldAlert,
+  Radio,
+  Gauge,
+  Thermometer,
+  Droplets,
+  Package,
   FileCheck,
-  Calendar
+  RefreshCw,
+  Loader2,
+  type LucideIcon,
 } from 'lucide-react';
-import { 
-  BarChart, 
-  Bar, 
-  XAxis, 
-  YAxis, 
-  CartesianGrid, 
-  Tooltip, 
-  ResponsiveContainer, 
-  LineChart, 
-  Line,
-  Cell,
+import {
+  ResponsiveContainer,
   PieChart,
-  Pie
+  Pie,
+  Cell,
+  Tooltip,
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Legend,
 } from 'recharts';
+import StatCard from '../FrontOffice/StatCard';
+import { PageHeader, SectionCard, Badge } from '../FrontOffice/ui';
+import { layout, statusTone, type StatusTone } from '../FrontOffice/brandTheme';
+import { useERP } from '../../context/ERPContext';
 
-const EngineeringDashboard: React.FC = () => {
-  // Mock Data - Updated per specification
-  const stats = [
-    { label: 'Open Work Orders', value: 14, sub: '4 Emergency', color: 'bg-indigo-500', icon: ClipboardList },
-    { label: 'Completed Today', value: 8, sub: '+2 from yesterday', color: 'bg-emerald-500', icon: CheckCircle2 },
-    { label: 'Overdue Work Orders', value: 3, sub: 'Requires attention', color: 'bg-rose-500', icon: AlertTriangle },
-    { label: 'Emergency Requests', value: 4, sub: 'Critical Action', color: 'bg-rose-600', icon: AlertTriangle },
-    { label: 'PM Due Today', value: 7, sub: '2 Overdue', color: 'bg-amber-500', icon: Wrench },
-    { label: 'Equipment Downtime', value: '20.2h', sub: 'Across Assets', color: 'bg-rose-400', icon: Clock },
-    { label: 'Room Out of Order', value: 2, sub: 'Maintenance', color: 'bg-rose-600', icon: AlertTriangle },
-    { label: 'Room Out of Service', value: 5, sub: 'Renovation', color: 'bg-slate-500', icon: AlertTriangle },
-    { label: 'Asset Availability', value: '94%', sub: 'Good', color: 'bg-blue-500', icon: Heart },
-    { label: 'Tech Utilization', value: '87%', sub: '6 Active', color: 'bg-indigo-400', icon: Users },
-    { label: 'Utility Consumption', value: '1,240', sub: 'Units Today', color: 'bg-purple-500', icon: Droplets },
-    { label: 'Energy Cost Trend', value: '+12%', sub: 'This Month', color: 'bg-emerald-600', icon: TrendingUp },
-  ];
+type AlertPriority = 'Critical' | 'High' | 'Medium' | 'Low';
+type AlertStatus = 'Active' | 'Acknowledged' | 'Snoozed' | 'Resolved';
 
-  const workOrderStatusData = [
-    { name: 'Draft', value: 2, color: '#94a3b8' },
-    { name: 'Submitted', value: 3, color: '#6366f1' },
-    { name: 'Approved', value: 2, color: '#3b82f6' },
-    { name: 'Assigned', value: 3, color: '#8b5cf6' },
-    { name: 'In Progress', value: 2, color: '#f59e0b' },
-    { name: 'Waiting Parts', value: 1, color: '#f97316' },
-    { name: 'Waiting Vendor', value: 1, color: '#ef4444' },
-  ];
+interface DashboardAlert {
+  id: string;
+  type: string;
+  message: string;
+  priority: AlertPriority;
+  status: AlertStatus;
+  source: string | null;
+  snoozed_until: string | null;
+  created_at: string;
+  updated_at: string;
+}
 
-  // Alerts per specification
-  const alerts = [
-    { type: 'Critical Equipment Failure', message: 'Generator 01 - Overheating detected', time: '10:45 AM', icon: Flame, color: 'bg-rose-500' },
-    { type: 'Safety Incident', message: 'Chemical spill in maintenance bay', time: '09:30 AM', icon: ShieldAlert, color: 'bg-amber-500' },
-    { type: 'Fire System Fault', message: 'Zone B smoke detector malfunction', time: '08:15 AM', icon: Radio, color: 'bg-rose-600' },
-    { type: 'Generator Alarm', message: 'Fuel level below 20%', time: '07:00 AM', icon: Gauge, color: 'bg-amber-600' },
-    { type: 'HVAC Alarm', message: 'Chiller unit 2 pressure warning', time: '06:30 AM', icon: Thermometer, color: 'bg-amber-500' },
-    { type: 'Water Leak', message: 'Pipe leak in boiler room', time: 'Yesterday', icon: Droplets, color: 'bg-blue-500' },
-    { type: 'Low Spare Parts Stock', message: 'Motor filters - 3 units remaining', time: 'Yesterday', icon: Package, color: 'bg-amber-500' },
-    { type: 'Compliance Inspection Due', message: 'Elevator annual inspection overdue', time: '2 days ago', icon: FileCheck, color: 'bg-rose-500' },
-  ];
+interface WorkOrderStats {
+  open: number;
+  completedToday: number;
+  overdue: number;
+  emergency: number;
+  total: number;
+}
 
-  const productivityData = [
-    { name: 'John D.', tasks: 12, quality: 95 },
-    { name: 'Elena R.', tasks: 15, quality: 98 },
-    { name: 'Carlos M.', tasks: 10, quality: 92 },
-    { name: 'Sarah L.', tasks: 14, quality: 96 },
-  ];
+interface PMStats {
+  active: number;
+  overdue: number;
+  dueToday: number;
+  compliancePct: number;
+}
 
-  const roomHeatMap = [
-    { floor: 'Floor 1', issues: 12, pms: 5 },
-    { floor: 'Floor 2', issues: 8, pms: 4 },
-    { floor: 'Floor 3', issues: 15, pms: 6 },
-    { floor: 'Floor 4', issues: 4, pms: 8 },
-    { floor: 'Floor 5', issues: 10, pms: 3 },
-  ];
+interface ComplianceStats {
+  valid: number;
+  overdue: number;
+  failed: number;
+  total: number;
+}
 
-  const utilityTrendData = [
-    { time: '08:00', water: 120, electricity: 450, fuel: 10 },
-    { time: '10:00', water: 340, electricity: 680, fuel: 15 },
-    { time: '12:00', water: 450, electricity: 920, fuel: 20 },
-    { time: '14:00', water: 380, electricity: 850, fuel: 18 },
-    { time: '16:00', water: 410, electricity: 790, fuel: 12 },
-    { time: '18:00', water: 520, electricity: 880, fuel: 22 },
-  ];
+interface AssetStats {
+  total: number;
+  operational: number;
+  availabilityPct: number;
+}
 
-  const downtimeAnalysis = [
-    { name: 'Generator 01', hours: 4.5 },
-    { name: 'Elevator A', hours: 12 },
-    { name: 'Boiler 02', hours: 2.2 },
-    { name: 'Cold Store', hours: 1.5 },
-  ];
+interface RoomStats {
+  outOfOrder: number;
+}
 
-  const costTrendData = [
-    { day: 'Mon', cost: 1200 },
-    { day: 'Tue', cost: 1500 },
-    { day: 'Wed', cost: 900 },
-    { day: 'Thu', cost: 1800 },
-    { day: 'Fri', cost: 2100 },
-    { day: 'Sat', cost: 1400 },
-    { day: 'Sun', cost: 1100 },
-  ];
+interface TechStats {
+  active: number;
+  utilizationPct: number;
+}
 
-  return (
-    <div className="space-y-6">
-      {/* Top Stats Grid */}
-      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
-        {stats.map((stat, i) => {
-          const Icon = stat.icon;
-          return (
-            <div key={i} className="bg-white dark:bg-slate-900 p-4 border border-slate-150 dark:border-slate-800 rounded-3xl shadow-3xs flex flex-col justify-between group hover:border-indigo-400 transition-all">
-              <div className="flex justify-between items-center mb-2">
-                <div className={`p-2 rounded-xl bg-slate-50 dark:bg-slate-800 text-slate-400 group-hover:${stat.color.replace('bg-', 'text-')} transition-colors`}>
-                  <Icon size={14} />
-                </div>
-                <span className="text-xl font-black text-slate-900 dark:text-white leading-none">{stat.value}</span>
-              </div>
-              <div>
-                <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">{stat.label}</span>
-                <p className="text-[8px] text-slate-500 font-medium">{stat.sub}</p>
-              </div>
-            </div>
-          );
-        })}
-      </div>
+interface KpiData {
+  workOrderStats: WorkOrderStats;
+  pmStats: PMStats;
+  complianceStats: ComplianceStats;
+  assetStats: AssetStats;
+  roomStats: RoomStats;
+  techStats: TechStats;
+  woStatusDist: { name: string; value: number; color: string }[];
+}
 
-      {/* Alerts Section */}
-      <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-3xl shadow-3xs p-5">
-        <div className="flex justify-between items-center mb-4">
-          <div className="flex items-center gap-2">
-            <Bell size={18} className="text-rose-500" />
-            <h3 className="text-sm font-sans font-extrabold text-slate-900 dark:text-white">Active Alerts</h3>
-            <span className="px-2 py-0.5 bg-rose-100 dark:bg-rose-500/20 text-rose-600 dark:text-rose-400 rounded-full text-[10px] font-black">{alerts.length}</span>
-          </div>
-          <button className="text-[10px] font-black text-indigo-600 hover:text-indigo-700 uppercase tracking-widest">View All</button>
-        </div>
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
-          {alerts.slice(0, 8).map((alert, i) => {
-            const Icon = alert.icon;
-            return (
-              <div key={i} className="flex items-start gap-3 p-3 bg-slate-50 dark:bg-slate-850 rounded-2xl border border-slate-100 dark:border-slate-800">
-                <div className={`p-2 rounded-xl ${alert.color} text-white shrink-0`}>
-                  <Icon size={12} />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <span className="text-[8px] font-black text-slate-400 uppercase tracking-widest block">{alert.type}</span>
-                  <p className="text-[10px] font-bold text-slate-900 dark:text-white truncate">{alert.message}</p>
-                  <span className="text-[8px] text-slate-500 font-medium">{alert.time}</span>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </div>
+interface ProductivityData {
+  days: { name: string; completed: number; verified: number }[];
+}
 
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        {/* Work Order Status & Cost Trend */}
-        <div className="lg:col-span-8 space-y-6">
-          <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 p-5 rounded-3xl shadow-3xs">
-             <div className="flex justify-between items-center mb-6">
-                <div>
-                  <h3 className="text-sm font-sans font-extrabold text-slate-900 dark:text-white">Maintenance Cost Trend</h3>
-                  <p className="text-[10px] text-slate-400">Weekly operational expenditure in USD</p>
-                </div>
-                <div className="flex items-center gap-1 text-emerald-500 font-bold text-xs bg-emerald-50 dark:bg-emerald-950/20 px-2 py-1 rounded-lg">
-                  <TrendingUp size={12} />
-                  <span>+12.4%</span>
-                </div>
-             </div>
-             <div className="h-64 w-full">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={costTrendData}>
-                    <CartesianGrid strokeDasharray="2 2" stroke="#e2e8f0" opacity={0.3} vertical={false} />
-                    <XAxis dataKey="day" stroke="#a0aec0" fontSize={10} axisLine={false} tickLine={false} />
-                    <YAxis stroke="#a0aec0" fontSize={10} axisLine={false} tickLine={false} />
-                    <Tooltip 
-                      contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
-                    />
-                    <Bar dataKey="cost" fill="#6366f1" radius={[6, 6, 0, 0]} barSize={40}>
-                       {costTrendData.map((entry, index) => (
-                        <Cell key={`cell-${index}`} fill={index === 4 ? '#4f46e5' : '#818cf8'} />
-                      ))}
-                    </Bar>
-                  </BarChart>
-                </ResponsiveContainer>
-             </div>
-          </div>
+const API = '/api/eng-portal/dashboard';
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-             <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 p-5 rounded-3xl shadow-3xs">
-                <h3 className="text-sm font-sans font-extrabold text-slate-900 dark:text-white mb-4">Equipment Downtime Analysis</h3>
-                <div className="h-56 w-full">
-                   <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={downtimeAnalysis} layout="vertical">
-                         <CartesianGrid strokeDasharray="2 2" stroke="#e2e8f0" opacity={0.3} horizontal={false} />
-                         <XAxis type="number" stroke="#a0aec0" fontSize={8} axisLine={false} tickLine={false} />
-                         <YAxis dataKey="name" type="category" stroke="#a0aec0" fontSize={8} axisLine={false} tickLine={false} width={70} />
-                         <Tooltip contentStyle={{ borderRadius: '12px', border: 'none' }} />
-                         <Bar dataKey="hours" fill="#f43f5e" radius={[0, 4, 4, 0]} barSize={20} />
-                      </BarChart>
-                   </ResponsiveContainer>
-                </div>
-             </div>
-
-             <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 p-5 rounded-3xl shadow-3xs text-center flex flex-col justify-center">
-                <h3 className="text-sm font-sans font-extrabold text-slate-900 dark:text-white mb-6">Work Order Status Distribution</h3>
-                <div className="h-48 w-full flex items-center justify-center">
-                   <ResponsiveContainer width="100%" height="100%">
-                      <PieChart>
-                         <Pie
-                           data={workOrderStatusData}
-                           innerRadius={50}
-                           outerRadius={70}
-                           paddingAngle={5}
-                           dataKey="value"
-                         >
-                           {workOrderStatusData.map((entry, index) => (
-                             <Cell key={`cell-${index}`} fill={entry.color} />
-                           ))}
-                         </Pie>
-                         <Tooltip />
-                      </PieChart>
-                   </ResponsiveContainer>
-                   <div className="absolute flex flex-col items-center">
-                      <span className="text-2xl font-black text-slate-900 dark:text-white">14</span>
-                      <span className="text-[8px] font-mono text-slate-400 uppercase font-black uppercase">Open</span>
-                   </div>
-                </div>
-                <div className="grid grid-cols-2 gap-2 mt-4">
-                   {workOrderStatusData.map((d, i) => (
-                     <div key={i} className="flex items-center gap-1.5 text-[8px] font-bold text-slate-500 uppercase">
-                        <div className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: d.color }} />
-                        <span>{d.name} ({d.value})</span>
-                     </div>
-                   ))}
-                </div>
-             </div>
-
-             <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 p-5 rounded-3xl shadow-3xs">
-                <h3 className="text-sm font-sans font-extrabold text-slate-900 dark:text-white mb-4">Preventive Maintenance Compliance</h3>
-                <div className="space-y-4">
-                   <div className="flex justify-between items-end mb-1">
-                      <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest leading-none">Overall Compliance</span>
-                      <span className="text-xl font-black text-slate-900 dark:text-white leading-none">88%</span>
-                   </div>
-                   <div className="w-full h-3 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
-                      <div className="h-full bg-indigo-600 rounded-full" style={{ width: '88%' }} />
-                   </div>
-                  
-                  <div className="pt-4 space-y-3">
-                     {[
-                       { label: 'HVAC Servicing', due: 12, completed: 11 },
-                       { label: 'Generator Testing', due: 4, completed: 4 },
-                       { label: 'Elevator Inspection', due: 2, completed: 1 },
-                       { label: 'Fire Alarm Testing', due: 8, completed: 7 },
-                     ].map((pm, i) => (
-                       <div key={i} className="flex items-center justify-between">
-                          <span className="text-[10px] font-bold text-slate-700 dark:text-slate-300">{pm.label}</span>
-                          <div className="flex items-center gap-2">
-                             <span className="text-[10px] font-black text-slate-400">{pm.completed}/{pm.due}</span>
-                             <div className="w-16 h-1.5 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
-                                <div className="h-full bg-emerald-500 rounded-full" style={{ width: `${(pm.completed / pm.due) * 100}%` }} />
-                             </div>
-                          </div>
-                       </div>
-                     ))}
-                  </div>
-                </div>
-             </div>
-             </div>
-          </div>
-
-        {/* Utility Monitoring and Heat Map */}
-        <div className="lg:col-span-4 space-y-6">
-           <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 p-5 rounded-3xl shadow-3xs overflow-hidden">
-              <div className="flex justify-between items-center mb-6">
-                <div>
-                  <h3 className="text-sm font-sans font-extrabold text-slate-900 dark:text-white">Live Utility Monitor</h3>
-                  <p className="text-[10px] text-slate-400">Real-time consumption metrics</p>
-                </div>
-                <Activity size={16} className="text-indigo-500 animate-pulse" />
-              </div>
-              <div className="space-y-4">
-                 {[
-                   { label: 'Electricity Consumption', value: '48.2 kWh', icon: Zap, color: 'text-amber-500', trend: '+5%' },
-                   { label: 'Water Usage (Meters)', value: '1,240 L', icon: Droplets, color: 'text-blue-500', trend: '-2%' },
-                   { label: 'Fuel Levels (Gen-01)', value: '82%', icon: Clock, color: 'text-indigo-500', trend: 'Steady' },
-                 ].map((u, i) => (
-                   <div key={i} className="flex items-center justify-between p-3 bg-slate-50 dark:bg-slate-850 rounded-2xl">
-                      <div className="flex items-center gap-3">
-                         <div className={`p-2 rounded-xl bg-white dark:bg-slate-800 ${u.color}`}>
-                            <u.icon size={14} />
-                         </div>
-                         <div>
-                            <span className="text-[10px] font-bold text-slate-900 dark:text-white block">{u.value}</span>
-                            <span className="text-[8px] text-slate-400 font-black uppercase tracking-tight">{u.label}</span>
-                         </div>
-                      </div>
-                      <span className={`text-[8px] font-black ${u.trend === 'Steady' ? 'text-slate-400' : u.trend.startsWith('+') ? 'text-rose-500' : 'text-emerald-500'}`}>
-                         {u.trend}
-                      </span>
-                   </div>
-                 ))}
-              </div>
-
-              <div className="h-32 w-full mt-6">
-                 <ResponsiveContainer width="100%" height="100%">
-                    <LineChart data={utilityTrendData}>
-                       <Line type="monotone" dataKey="electricity" stroke="#f59e0b" strokeWidth={2} dot={false} />
-                       <Line type="monotone" dataKey="water" stroke="#3b82f6" strokeWidth={2} dot={false} />
-                    </LineChart>
-                 </ResponsiveContainer>
-              </div>
-           </div>
-
-           <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 p-5 rounded-3xl shadow-3xs">
-              <h3 className="text-sm font-sans font-extrabold text-slate-900 dark:text-white mb-4">Maintenance & Room Health</h3>
-              <div className="space-y-4">
-                 <div className="flex justify-between items-end mb-1">
-                    <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest leading-none">PM Compliance</span>
-                    <span className="text-xl font-black text-slate-900 dark:text-white leading-none">88%</span>
-                 </div>
-                 <div className="w-full h-3 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
-                    <div className="h-full bg-indigo-600 rounded-full" style={{ width: '88%' }} />
-                 </div>
-                 
-                 <div className="pt-4 space-y-4">
-                    <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest leading-none">Room Maintenance Heat Map</h4>
-                    <div className="h-40 w-full mt-2">
-                       <ResponsiveContainer width="100%" height="100%">
-                          <BarChart data={roomHeatMap}>
-                             <XAxis dataKey="floor" stroke="#a0aec0" fontSize={8} axisLine={false} tickLine={false} />
-                             <YAxis stroke="#a0aec0" fontSize={8} axisLine={false} tickLine={false} />
-                             <Tooltip contentStyle={{ borderRadius: '12px', border: 'none', fontSize: '10px' }} />
-                             <Bar dataKey="issues" fill="#f43f5e" radius={[2, 2, 0, 0]} />
-                             <Bar dataKey="pms" fill="#3b82f6" radius={[2, 2, 0, 0]} />
-                          </BarChart>
-                       </ResponsiveContainer>
-                    </div>
-                 </div>
-              </div>
-           </div>
-
-           <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 p-5 rounded-3xl shadow-3xs">
-              <h3 className="text-sm font-sans font-extrabold text-slate-900 dark:text-white mb-4">Technician Productivity</h3>
-              <div className="space-y-4">
-                 {productivityData.map((tech, i) => (
-                   <div key={i} className="space-y-1.5 border-b border-slate-50 dark:border-slate-850 pb-2 last:border-0 last:pb-0">
-                      <div className="flex justify-between items-center text-[9px] font-bold">
-                         <span className="text-slate-700 dark:text-slate-300">{tech.name}</span>
-                         <span className="text-slate-400">{tech.tasks} Tasks • {tech.quality}% Qual.</span>
-                      </div>
-                      <div className="w-full h-1.5 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden flex">
-                         <div className="h-full bg-emerald-500" style={{ width: `${tech.quality}%` }} />
-                      </div>
-                   </div>
-                 ))}
-              </div>
-           </div>
-        </div>
-      </div>
-    </div>
-  );
+const ALERT_ICON: Record<string, LucideIcon> = {
+  'Critical Equipment Failure': Flame,
+  'Safety Incident': ShieldAlert,
+  'Fire System Fault': Radio,
+  'Generator Alarm': Gauge,
+  'HVAC Alarm': Thermometer,
+  'Water Leak': Droplets,
+  'Low Spare Parts Stock': Package,
+  'Compliance Inspection Due': FileCheck,
+  'PM Overdue': Wrench,
+  'Room Out of Order': AlertTriangle,
 };
 
-export default EngineeringDashboard;
+const PRIORITY_TONE: Record<AlertPriority, StatusTone> = {
+  Critical: 'danger',
+  High: 'warning',
+  Medium: 'info',
+  Low: 'neutral',
+};
+
+const STATUS_TONE: Record<AlertStatus, StatusTone> = {
+  Active: 'danger',
+  Acknowledged: 'info',
+  Snoozed: 'neutral',
+  Resolved: 'success',
+};
+
+const PRIORITY_ORDER: Record<AlertPriority, number> = {
+  Critical: 0,
+  High: 1,
+  Medium: 2,
+  Low: 3,
+};
+
+export default function EngineeringDashboard() {
+  const { currentPropertyId } = useERP();
+  const [kpis, setKpis] = useState<KpiData | null>(null);
+  const [alerts, setAlerts] = useState<DashboardAlert[]>([]);
+  const [productivity, setProductivity] = useState<ProductivityData | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const [actionLoading, setActionLoading] = useState<string | null>(null);
+
+  const apiGet = async (path: string) => {
+    const r = await fetch(`${API}${path}`, { headers: { 'Content-Type': 'application/json' } });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      throw new Error(err.error || `Request failed (${r.status})`);
+    }
+    return r.json();
+  };
+
+  const apiPost = async (path: string, body?: any) => {
+    const r = await fetch(`${API}${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      throw new Error(err.error || `Request failed (${r.status})`);
+    }
+    return r.json();
+  };
+
+  const fetchAll = useCallback(async () => {
+    setLoading(true);
+    try {
+      const qs = currentPropertyId ? `?propertyId=${encodeURIComponent(currentPropertyId)}` : '';
+      const [k, a, p] = await Promise.all([
+        apiGet(`/kpis${qs}`),
+        apiGet(`/alerts${qs}`),
+        apiGet(`/productivity${qs}`),
+      ]);
+      setKpis(k);
+      setAlerts(a);
+      setProductivity(p);
+      setLastUpdated(new Date());
+    } catch (e) {
+      console.error('Failed to fetch Engineering dashboard data:', e);
+    } finally {
+      setLoading(false);
+    }
+  }, [currentPropertyId]);
+
+  useEffect(() => {
+    fetchAll();
+    const interval = setInterval(fetchAll, 5 * 60 * 1000);
+    return () => clearInterval(interval);
+  }, [fetchAll]);
+
+  const acknowledgeAlert = async (id: string) => {
+    setActionLoading(id);
+    try {
+      const updated: DashboardAlert = await apiPost(`/alerts/${encodeURIComponent(id)}/acknowledge`);
+      setAlerts(prev => prev.map(a => (a.id === id ? updated : a)));
+    } catch (e) {
+      console.error('Failed to acknowledge alert:', e);
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const snoozeAlert = async (id: string) => {
+    setActionLoading(id);
+    try {
+      const updated: DashboardAlert = await apiPost(`/alerts/${encodeURIComponent(id)}/snooze`, { hours: 1 });
+      setAlerts(prev => prev.map(a => (a.id === id ? updated : a)));
+    } catch (e) {
+      console.error('Failed to snooze alert:', e);
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  // Derived display data
+  const woStats = kpis?.workOrderStats;
+  const pmStats = kpis?.pmStats;
+  const compStats = kpis?.complianceStats;
+  const assetStats = kpis?.assetStats;
+  const roomStats = kpis?.roomStats;
+  const techStats = kpis?.techStats;
+  const woStatusDist = kpis?.woStatusDist || [];
+
+  const sortedAlerts = [...alerts].sort((a, b) => {
+    const po = PRIORITY_ORDER[a.priority] - PRIORITY_ORDER[b.priority];
+    if (po !== 0) return po;
+    return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
+  });
+
+  const activeAlerts = sortedAlerts.filter(a => a.status === 'Active');
+  const productivityDays = productivity?.days || [];
+
+  return (
+    <div className={layout.sectionStack}>
+      <PageHeader
+        title="Engineering Dashboard"
+        subtitle="Operational KPIs & Smart Alert Engine · Real-time maintenance status"
+        icon={Activity}
+        actions={
+          <div className="flex items-center gap-3">
+            {lastUpdated && (
+              <div className="text-xs text-gray-500 dark:text-gray-400 hidden sm:block">
+                Last updated: {lastUpdated.toLocaleTimeString()}
+              </div>
+            )}
+            <button
+              onClick={fetchAll}
+              disabled={loading}
+              className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-xl bg-white dark:bg-slate-800 text-gray-700 dark:text-gray-200 border border-gray-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 font-medium text-sm smooth-transition focus-ring disabled:opacity-50"
+            >
+              {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+              Refresh
+            </button>
+          </div>
+        }
+      />
+
+      {loading && !kpis ? (
+        <SectionCard title="Loading Dashboard…" icon={Activity} tone="accent">
+          <div className="px-6 py-10 text-center text-slate-500">
+            <Loader2 size={20} className="animate-spin inline-block mr-2" />
+            Loading dashboard data…
+          </div>
+        </SectionCard>
+      ) : (
+        <>
+          {/* Operational KPIs — Work Orders (6 tiles) */}
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
+            <StatCard title="Open WOs" value={woStats?.open ?? 0} icon={ClipboardList} tone="accent" caption={`of ${woStats?.total ?? 0} total`} />
+            <StatCard title="Completed Today" value={woStats?.completedToday ?? 0} icon={CheckCircle2} tone="success" />
+            <StatCard title="Overdue WOs" value={woStats?.overdue ?? 0} icon={AlertTriangle} tone="danger" caption="Requires attention" />
+            <StatCard title="Emergency" value={woStats?.emergency ?? 0} icon={AlertTriangle} tone="danger" caption="Critical action" />
+            <StatCard title="PM Due Today" value={pmStats?.dueToday ?? 0} icon={Wrench} tone="warning" caption={`${pmStats?.overdue ?? 0} overdue`} />
+            <StatCard title="Room OOO" value={roomStats?.outOfOrder ?? 0} icon={AlertTriangle} tone="warning" caption="Out of order" />
+          </div>
+
+          {/* Performance KPIs (4 tiles) */}
+          <div className={layout.kpiGrid}>
+            <StatCard
+              title="PM Compliance"
+              value={`${pmStats?.compliancePct ?? 100}%`}
+              icon={CheckCircle2}
+              tone="success"
+              caption={`${pmStats?.active ?? 0} active schedules`}
+            />
+            <StatCard
+              title="Asset Availability"
+              value={`${assetStats?.availabilityPct ?? 100}%`}
+              icon={Heart}
+              tone="info"
+              caption={`${assetStats?.operational ?? 0} of ${assetStats?.total ?? 0} assets`}
+            />
+            <StatCard
+              title="Tech Utilization"
+              value={`${techStats?.utilizationPct ?? 0}%`}
+              icon={Users}
+              tone="accent"
+              caption={`${techStats?.active ?? 0} active techs`}
+            />
+            <StatCard
+              title="Compliance Issues"
+              value={(compStats?.overdue ?? 0) + (compStats?.failed ?? 0)}
+              icon={FileCheck}
+              tone="danger"
+              caption={`${compStats?.overdue ?? 0} overdue, ${compStats?.failed ?? 0} failed`}
+            />
+          </div>
+
+          {/* Charts + Alerts */}
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+            <SectionCard
+              title="Work Order Status Distribution"
+              subtitle="Operations Metrics"
+              icon={Activity}
+              tone="accent"
+              pad="md"
+              className="lg:col-span-7"
+            >
+              <div className="h-72 w-full">
+                <ResponsiveContainer width="100%" height="100%">
+                  <PieChart>
+                    <Pie
+                      data={woStatusDist}
+                      cx="50%"
+                      cy="50%"
+                      innerRadius={60}
+                      outerRadius={95}
+                      paddingAngle={3}
+                      dataKey="value"
+                    >
+                      {woStatusDist.map((d, i) => (
+                        <Cell key={`cell-${i}`} fill={d.color} />
+                      ))}
+                    </Pie>
+                    <Tooltip contentStyle={{ fontSize: 12, borderRadius: '8px', border: '1px solid #e2e8f0' }} />
+                  </PieChart>
+                </ResponsiveContainer>
+              </div>
+              <div className="flex flex-wrap gap-x-4 gap-y-2 mt-4 justify-center">
+                {woStatusDist.map(d => (
+                  <span key={d.name} className="flex items-center gap-1.5 text-xs">
+                    <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: d.color }} />
+                    <span className="text-gray-600 dark:text-gray-400 font-medium">{d.name}: {d.value}</span>
+                  </span>
+                ))}
+              </div>
+            </SectionCard>
+
+            {/* Smart Alert Engine */}
+            <SectionCard
+              title={`Alerts (${activeAlerts.length} active)`}
+              subtitle="Smart Alert Engine"
+              icon={AlertTriangle}
+              tone="danger"
+              className="lg:col-span-5"
+              bodyClassName="max-h-[28rem] overflow-y-auto"
+            >
+              {sortedAlerts.length === 0 ? (
+                <div className="px-6 py-10 text-center text-slate-500">
+                  <Bell className="w-8 h-8 mx-auto mb-2 text-slate-300" />
+                  No alerts.
+                </div>
+              ) : (
+                <div className="divide-y divide-gray-200 dark:divide-slate-700">
+                  {sortedAlerts.map(alert => {
+                    const AlertIcon = ALERT_ICON[alert.type] ?? Bell;
+                    const isActive = alert.status === 'Active';
+                    return (
+                      <div key={alert.id} className="py-4 px-6 space-y-2">
+                        <div className="flex justify-between items-center">
+                          <div className="flex items-center gap-2">
+                            <Badge tone={PRIORITY_TONE[alert.priority]} variant="soft">{alert.type}</Badge>
+                            <Badge tone={STATUS_TONE[alert.status]} variant="soft">{alert.status}</Badge>
+                          </div>
+                          <span className="text-xs text-gray-500 dark:text-gray-500 font-medium">
+                            {isActive ? 'LIVE' : alert.snoozed_until ? 'Snoozed' : ''}
+                          </span>
+                        </div>
+                        <p className="text-sm text-gray-700 dark:text-gray-300 flex items-start gap-2">
+                          <AlertIcon className="w-4 h-4 text-gray-400 mt-0.5 shrink-0" />
+                          {alert.message}
+                        </p>
+                        {isActive && (
+                          <div className="flex gap-2">
+                            <button
+                              onClick={() => acknowledgeAlert(alert.id)}
+                              disabled={actionLoading === alert.id}
+                              className="px-3 py-1.5 bg-[var(--color-accent-operations)] text-white rounded-lg text-xs font-medium hover:bg-[var(--color-accent-operations-hover)] transition disabled:opacity-50 flex items-center gap-1"
+                            >
+                              {actionLoading === alert.id && <Loader2 size={12} className="animate-spin" />}
+                              Acknowledge
+                            </button>
+                            <button
+                              onClick={() => snoozeAlert(alert.id)}
+                              disabled={actionLoading === alert.id}
+                              className="px-3 py-1.5 border border-gray-200 dark:border-slate-700 text-gray-600 dark:text-gray-300 rounded-lg text-xs font-medium hover:bg-slate-50 dark:hover:bg-slate-700 transition disabled:opacity-50 flex items-center gap-1"
+                            >
+                              {actionLoading === alert.id && <Loader2 size={12} className="animate-spin" />}
+                              Snooze
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </SectionCard>
+          </div>
+
+          {/* PM Compliance breakdown */}
+          <SectionCard
+            title="Preventive Maintenance Compliance"
+            subtitle="Schedule adherence"
+            icon={Wrench}
+            tone="info"
+            pad="md"
+          >
+            <div className="space-y-4">
+              <div className="flex justify-between items-end mb-1">
+                <span className="text-xs font-bold text-slate-400 uppercase tracking-widest leading-none">Overall Compliance</span>
+                <span className="text-xl font-black text-slate-900 dark:text-white leading-none">{pmStats?.compliancePct ?? 100}%</span>
+              </div>
+              <div className="w-full h-3 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-indigo-600 rounded-full transition-all"
+                  style={{ width: `${pmStats?.compliancePct ?? 100}%` }}
+                />
+              </div>
+              <div className="grid grid-cols-3 gap-4 pt-2">
+                <div className="text-center">
+                  <div className="text-2xl font-black text-slate-900 dark:text-white">{pmStats?.active ?? 0}</div>
+                  <div className="text-xs text-slate-400 uppercase font-bold">Active Schedules</div>
+                </div>
+                <div className="text-center">
+                  <div className="text-2xl font-black text-amber-500">{pmStats?.overdue ?? 0}</div>
+                  <div className="text-xs text-slate-400 uppercase font-bold">Overdue</div>
+                </div>
+                <div className="text-center">
+                  <div className="text-2xl font-black text-indigo-500">{pmStats?.dueToday ?? 0}</div>
+                  <div className="text-xs text-slate-400 uppercase font-bold">Due Today</div>
+                </div>
+              </div>
+            </div>
+          </SectionCard>
+
+          {/* Productivity chart */}
+          <SectionCard
+            title="Work Order Productivity — Completed vs. Verified"
+            subtitle="7-Day Trend"
+            icon={TrendingUp}
+            tone="info"
+            pad="md"
+          >
+            <div className="h-64 w-full">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={productivityDays}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" strokeOpacity={0.3} />
+                  <XAxis dataKey="name" tick={{ fontSize: 12, fill: '#64748b' }} />
+                  <YAxis tick={{ fontSize: 12, fill: '#64748b' }} allowDecimals={false} />
+                  <Tooltip contentStyle={{ borderRadius: '8px', border: '1px solid #e2e8f0', fontSize: '13px' }} />
+                  <Legend wrapperStyle={{ fontSize: '12px' }} iconType="circle" />
+                  <Bar dataKey="completed" name="WOs Completed" fill="#6366f1" radius={[4, 4, 0, 0]} />
+                  <Bar dataKey="verified" name="WOs Verified" fill="#10b981" radius={[4, 4, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </SectionCard>
+        </>
+      )}
+    </div>
+  );
+}

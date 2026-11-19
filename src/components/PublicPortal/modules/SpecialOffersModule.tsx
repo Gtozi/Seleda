@@ -1,51 +1,62 @@
 /**
  * Special Offers Module
- * Display flash sales, early bird offers, last minute deals, and seasonal promotions
+ * Live promotions from Revenue Management (active and within their date window).
  */
 
-import { Tag, Clock, Percent, Flame } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { Tag, Clock, Percent, Flame, Gift, ArrowRight } from 'lucide-react';
+import { EmptyState, ErrorState, LoadingGrid, ModuleHeader, Reveal, SectionHead, usePublicData, HERO } from '../shared';
+
+interface Offer {
+  id: string;
+  title: string;
+  discount: string;
+  description: string;
+  validUntil: string;
+  type: string;
+  code?: string;
+}
+
+const iconFor = (type: string) => {
+  switch (type) {
+    case 'flash': return <Flame size={16} />;
+    case 'early': return <Clock size={16} />;
+    case 'discount': return <Percent size={16} />;
+    case 'loyalty': return <Gift size={16} />;
+    default: return <Tag size={16} />;
+  }
+};
 
 const SpecialOffersModule: React.FC = () => {
-  const offers = [
-    { id: '1', title: 'Flash Sale', discount: '30% OFF', description: 'Limited time offer on all room types', validUntil: '2026-08-15', type: 'flash' },
-    { id: '2', title: 'Early Bird', discount: '20% OFF', description: 'Book 30 days in advance and save', validUntil: '2026-09-01', type: 'early' },
-    { id: '3', title: 'Last Minute', discount: '15% OFF', description: 'Book within 48 hours of arrival', validUntil: '2026-08-31', type: 'last' },
-    { id: '4', title: 'Seasonal Offer', discount: '25% OFF', description: 'Summer special on extended stays', validUntil: '2026-08-30', type: 'seasonal' }
-  ];
-
-  const getOfferIcon = (type: string) => {
-    switch (type) {
-      case 'flash': return <Flame size={24} />;
-      case 'early': return <Clock size={24} />;
-      case 'last': return <Percent size={24} />;
-      case 'seasonal': return <Tag size={24} />;
-      default: return <Tag size={24} />;
-    }
-  };
+  const { data: offers, loading, error, retry } = usePublicData<Offer[]>('/api/public/special-offers', j => j.offers || [], []);
 
   return (
-    <div className="space-y-6">
-      <div className="bg-gradient-to-r from-red-600 to-rose-600 rounded-xl p-8 text-white">
-        <h1 className="text-3xl font-bold mb-2">Special Offers</h1>
-        <p className="text-lg opacity-90">Don't miss out on these exclusive deals</p>
-      </div>
+    <div>
+      <ModuleHeader image={HERO.offers} title="Special Offers" subtitle="Exclusive deals for guests who book direct" gradient="from-red-700 to-rose-900" eyebrow="Book direct & save" />
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        {offers.map((offer) => (
-          <div key={offer.id} className="bg-white dark:bg-slate-800 rounded-xl p-6 shadow-lg">
-            <div className="flex items-center gap-3 mb-4 text-red-600">
-              {getOfferIcon(offer.type)}
-              <h3 className="text-xl font-bold text-slate-900 dark:text-white">{offer.title}</h3>
-            </div>
-            <div className="text-3xl font-bold text-red-600 mb-2">{offer.discount}</div>
-            <p className="text-slate-600 dark:text-slate-400 mb-4">{offer.description}</p>
-            <div className="text-sm text-slate-500 mb-4">Valid until: {offer.validUntil}</div>
-            <button className="w-full bg-red-600 hover:bg-red-700 text-white py-2 rounded-lg font-semibold transition-colors">
-              Book Now
-            </button>
-          </div>
-        ))}
-      </div>
+      <SectionHead eyebrow="Offers" title="Current promotions" />
+      {error && <ErrorState message={error} onRetry={retry} />}
+      {loading ? (
+        <LoadingGrid count={3} />
+      ) : offers.length === 0 && !error ? (
+        <EmptyState title="No special offers right now." hint="Check back soon — new promotions are added regularly." />
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          {offers.map((o, i) => (
+            <Reveal key={o.id} delay={Math.min(i, 6) * 0.06}>
+              <div className="relative overflow-hidden rounded-3xl bg-gradient-to-br from-stone-900 via-stone-800 to-amber-900 text-white p-7 flex flex-col h-full min-h-[260px] hover:-translate-y-1 hover:shadow-2xl transition-all duration-300">
+                <div aria-hidden className="absolute -right-10 -top-10 w-44 h-44 rounded-full bg-amber-400/20 blur-2xl" />
+                <span className="relative self-start bg-amber-400 text-stone-900 px-3 py-1 rounded-full text-sm font-bold flex items-center gap-1.5">{iconFor(o.type)} {o.discount}</span>
+                <h3 className="relative font-serif text-2xl font-bold mt-5">{o.title}</h3>
+                {o.description && <p className="relative text-sm text-white/75 mt-2">{o.description}</p>}
+                {o.code && <p className="relative text-sm mt-3">Code <span className="font-mono font-semibold bg-white/15 px-2 py-0.5 rounded">{o.code}</span></p>}
+                {o.validUntil && <p className="relative text-xs text-white/50 mt-3">Valid until {o.validUntil}</p>}
+                <Link to="/public-portal?section=booking" className="relative mt-auto pt-5 inline-flex items-center gap-2 font-semibold text-amber-300 hover:text-amber-200">Book now <ArrowRight size={16} /></Link>
+              </div>
+            </Reveal>
+          ))}
+        </div>
+      )}
     </div>
   );
 };

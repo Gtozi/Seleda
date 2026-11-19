@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { authenticate, requirePermission } from '../middleware/auth';
 import { hasSupabaseAdminConfig, supabaseAdmin } from '../supabaseAdmin';
 import { cacheService } from '../services/cacheService';
+import { syncKdsTicketToErp } from '../services/kdsErpSync';
 
 const router = Router();
 
@@ -594,6 +595,8 @@ router.put('/tickets/:ticketId/status', authenticate, async (req, res) => {
     .single();
 
   if (error) return res.status(500).json({ error: error.message });
+
+  await syncKdsTicketToErp(data, status);
 
   // Propagate to POS transaction line items if transaction_id exists
   if (data.transaction_id && (status === 'served' || status === 'voided')) {

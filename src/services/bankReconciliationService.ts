@@ -76,14 +76,23 @@ export interface PettyCashFloat {
   property_name?: string;
 }
 
+export type CashTransactionType = 'Receipt' | 'Payment' | 'Transfer' | 'Electronic Payment' | 'Bank Transfer' | 'Bank Charges' | 'Interest Income';
+
 export interface CashTransaction {
   id: string;
-  type: 'Receipt' | 'Payment' | 'Transfer';
+  type: CashTransactionType;
   description?: string;
   amount: number;
   transaction_date: string;
   reference?: string;
   department?: string;
+  bank_account_id?: string;
+  recipient?: string;
+  payment_method?: string;
+  charge_type?: string;
+  interest_period?: string;
+  from_account?: string;
+  to_account?: string;
   property_id?: string;
   property_name?: string;
 }
@@ -166,6 +175,13 @@ export function mapCashTransactionFromDb(row: any): CashTransaction {
     transaction_date: row.transaction_date,
     reference: row.reference,
     department: row.department,
+    bank_account_id: row.bank_account_id,
+    recipient: row.recipient,
+    payment_method: row.payment_method,
+    charge_type: row.charge_type,
+    interest_period: row.interest_period,
+    from_account: row.from_account,
+    to_account: row.to_account,
     property_id: row.property_id,
     property_name: row.property_name,
   };
@@ -241,6 +257,10 @@ export async function createReconciliationBatch(batch: Omit<ReconciliationBatch,
     }),
   });
   return mapReconciliationBatchFromDb(data);
+}
+
+export async function finalizeReconciliationBatch(batchId: string): Promise<{ success: boolean }> {
+  return apiRequest(`/batches/${batchId}/finalize`, { method: 'POST' });
 }
 
 export async function fetchPettyCashFloats(propertyId?: string): Promise<PettyCashFloat[]> {

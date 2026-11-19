@@ -1,80 +1,47 @@
 /**
  * Wedding Booking Module
- * Wedding packages, venues, and inquiry form
+ * Wedding inquiry form — submissions land in the Sales CRM as website leads.
  */
 
 import { useState } from 'react';
-import { Heart, Calendar, Users, Send } from 'lucide-react';
+import { Send } from 'lucide-react';
+import { InquiryStatus, ModuleHeader, SubmitButton, inputClass, useInquiry, usePublicSettings, HERO } from '../shared';
+
+const label = 'block text-sm font-medium text-stone-700 dark:text-stone-300 mb-1';
+const empty = { contactName: '', contactEmail: '', contactPhone: '', weddingDate: '', guestCount: '', message: '' };
 
 const WeddingBookingModule: React.FC = () => {
-  const [formData, setFormData] = useState({
-    weddingDate: '',
-    guestCount: '',
-    package: '',
-    contactName: '',
-    contactEmail: '',
-    contactPhone: '',
-    message: ''
-  });
+  const settings = usePublicSettings();
+  const [form, setForm] = useState(empty);
+  const { submit, submitting, done, error } = useInquiry('/api/public/wedding-inquiry');
+  const set = (k: keyof typeof empty) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => setForm(f => ({ ...f, [k]: e.target.value }));
+  const today = new Date().toISOString().slice(0, 10);
 
-  const weddingPackages = [
-    { id: 'basic', name: 'Basic Package', price: 5000, features: ['Venue', 'Basic decoration', 'Catering for 50'] },
-    { id: 'standard', name: 'Standard Package', price: 10000, features: ['Venue', 'Premium decoration', 'Catering for 100', 'Photography'] },
-    { id: 'premium', name: 'Premium Package', price: 20000, features: ['Venue', 'Luxury decoration', 'Catering for 200', 'Photography', 'Videography', 'Live music'] }
-  ];
+  const onSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (await submit(form)) setForm(empty);
+  };
 
   return (
-    <div className="space-y-6">
-      <div className="bg-gradient-to-r from-pink-600 to-rose-600 rounded-xl p-8 text-white">
-        <h1 className="text-3xl font-bold mb-2">Wedding Planning</h1>
-        <p className="text-lg opacity-90">Create your perfect day with our wedding packages and venues</p>
-      </div>
+    <div className="[&>*+*]:mt-8">
+      <ModuleHeader image={HERO.weddings} title="Wedding Planning" subtitle="Tell us about your day — our events team will prepare a personalised proposal" gradient="from-pink-700 to-rose-900" />
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        {weddingPackages.map((pkg) => (
-          <div key={pkg.id} className="bg-white dark:bg-slate-800 rounded-xl p-6 shadow-lg">
-            <h3 className="text-xl font-bold text-slate-900 dark:text-white mb-2">{pkg.name}</h3>
-            <p className="text-2xl font-bold text-pink-600 mb-4">${pkg.price}</p>
-            <ul className="space-y-2 mb-4">
-              {pkg.features.map((feature, idx) => (
-                <li key={idx} className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
-                  <Heart size={16} className="text-pink-500" />
-                  {feature}
-                </li>
-              ))}
-            </ul>
-            <button className="w-full bg-pink-600 hover:bg-pink-700 text-white py-2 rounded-lg font-semibold transition-colors">
-              Select Package
-            </button>
-          </div>
-        ))}
-      </div>
-
-      <div className="bg-white dark:bg-slate-800 rounded-xl p-6 shadow-lg">
-        <h2 className="text-xl font-bold text-slate-900 dark:text-white mb-4">Wedding Inquiry</h2>
-        <form className="space-y-4">
+      <div className="bg-white rounded-3xl p-6 md:p-8 shadow-sm border border-stone-200/70 max-w-3xl">
+        <h2 className="font-serif text-2xl font-bold text-stone-900 mb-5">Wedding Inquiry</h2>
+        <form onSubmit={onSubmit} className="space-y-4">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div>
-              <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Your Name</label>
-              <input type="text" className="w-full px-4 py-2 border border-slate-300 dark:border-slate-600 rounded-lg dark:bg-slate-700 dark:text-white" />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Email</label>
-              <input type="email" className="w-full px-4 py-2 border border-slate-300 dark:border-slate-600 rounded-lg dark:bg-slate-700 dark:text-white" />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Phone</label>
-              <input type="tel" className="w-full px-4 py-2 border border-slate-300 dark:border-slate-600 rounded-lg dark:bg-slate-700 dark:text-white" />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Wedding Date</label>
-              <input type="date" className="w-full px-4 py-2 border border-slate-300 dark:border-slate-600 rounded-lg dark:bg-slate-700 dark:text-white" />
-            </div>
+            <div><label className={label} htmlFor="w-name">Your name</label><input id="w-name" required value={form.contactName} onChange={set('contactName')} className={inputClass} /></div>
+            <div><label className={label} htmlFor="w-email">Email</label><input id="w-email" type="email" required value={form.contactEmail} onChange={set('contactEmail')} className={inputClass} /></div>
+            <div><label className={label} htmlFor="w-phone">Phone</label><input id="w-phone" type="tel" required value={form.contactPhone} onChange={set('contactPhone')} className={inputClass} /></div>
+            <div><label className={label} htmlFor="w-date">Wedding date</label><input id="w-date" type="date" min={today} required value={form.weddingDate} onChange={set('weddingDate')} className={inputClass} /></div>
+            <div><label className={label} htmlFor="w-guests">Expected guests</label><input id="w-guests" type="number" min={1} required value={form.guestCount} onChange={set('guestCount')} className={inputClass} /></div>
           </div>
-          <button type="submit" className="w-full bg-pink-600 hover:bg-pink-700 text-white py-3 rounded-lg font-semibold transition-colors flex items-center justify-center gap-2">
-            <Send size={20} />
-            Submit Inquiry
-          </button>
+          <div><label className={label} htmlFor="w-msg">Tell us about your plans (optional)</label><textarea id="w-msg" rows={4} value={form.message} onChange={set('message')} className={inputClass} /></div>
+          <InquiryStatus done={done} error={error} successText="Thank you! Our events team will contact you shortly." />
+          <SubmitButton submitting={submitting} className="w-full bg-pink-600 hover:bg-pink-700 text-white py-3 rounded-full font-semibold transition-colors">
+            <Send size={18} /> Submit Inquiry
+          </SubmitButton>
+          {settings.contactPhone && <p className="text-xs text-stone-500 text-center">Prefer to talk? Call {settings.contactPhone}</p>}
         </form>
       </div>
     </div>

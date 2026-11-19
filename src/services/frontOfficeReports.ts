@@ -1194,9 +1194,8 @@ export async function getConciergeActivityReport(startDate?: Date, endDate?: Dat
  * Transportation Report - Transportation services
  */
 export async function getTransportationReport(startDate?: Date, endDate?: Date) {
-  // Check for airport_shuttle_requests table
   const { data, error } = await supabase
-    .from('airport_shuttle_requests')
+    .from('transport_requests')
     .select('*')
     .order('created_at', { ascending: false })
     .limit(100);
@@ -1217,8 +1216,8 @@ export async function getTransportationReport(startDate?: Date, endDate?: Date) 
     data: data || [],
     summary: {
       totalRequests: data?.length || 0,
-      completedTrips: data?.filter((t: any) => t.status === 'completed').length || 0,
-      pendingTrips: data?.filter((t: any) => t.status === 'pending').length || 0
+      completedTrips: data?.filter((t: any) => t.status === 'Completed').length || 0,
+      pendingTrips: data?.filter((t: any) => t.status === 'Requested').length || 0
     }
   };
 }

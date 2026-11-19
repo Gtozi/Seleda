@@ -89,11 +89,20 @@ router.get('/group-profiles', authenticate, requirePermission('reports:view'), a
   if (hasSupabaseAdminConfig && supabaseAdmin) {
     const { data, error } = await supabaseAdmin
       .from('group_profiles')
-      .select('*')
+      .select(`
+        *,
+        parent_group:parent_group_id ( id, name, type )
+      `)
       .order('created_at', { ascending: false });
 
     if (error) return res.status(500).json({ error: error.message });
-    return res.json({ groupProfiles: data || [] });
+    // Flatten parent info for frontend convenience
+    const groupProfiles = (data || []).map((gp: any) => ({
+      ...gp,
+      parent_name: gp.parent_group?.name || null,
+      parent_type: gp.parent_group?.type || null,
+    }));
+    return res.json({ groupProfiles });
   }
 
   return res.status(503).json({ error: 'Database not configured' });
@@ -243,7 +252,30 @@ router.post('/group-profiles', authenticate, requirePermission('reservation:crea
 
 router.patch('/group-profiles/:id', authenticate, requirePermission('reservation:update'), async (req, res) => {
   const groupId = req.params.id;
-  const updates = req.body;
+  // Map camelCase fields from the frontend form to snake_case DB columns
+  const body = req.body || {};
+  const updates: Record<string, any> = { updated_at: new Date().toISOString() };
+  if (body.name !== undefined) updates.name = body.name;
+  if (body.code !== undefined) updates.code = body.code;
+  if (body.type !== undefined) updates.type = body.type;
+  if (body.status !== undefined) updates.status = body.status;
+  if (body.contactName !== undefined) updates.contact_name = body.contactName;
+  if (body.contactEmail !== undefined) updates.contact_email = body.contactEmail;
+  if (body.contactPhone !== undefined) updates.contact_phone = body.contactPhone;
+  if (body.organizationName !== undefined) updates.organization_name = body.organizationName;
+  if (body.organizationAddress !== undefined) updates.organization_address = body.organizationAddress;
+  if (body.organizationCity !== undefined) updates.organization_city = body.organizationCity;
+  if (body.organizationCountry !== undefined) updates.organization_country = body.organizationCountry;
+  if (body.notes !== undefined) updates.notes = body.notes;
+  if (body.taxId !== undefined) updates.tax_id = body.taxId || null;
+  if (body.vatNumber !== undefined) updates.vat_number = body.vatNumber || null;
+  if (body.vatRegistrationDate !== undefined) updates.vat_registration_date = body.vatRegistrationDate || null;
+  if (body.paymentTerms !== undefined) updates.payment_terms = body.paymentTerms;
+  if (body.discountPercent !== undefined) updates.discount_percent = body.discountPercent;
+  if (body.commissionPercent !== undefined) updates.commission_percent = body.commissionPercent;
+  if (body.creditLimit !== undefined) updates.credit_limit = body.creditLimit;
+  if (body.preferences !== undefined) updates.preferences = body.preferences;
+  updates.updated_by = req.user!.id;
 
   if (hasSupabaseAdminConfig && supabaseAdmin) {
     const { data: existing } = await supabaseAdmin
@@ -340,6 +372,25 @@ router.get('/group-profiles/:id/members', authenticate, requirePermission('repor
       isPrimaryContact: m.is_primary_contact ?? m.isPrimaryContact,
     }));
     return res.json({ members });
+  }
+
+  return res.status(503).json({ error: 'Database not configured' });
+});
+
+// ── Child Group Profiles (hierarchy: TravelAgent/CorporateAccount → GroupReservations) ──
+
+router.get('/group-profiles/:id/children', authenticate, requirePermission('reports:view'), async (req, res) => {
+  const parentId = req.params.id;
+
+  if (hasSupabaseAdminConfig && supabaseAdmin) {
+    const { data, error } = await supabaseAdmin
+      .from('group_profiles')
+      .select('*')
+      .eq('parent_group_id', parentId)
+      .order('created_at', { ascending: false });
+
+    if (error) return res.status(500).json({ error: error.message });
+    return res.json({ children: data || [] });
   }
 
   return res.status(503).json({ error: 'Database not configured' });

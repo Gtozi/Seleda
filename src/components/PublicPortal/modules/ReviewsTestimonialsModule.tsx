@@ -1,61 +1,63 @@
 /**
  * Reviews & Testimonials Module
- * Display verified reviews, guest stories, awards, and ratings
+ * Approved guest testimonials (public_testimonials, moderated in Sales → Reputation).
  */
 
-import { Star, MessageSquare, Award, ThumbsUp } from 'lucide-react';
+import { Star, Quote } from 'lucide-react';
+import { EmptyState, ErrorState, LoadingGrid, ModuleHeader, Reveal, SectionHead, usePublicData, HERO } from '../shared';
+
+interface Review {
+  id: string;
+  name: string;
+  location: string;
+  rating: number;
+  date: string;
+  roomType: string;
+  comment: string;
+}
 
 const ReviewsTestimonialsModule: React.FC = () => {
-  const reviews = [
-    { id: '1', name: 'John Doe', rating: 5, date: '2026-07-15', comment: 'Amazing experience! The staff was incredibly helpful and the facilities were top-notch.' },
-    { id: '2', name: 'Jane Smith', rating: 4, date: '2026-07-10', comment: 'Beautiful property with great views. Would definitely recommend to others.' },
-    { id: '3', name: 'Michael Johnson', rating: 5, date: '2026-07-05', comment: 'Exceptional service and attention to detail. The spa treatments were wonderful.' }
-  ];
-
-  const awards = [
-    { name: 'Best Hotel in Ethiopia 2025', year: '2025' },
-    { name: 'Luxury Hotel Award', year: '2024' },
-    { name: 'Customer Service Excellence', year: '2024' }
-  ];
+  const { data: reviews, loading, error, retry } = usePublicData<Review[]>('/api/public/reviews', j => j.reviews || [], []);
+  const average = reviews.length ? reviews.reduce((s, r) => s + (r.rating || 0), 0) / reviews.length : 0;
 
   return (
-    <div className="space-y-6">
-      <div className="bg-gradient-to-r from-amber-500 to-orange-500 rounded-xl p-8 text-white">
-        <h1 className="text-3xl font-bold mb-2">Reviews & Testimonials</h1>
-        <p className="text-lg opacity-90">See what our guests have to say about their experience</p>
-      </div>
-
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        {reviews.map((review) => (
-          <div key={review.id} className="bg-white dark:bg-slate-800 rounded-xl p-6 shadow-lg">
-            <div className="flex items-center gap-1 mb-3">
-              {[...Array(review.rating)].map((_, idx) => (
-                <Star key={idx} size={16} className="text-amber-500 fill-amber-500" />
-              ))}
-            </div>
-            <p className="text-slate-600 dark:text-slate-400 mb-4">{review.comment}</p>
-            <div className="flex items-center justify-between text-sm text-slate-500">
-              <span className="font-medium text-slate-900 dark:text-white">{review.name}</span>
-              <span>{review.date}</span>
+    <div>
+      <ModuleHeader image={HERO.reviews} title="Guest Reviews" subtitle="See what our guests have to say about their stay" gradient="from-amber-600 to-orange-800" eyebrow="Guest stories">
+        {reviews.length > 0 && (
+          <div className="inline-flex items-center gap-3 px-5 py-3 rounded-2xl bg-white/10 backdrop-blur-md border border-white/20">
+            <span className="font-serif text-3xl font-bold text-amber-300">{average.toFixed(1)}</span>
+            <div>
+              <div className="flex">{[1, 2, 3, 4, 5].map(i => <Star key={i} size={14} className={i <= Math.round(average) ? 'text-amber-300 fill-amber-300' : 'text-white/30'} />)}</div>
+              <p className="text-xs text-white/70">{reviews.length} guest review{reviews.length > 1 ? 's' : ''}</p>
             </div>
           </div>
-        ))}
-      </div>
+        )}
+      </ModuleHeader>
 
-      <div className="bg-white dark:bg-slate-800 rounded-xl p-6 shadow-lg">
-        <div className="flex items-center gap-3 mb-4 text-amber-600">
-          <Award size={24} />
-          <h3 className="text-xl font-bold text-slate-900 dark:text-white">Awards & Recognition</h3>
-        </div>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          {awards.map((award, idx) => (
-            <div key={idx} className="bg-amber-50 dark:bg-amber-900/20 p-4 rounded-lg">
-              <div className="font-semibold text-amber-800 dark:text-amber-400">{award.name}</div>
-              <div className="text-sm text-amber-600 dark:text-amber-500">{award.year}</div>
-            </div>
+      <SectionHead eyebrow="Testimonials" title="In their own words" />
+      {error && <ErrorState message={error} onRetry={retry} />}
+      {loading ? (
+        <LoadingGrid />
+      ) : reviews.length === 0 && !error ? (
+        <EmptyState title="No reviews published yet." />
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          {reviews.map((r, i) => (
+            <Reveal key={r.id} delay={Math.min(i, 6) * 0.06}>
+              <figure className="relative bg-white rounded-3xl p-7 border border-stone-200/70 h-full flex flex-col hover:shadow-xl hover:-translate-y-1 transition-all duration-300">
+                <Quote aria-hidden size={36} className="absolute top-5 right-5 text-amber-100" />
+                <div className="flex mb-4" aria-label={`${r.rating} out of 5 stars`}>{[1, 2, 3, 4, 5].map(n => <Star key={n} size={16} className={n <= r.rating ? 'text-amber-500 fill-amber-500' : 'text-stone-300'} />)}</div>
+                <blockquote className="text-stone-700 leading-relaxed mb-5">{r.comment}</blockquote>
+                <figcaption className="mt-auto text-sm">
+                  <span className="font-semibold text-stone-900">{r.name}</span>
+                  {r.location && <span className="text-stone-500"> · {r.location}</span>}
+                  <span className="block text-xs text-stone-400 mt-0.5">{[r.roomType, String(r.date).slice(0, 10)].filter(Boolean).join(' · ')}</span>
+                </figcaption>
+              </figure>
+            </Reveal>
           ))}
         </div>
-      </div>
+      )}
     </div>
   );
 };

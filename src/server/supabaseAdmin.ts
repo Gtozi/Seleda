@@ -1,16 +1,9 @@
 import { createClient } from '@supabase/supabase-js';
 
-// Check if we're in a browser environment
-const isBrowser = typeof window !== 'undefined';
-
-// Get environment variables based on environment
-const supabaseUrl = isBrowser
-  ? (import.meta.env?.VITE_SUPABASE_URL || '')
-  : (process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || '');
-
-const serviceRoleKey = isBrowser
-  ? (import.meta.env?.VITE_SUPABASE_SERVICE_ROLE_KEY || '')
-  : (process.env.SUPABASE_SERVICE_ROLE_KEY || '');
+// Server-only module — never bundled for the browser, so read env vars
+// from process.env directly (avoids import.meta warnings in cjs builds).
+const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || '';
+const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
 
 export const hasSupabaseAdminConfig = Boolean(supabaseUrl && serviceRoleKey);
 

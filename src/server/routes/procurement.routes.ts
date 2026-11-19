@@ -449,22 +449,21 @@ router.post('/demand-forecast', authenticate, requirePermission('fb:procurement:
     return res.status(400).json({ error: 'restaurantId and productId are required' });
   }
 
-  // Get historical consumption data
+  // Get historical consumption data from unified ledger
   const startDate = new Date();
   startDate.setDate(startDate.getDate() - (historicalDays || 30));
-  
+
   const { data: historicalData } = await supabaseAdmin
-    .from('inventory_transactions')
-    .select('*')
-    .eq('restaurant_id', restaurantId)
-    .eq('product_id', productId)
-    .eq('transaction_type', 'consumption')
+    .from('uinv_stock_ledger')
+    .select('quantity_out, transaction_date')
+    .eq('item_id', productId)
+    .eq('transaction_type', 'Consumption')
     .gte('transaction_date', startDate.toISOString())
     .order('transaction_date', { ascending: true });
 
   // Calculate simple moving average forecast
-  const dailyConsumption = (historicalData || []).reduce((sum: number, t: any) => 
-    sum + Math.abs(t.quantity_change), 0
+  const dailyConsumption = (historicalData || []).reduce((sum: number, t: any) =>
+    sum + Math.abs(Number(t.quantity_out || 0)), 0
   ) / (historicalDays || 30);
 
   const forecast = [];
@@ -599,20 +598,19 @@ router.post('/par-levels/optimize', authenticate, requirePermission('fb:procurem
   });
 });
 
-// Helper function to get recent demand
+// Helper function to get recent demand from unified ledger
 async function getRecentDemand(productId: string, restaurantId: string, days: number) {
   const startDate = new Date();
   startDate.setDate(startDate.getDate() - days);
-  
+
   const { data } = await supabaseAdmin
-    .from('inventory_transactions')
-    .select('quantity_change')
-    .eq('restaurant_id', restaurantId)
-    .eq('product_id', productId)
-    .eq('transaction_type', 'consumption')
+    .from('uinv_stock_ledger')
+    .select('quantity_out')
+    .eq('item_id', productId)
+    .eq('transaction_type', 'Consumption')
     .gte('transaction_date', startDate.toISOString());
 
-  return Math.abs((data || []).reduce((sum: number, t: any) => sum + t.quantity_change, 0));
+  return Math.abs((data || []).reduce((sum: number, t: any) => sum + Number(t.quantity_out || 0), 0));
 }
 
 // ── Expiry Date Tracking and FEFO ───────────────────────────────────
@@ -701,63 +699,83 @@ function getExpiryRecommendation(status: string, daysUntilExpiry: number): strin
 // Record stock consumption following FEFO
 router.post('/inventory/consume-fefo', authenticate, async (req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) return dbNotConfigured(res);
-  
+
   const { restaurantId, productId, quantity, reason } = req.body || {};
-  
+
   if (!restaurantId || !productId || !quantity) {
     return res.status(400).json({ error: 'restaurantId, productId, and quantity are required' });
   }
 
-  // Get inventory items sorted by expiry (FEFO)
-  const { data: inventory } = await supabaseAdmin
-    .from('inventory')
-    .select('*')
-    .eq('restaurant_id', restaurantId)
-    .eq('product_id', productId)
-    .gt('quantity', 0)
+  // Get batches sorted by expiry (FEFO) from unified inventory
+  const { data: batches } = await supabaseAdmin
+    .from('uinv_batches')
+    .select('id, item_id, store_id, batch_number, expiry_date, quantity_on_hand')
+    .eq('item_id', productId)
+    .gt('quantity_on_hand', 0)
     .not('expiry_date', 'is', null)
     .order('expiry_date', { ascending: true });
 
-  if (!inventory || inventory.length === 0) {
-    return res.status(404).json({ error: 'No available inventory found for this product' });
+  if (!batches || batches.length === 0) {
+    return res.status(404).json({ error: 'No available batches found for this product' });
   }
 
-  let remainingToConsume = quantity;
+  let remainingToConsume = Number(quantity);
   const consumptionLog = [];
+  const now = new Date().toISOString();
 
-  for (const item of inventory) {
+  for (const batch of batches) {
     if (remainingToConsume <= 0) break;
 
-    const consumeFromItem = Math.min(remainingToConsume, item.quantity);
-    
-    // Update inventory
-    await supabaseAdmin
-      .from('inventory')
-      .update({
-        quantity: item.quantity - consumeFromItem,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', item.id);
+    const consumeFromBatch = Math.min(remainingToConsume, Number(batch.quantity_on_hand));
 
-    // Record transaction
-    await supabaseAdmin.from('inventory_transactions').insert({
-      restaurant_id: restaurantId,
-      product_id: productId,
-      quantity_change: -consumeFromItem,
-      transaction_type: 'consumption',
+    // Update batch quantity
+    const newQty = Number(batch.quantity_on_hand) - consumeFromBatch;
+    await supabaseAdmin
+      .from('uinv_batches')
+      .update({ quantity_on_hand: newQty, updated_at: now })
+      .eq('id', batch.id);
+
+    // Update stock balance
+    const { data: balance } = await supabaseAdmin
+      .from('uinv_stock_balances')
+      .select('id, on_hand')
+      .eq('item_id', productId)
+      .eq('store_id', batch.store_id)
+      .order('updated_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (balance) {
+      await supabaseAdmin
+        .from('uinv_stock_balances')
+        .update({ on_hand: Math.max(0, Number(balance.on_hand) - consumeFromBatch), last_movement_date: now, updated_at: now })
+        .eq('id', balance.id);
+    }
+
+    // Record in unified ledger
+    await supabaseAdmin.from('uinv_stock_ledger').insert({
+      property_id: null,
+      item_id: productId,
+      store_id: batch.store_id,
+      transaction_type: 'Consumption',
+      reference: `FEFO — batch ${batch.batch_number || batch.id}`,
+      quantity_in: 0,
+      quantity_out: consumeFromBatch,
+      balance: Math.max(0, Number(balance?.on_hand || 0) - consumeFromBatch),
+      unit_cost: 0,
+      value: 0,
+      performed_by: 'system',
       reason: reason || 'FEFO consumption',
-      expiry_date: item.expiry_date,
-      transaction_date: new Date().toISOString(),
+      transaction_date: now,
     });
 
     consumptionLog.push({
-      inventoryId: item.id,
-      expiryDate: item.expiry_date,
-      consumed: consumeFromItem,
-      remaining: item.quantity - consumeFromItem,
+      inventoryId: batch.id,
+      expiryDate: batch.expiry_date,
+      consumed: consumeFromBatch,
+      remaining: newQty,
     });
 
-    remainingToConsume -= consumeFromItem;
+    remainingToConsume -= consumeFromBatch;
   }
 
   // Invalidate cache

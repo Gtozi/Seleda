@@ -6,6 +6,9 @@
 import React from 'react';
 import { Users, Briefcase, TrendingUp, Plus, Edit2 } from 'lucide-react';
 import { Guest } from '../../types/erp';
+import StatCard from '../../FrontOffice/StatCard';
+import { SectionCard } from '../../FrontOffice/ui';
+import { button } from '../../FrontOffice/brandTheme';
 
 interface GuestsCategoryProps {
   guests: Guest[];
@@ -25,25 +28,10 @@ export default function GuestsCategory({
   return (
     <div className="space-y-6">
       {/* Internal Dashboard metrics */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        {[
-          { label: 'Total Profiling Stacks', count: guests.length, desc: 'Client Database', icon: Users, accent: 'text-indigo-500' },
-          { label: 'VIP Flagged Accounts', count: guests.filter(g => g.status === 'VIP').length, desc: 'Premium Profiler', icon: Briefcase, accent: 'text-amber-500' },
-          { label: 'Total Loyalty Points', count: guests.reduce((acc, g) => acc + (g.loyaltyPoints || 0), 0), desc: 'Loyalty Database Ledger', icon: TrendingUp, accent: 'text-emerald-500 font-semibold' },
-        ].map((s, i) => (
-          <div key={i} className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-5 rounded-3xl flex items-center justify-between shadow-xs">
-            <div className="flex items-center gap-4">
-              <div className="w-10 h-10 bg-slate-50 dark:bg-slate-850 flex items-center justify-center rounded-xl">
-                <s.icon size={20} className={s.accent} />
-              </div>
-              <div>
-                <span className="text-[10px] font-mono font-black text-slate-400 uppercase tracking-widest">{s.label}</span>
-                <h4 className="text-xl font-black text-slate-900 dark:text-white leading-none mt-1">{typeof s.count === 'number' && s.count > 1000 ? s.count.toLocaleString() : s.count}</h4>
-              </div>
-            </div>
-            <span className="text-[8px] font-bold text-slate-400 bg-slate-100 dark:bg-slate-800 px-2 py-1 rounded-sm uppercase font-mono">{s.desc}</span>
-          </div>
-        ))}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+        <StatCard title="Total Profiling Stacks" value={guests.length} icon={Users} tone="accent" />
+        <StatCard title="VIP Flagged Accounts" value={guests.filter(g => g.status === 'VIP').length} icon={Briefcase} tone="warning" />
+        <StatCard title="Total Loyalty Points" value={guests.reduce((acc, g) => acc + (g.loyaltyPoints || 0), 0)} icon={TrendingUp} tone="success" />
       </div>
 
       {/* Master Guests Profiler table */}

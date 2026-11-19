@@ -9,7 +9,6 @@
  * visualizes enterprise data without becoming the system of record.
  */
 
-import { useState } from 'react';
 import {
   LayoutGrid,
   BarChart3,
@@ -27,19 +26,10 @@ import {
   TrendingUp,
   AlertTriangle,
   FileBarChart,
-  Search,
-  Settings,
-  RefreshCw,
-  Download,
-  Bell,
-  Building2,
-  Globe,
   Calendar,
-  FileText,
   Zap,
   Award,
   ClipboardCheck,
-  FileSearch,
   Database,
   Sliders
 } from 'lucide-react';
@@ -65,8 +55,8 @@ import Forecasting from './ExecutiveBI/modules/Forecasting';
 import AIDecisionSupport from './ExecutiveBI/modules/AIDecisionSupport';
 import StrategicPlanning from './ExecutiveBI/modules/StrategicPlanning';
 import AlertsExceptions from './ExecutiveBI/modules/AlertsExceptions';
+import ApprovalsCenter from './ExecutiveBI/modules/ApprovalsCenter';
 import ReportsCenter from './ExecutiveBI/modules/ReportsCenter';
-import EnterpriseDataExplorer from './ExecutiveBI/modules/EnterpriseDataExplorer';
 import Configuration from './ExecutiveBI/modules/Configuration';
 
 type EBIModule = 
@@ -90,8 +80,8 @@ type EBIModule =
   | 'ai-decision-support'
   | 'strategic-planning'
   | 'alerts-exceptions'
+  | 'approvals'
   | 'reports-center'
-  | 'enterprise-data-explorer'
   | 'configuration';
 
 interface ModuleConfig {
@@ -273,21 +263,21 @@ const MODULES: ModuleConfig[] = [
     category: 'management', 
     priority: 'high' 
   },
-  { 
-    id: 'reports-center', 
-    label: 'Reports Center', 
-    icon: FileBarChart, 
-    description: 'Executive & operational reports', 
-    category: 'management', 
-    priority: 'high' 
+  {
+    id: 'approvals',
+    label: 'Approvals & Decisions',
+    icon: ClipboardCheck,
+    description: 'Enterprise approval queue with executive sign-off',
+    category: 'management',
+    priority: 'high'
   },
-  { 
-    id: 'enterprise-data-explorer', 
-    label: 'Enterprise Data Explorer', 
-    icon: Search, 
-    description: 'Self-service analytics & drill-down', 
-    category: 'management', 
-    priority: 'medium' 
+  {
+    id: 'reports-center',
+    label: 'Reports Center',
+    icon: FileBarChart,
+    description: 'Executive & operational reports',
+    category: 'management',
+    priority: 'high'
   },
   { 
     id: 'configuration', 
@@ -299,108 +289,15 @@ const MODULES: ModuleConfig[] = [
   },
 ];
 
-const CATEGORY_LABELS: Record<string, string> = {
-  dashboard: 'Dashboards',
-  intelligence: 'Intelligence',
-  analytics: 'Analytics',
-  planning: 'Planning',
-  management: 'Management'
-};
-
-const ExecutiveBusinessIntelligencePortal = ({ activeTab = 'executive-dashboard' }: { activeTab?: string }) => {
-  const [selectedCategory, setSelectedCategory] = useState<string>('all');
-  const [activeModule, setActiveModule] = useState<EBIModule>(activeTab as EBIModule || 'executive-dashboard');
-  const [lastRefreshed, setLastRefreshed] = useState<Date>(new Date());
-
-  const filteredModules = selectedCategory === 'all' 
-    ? MODULES 
-    : MODULES.filter(m => m.category === selectedCategory);
-
-  const handleRefresh = () => {
-    setLastRefreshed(new Date());
-  };
+const ExecutiveBusinessIntelligencePortal = ({ activeTab }: { activeTab?: string }) => {
+  // URL-driven: `activeTab` (from /erp/executive/:tab) is the source of truth.
+  const activeModule: EBIModule =
+    activeTab && MODULES.some(m => m.id === activeTab)
+      ? (activeTab as EBIModule)
+      : 'executive-dashboard';
 
   return (
     <div className="space-y-6 animate-fade-in" id="executive-business-intelligence-portal">
-      {/* Portal Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold text-gray-900 dark:text-white">
-            Executive & Business Intelligence Portal
-          </h1>
-          <p className="text-gray-600 dark:text-gray-400 mt-1">
-            Enterprise decision support and strategic analytics
-          </p>
-        </div>
-        <div className="flex items-center gap-3">
-          <button
-            onClick={handleRefresh}
-            className="flex items-center gap-2 px-4 py-2 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
-          >
-            <RefreshCw className="w-4 h-4" />
-            <span>Refresh</span>
-          </button>
-          <button className="flex items-center gap-2 px-4 py-2 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors">
-            <Download className="w-4 h-4" />
-            <span>Export</span>
-          </button>
-          <button className="relative p-2 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors">
-            <Bell className="w-4 h-4" />
-            <span className="absolute -top-1 -right-1 w-4 h-4 bg-red-500 rounded-full text-xs text-white flex items-center justify-center">
-              3
-            </span>
-          </button>
-        </div>
-      </div>
-
-      {/* Module Navigation */}
-      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-2">
-        {MODULES.map(module => {
-          const Icon = module.icon;
-          return (
-            <button
-              key={module.id}
-              onClick={() => setActiveModule(module.id)}
-              className={`flex items-center gap-2 p-3 rounded-lg transition-all ${
-                activeModule === module.id
-                  ? 'bg-indigo-600 text-white shadow-md'
-                  : 'bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 border border-gray-200 dark:border-gray-700'
-              }`}
-            >
-              <Icon className="w-4 h-4" />
-              <span className="text-sm font-medium truncate">{module.label}</span>
-            </button>
-          );
-        })}
-      </div>
-
-      {/* Category Filter */}
-      <div className="flex items-center gap-2 flex-wrap">
-        <button
-          onClick={() => setSelectedCategory('all')}
-          className={`px-4 py-2 rounded-lg transition-colors ${
-            selectedCategory === 'all'
-              ? 'bg-indigo-600 text-white'
-              : 'bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700'
-          }`}
-        >
-          All Categories
-        </button>
-        {Object.entries(CATEGORY_LABELS).map(([key, label]) => (
-          <button
-            key={key}
-            onClick={() => setSelectedCategory(key)}
-            className={`px-4 py-2 rounded-lg transition-colors ${
-              selectedCategory === key
-                ? 'bg-indigo-600 text-white'
-                : 'bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700'
-            }`}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
-
       {/* Module Content */}
       <div className="min-h-[600px]">
         {activeModule === 'executive-dashboard' && <ExecutiveDashboard />}
@@ -423,14 +320,9 @@ const ExecutiveBusinessIntelligencePortal = ({ activeTab = 'executive-dashboard'
         {activeModule === 'ai-decision-support' && <AIDecisionSupport />}
         {activeModule === 'strategic-planning' && <StrategicPlanning />}
         {activeModule === 'alerts-exceptions' && <AlertsExceptions />}
+        {activeModule === 'approvals' && <ApprovalsCenter />}
         {activeModule === 'reports-center' && <ReportsCenter />}
-        {activeModule === 'enterprise-data-explorer' && <EnterpriseDataExplorer />}
         {activeModule === 'configuration' && <Configuration />}
-      </div>
-
-      {/* Last Refreshed Info */}
-      <div className="text-sm text-gray-500 dark:text-gray-400">
-        Last refreshed: {lastRefreshed.toLocaleString()}
       </div>
     </div>
   );

@@ -296,29 +296,49 @@ export const REPORTS_METADATA: Record<string, DepartmentReports> = {
   },
   'Procurement': {
     daily: [
-       { id: 'pro-pending-pr', name: 'Pending Purchase Requests', category: 'Procurement', description: 'List of all departmental requisitions awaiting manager or director approval.', generatedAt: 'Real-time' },
-       { id: 'pro-unfilled-po', name: 'Unfulfilled Purchase Orders', category: 'Logistics', description: 'Active orders currently past their requested delivery date.', generatedAt: 'Real-time' },
+       { id: 'pro-open-pr', name: 'Open PR Report', category: 'Procurement', description: 'All open purchase requisitions across properties.', generatedAt: 'Real-time' },
+       { id: 'pro-pending-approval', name: 'Pending Approval Report', category: 'Procurement', description: 'Requisitions, POs, and contracts pending approval.', generatedAt: 'Real-time' },
+       { id: 'pro-open-po', name: 'Open PO Report', category: 'Procurement', description: 'All active purchase orders not yet received.', generatedAt: 'Real-time' },
+       { id: 'pro-late-po', name: 'Late PO Report', category: 'Procurement', description: 'Purchase orders past their required delivery date.', generatedAt: 'Real-time' },
+       { id: 'pro-pending-delivery', name: 'Pending Delivery Report', category: 'Logistics', description: 'Deliveries expected but not yet received.', generatedAt: 'Real-time' },
+       { id: 'pro-emergency', name: 'Emergency Purchase Report', category: 'Procurement', description: 'Emergency purchases made in the last 24 hours.', generatedAt: 'Real-time' },
     ],
     weekly: [
        { metric: 'Vendor Lead Time', current: '2.4 days', previous: '2.8 days', variance: '-14.2%', isPositive: true },
        { metric: 'Procurement Cycle Time', current: '4.8h', previous: '5.5h', variance: '-12.7%', isPositive: true },
        { metric: 'Cost Savings Index', current: '8.4%', previous: '7.2%', variance: '+16.7%', isPositive: true },
+       { metric: 'PO Aging', current: '3.2 days', previous: '4.1 days', variance: '-0.9 days', isPositive: true },
+       { metric: 'Price Variance', current: '2.1%', previous: '3.4%', variance: '-1.3%', isPositive: true },
+       { metric: 'Outstanding Orders', current: '47', previous: '52', variance: '-5', isPositive: true },
     ],
     monthly: [
-       { title: 'Vendor Audit Summary', content: 'Quality compliance audits for fresh produce vendors passed with zero critical non-conformities.', trend: 'Quality: Standard' },
-       { title: 'Supply Chain Risk', content: 'Alternative vendor pathways established for imported beverage lines.', trend: 'Risk: Mitigated' },
+       { title: 'Procurement Spend', content: 'Total procurement spend across all categories and properties.', trend: 'Spend: Tracked' },
+       { title: 'Category Spend', content: 'Spend breakdown by procurement category (Food, Beverage, Supplies, etc.).', trend: 'Category: Analyzed' },
+       { title: 'Supplier Spend', content: 'Spend distribution across active suppliers.', trend: 'Supplier: Ranked' },
+       { title: 'Savings Report', content: 'Negotiation, bidding, and contract savings achieved.', trend: 'Savings: Recorded' },
+       { title: 'Budget Utilization', content: 'Budget vs. actual spend by department and category.', trend: 'Budget: Monitored' },
+       { title: 'Contract Expiry', content: 'Contracts expiring in the next 90 days.', trend: 'Contracts: Tracked' },
+       { title: 'Supplier Performance', content: 'Supplier evaluation scores and delivery performance.', trend: 'Performance: Scored' },
     ],
     monthlyStats: [
        { metric: 'PO Fulfillment Rate', current: '96.4%', previous: '92.1%', variance: '+4.3%', isPositive: true },
        { metric: 'Cost Avoidance', current: '$12,450', previous: '$8,200', variance: '+$4,250', isPositive: true },
        { metric: 'Vendor Lead Time', current: '2.2 days', previous: '2.8 days', variance: '-0.6 days', isPositive: true },
+       { metric: 'Budget Utilization', current: '78%', previous: '82%', variance: '-4%', isPositive: true },
+       { metric: 'Contract Savings', current: '$18,200', previous: '$14,500', variance: '+$3,700', isPositive: true },
     ],
     quarterlyStats: [
        { metric: 'Category Savings', current: '14.2%', previous: '11.8%', variance: '+2.4%', isPositive: true },
        { metric: 'Contract Coverage', current: '88%', previous: '74%', variance: '+14%', isPositive: true },
+       { metric: 'Total Procurement Spend', current: '$842K', previous: '$798K', variance: '+$44K', isPositive: false },
+       { metric: 'Procurement Savings', current: '$52K', previous: '$41K', variance: '+$11K', isPositive: true },
+       { metric: 'Supplier Risk', current: 'Low', previous: 'Medium', variance: 'Improved', isPositive: true },
+       { metric: 'Procurement Cycle Time', current: '4.2h', previous: '5.5h', variance: '-1.3h', isPositive: true },
     ],
     aiRecommendations: [
        { category: 'Cost Reduction', title: 'Volume Contract Negotiation', impact: 'High', recommendation: 'Consolidate paper goods orders into a single 12-month contract for 8% saving.' },
+       { category: 'Risk Mitigation', title: 'Supplier Diversification', impact: 'Medium', recommendation: 'Reduce single-source dependency for Food category by onboarding 2 additional suppliers.' },
+       { category: 'Budget Optimization', title: 'Category Spend Analysis', impact: 'Medium', recommendation: 'F&B category spend is 12% above budget — review pricing with top 3 suppliers.' },
     ]
   }
 };

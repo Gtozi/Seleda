@@ -1,865 +1,134 @@
-/**
- * Channel Manager Component
- * Manages OTA channel connections and synchronization
- */
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useERP } from '../../context/ERPContext';
+import { Activity, Building2, CheckCircle2, Clock, Edit, Globe, Link, Loader2, Plus, RefreshCw, Search, ServerCrash, Trash2, X, XCircle } from 'lucide-react';
+import StatCard from '../FrontOffice/StatCard';
+import { Badge, PageHeader, SectionCard } from '../FrontOffice/ui';
+import { button, type StatusTone } from '../FrontOffice/brandTheme';
+import { rmsGet, rmsRequest } from '../../services/rmsService';
 
-import React, { useState, useMemo } from 'react';
-import {
-  Plus,
-  Edit,
-  Trash2,
-  Search,
-  RefreshCw,
-  Play,
-  Pause,
-  Settings,
-  MoreVertical,
-  Link,
-  CheckCircle2,
-  XCircle,
-  AlertCircle,
-  Clock,
-  Calendar,
-  Globe,
-  Building2,
-  Activity,
-  TrendingUp,
-  TrendingDown,
-  BarChart3
-} from 'lucide-react';
+const API = '/api/rms-portal/channels';
 
-interface ChannelConnection {
-  id: string;
-  channelName: string;
-  channelCode: string;
-  channelType: 'ota' | 'gds' | 'bedbank' | 'metasearch';
-  apiEndpoint: string;
-  apiVersion: string;
-  syncIntervalMinutes: number;
-  lastSyncAt: string;
-  lastSyncStatus: 'success' | 'failed' | 'never';
-  lastSyncError: string;
-  rateParityEnabled: boolean;
-  rateParityThreshold: number;
-  inventorySyncEnabled: boolean;
-  bookingSyncEnabled: boolean;
-  active: boolean;
-  testMode: boolean;
-  roomMappings: ChannelRoomMapping[];
-}
 
-interface ChannelRoomMapping {
-  id: string;
-  ourRoomType: string;
-  channelRoomCode: string;
-  channelRoomName: string;
-  qualityScore: number;
-  rateMultiplier: number;
-  inventoryMultiplier: number;
-  active: boolean;
-}
+type Channel = {
+  id: string; channel_name: string; channel_code: string; channel_type: string; api_endpoint: string; api_version: string | null;
+  sync_interval_minutes: number; last_sync_at: string | null; last_sync_status: string; last_sync_error: string | null;
+  rate_parity_enabled: boolean; rate_parity_threshold: number; inventory_sync_enabled: boolean; booking_sync_enabled: boolean;
+  active: boolean; test_mode: boolean; has_credentials?: boolean; room_mappings: Mapping[];
+};
+type Mapping = { id: string; our_room_type_id: string; channel_room_code: string; channel_room_name: string | null; quality_score: number; rate_multiplier: number; inventory_multiplier: number; active: boolean; sync_enabled: boolean };
+type RoomType = { id: string; name: string };
+type SyncLog = { id: string; channel_id: string; sync_type: string; sync_start: string; sync_end: string | null; records_processed: number; records_successful: number; records_failed: number; status: string; error_summary: unknown };
 
-const ChannelManager = () => {
-  const [view, setView] = useState<'list' | 'add' | 'edit' | 'mappings' | 'sync-status'>('list');
-  const [selectedChannel, setSelectedChannel] = useState<ChannelConnection | null>(null);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [syncing, setSyncing] = useState<Set<string>>(new Set());
+const statusTone: Record<string, StatusTone> = { success: 'success', failed: 'danger', never: 'neutral', running: 'warning', simulated: 'warning', partial: 'warning' };
+const typeTone: Record<string, StatusTone> = { ota: 'info', gds: 'accent', bedbank: 'success', metasearch: 'warning' };
 
-  // Mock data
-  const channels = useMemo<ChannelConnection[]>(() => [
-    {
-      id: '1',
-      channelName: 'Booking.com',
-      channelCode: 'BOOKINGCOM',
-      channelType: 'ota',
-      apiEndpoint: 'https://supply-xml.booking.com/hotel-v3',
-      apiVersion: '3.0',
-      syncIntervalMinutes: 30,
-      lastSyncAt: '2026-07-19T11:00:00Z',
-      lastSyncStatus: 'success',
-      lastSyncError: '',
-      rateParityEnabled: true,
-      rateParityThreshold: 5.00,
-      inventorySyncEnabled: true,
-      bookingSyncEnabled: true,
-      active: true,
-      testMode: false,
-      roomMappings: [
-        { id: '1', ourRoomType: 'Deluxe Suite', channelRoomCode: 'DS001', channelRoomName: 'Deluxe Suite', qualityScore: 1.0, rateMultiplier: 1.0, inventoryMultiplier: 1.0, active: true },
-        { id: '2', ourRoomType: 'Standard Room', channelRoomCode: 'SR001', channelRoomName: 'Standard Room', qualityScore: 1.0, rateMultiplier: 1.0, inventoryMultiplier: 1.0, active: true },
-      ]
-    },
-    {
-      id: '2',
-      channelName: 'Expedia',
-      channelCode: 'EXPEDIA',
-      channelType: 'ota',
-      apiEndpoint: 'https://services.expediapartnercentral.com',
-      apiVersion: '2.0',
-      syncIntervalMinutes: 60,
-      lastSyncAt: '2026-07-19T10:30:00Z',
-      lastSyncStatus: 'success',
-      lastSyncError: '',
-      rateParityEnabled: true,
-      rateParityThreshold: 5.00,
-      inventorySyncEnabled: true,
-      bookingSyncEnabled: true,
-      active: true,
-      testMode: false,
-      roomMappings: [
-        { id: '3', ourRoomType: 'Deluxe Suite', channelRoomCode: 'DLX', channelRoomName: 'Deluxe', qualityScore: 0.95, rateMultiplier: 1.05, inventoryMultiplier: 1.0, active: true },
-      ]
-    },
-    {
-      id: '3',
-      channelName: 'Airbnb',
-      channelCode: 'AIRBNB',
-      channelType: 'ota',
-      apiEndpoint: 'https://api.airbnb.com/v2',
-      apiVersion: '2.0',
-      syncIntervalMinutes: 120,
-      lastSyncAt: '2026-07-19T09:00:00Z',
-      lastSyncStatus: 'failed',
-      lastSyncError: 'API rate limit exceeded',
-      rateParityEnabled: true,
-      rateParityThreshold: 10.00,
-      inventorySyncEnabled: true,
-      bookingSyncEnabled: true,
-      active: true,
-      testMode: false,
-      roomMappings: [
-        { id: '4', ourRoomType: 'Ocean View', channelRoomCode: 'OV001', channelRoomName: 'Ocean View Suite', qualityScore: 0.9, rateMultiplier: 1.1, inventoryMultiplier: 0.95, active: true },
-      ]
-    },
-    {
-      id: '4',
-      channelName: 'Amadeus',
-      channelCode: 'AMADEUS',
-      channelType: 'gds',
-      apiEndpoint: 'https://webservices.amadeus.com',
-      apiVersion: '1.0',
-      syncIntervalMinutes: 180,
-      lastSyncAt: '2026-07-19T08:00:00Z',
-      lastSyncStatus: 'success',
-      lastSyncError: '',
-      rateParityEnabled: true,
-      rateParityThreshold: 3.00,
-      inventorySyncEnabled: true,
-      bookingSyncEnabled: true,
-      active: true,
-      testMode: true,
-      roomMappings: []
-    }
-  ], []);
+export default function ChannelManager() {
+  const { currentPropertyId } = useERP();
+  const [channels, setChannels] = useState<Channel[]>([]);
+  const [roomTypes, setRoomTypes] = useState<RoomType[]>([]);
+  const [history, setHistory] = useState<SyncLog[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [search, setSearch] = useState('');
+  const [busy, setBusy] = useState<Set<string>>(new Set());
+  const [channelForm, setChannelForm] = useState<Channel | null | undefined>(undefined);
+  const [mappingChannel, setMappingChannel] = useState<Channel | null>(null);
+  const [mappingForm, setMappingForm] = useState<Mapping | null | undefined>(undefined);
+  const [showHistory, setShowHistory] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
 
-  const filteredChannels = useMemo(() => {
-    if (!searchQuery) return channels;
-    return channels.filter(c => 
-      c.channelName.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      c.channelCode.toLowerCase().includes(searchQuery.toLowerCase())
-    );
-  }, [channels, searchQuery]);
+  const load = useCallback(async () => {
+    setLoading(true); setError(null);
+    try {
+      const json = await rmsGet(API, { propertyId: currentPropertyId });
+      setChannels(json.channels || []); setRoomTypes(json.roomTypes || []); setHistory(json.syncHistory || []);
+      if (mappingChannel) setMappingChannel((json.channels || []).find((c: Channel) => c.id === mappingChannel.id) || null);
+    } catch (e: any) { setError(e.message || 'Failed to load channels'); }
+    finally { setLoading(false); }
+  }, [mappingChannel?.id, currentPropertyId]);
+  useEffect(() => { load(); }, [load]);
 
-  const handleAddChannel = () => {
-    setSelectedChannel(null);
-    setView('add');
+  const request = (url: string, method: string, body?: unknown) =>
+    rmsRequest(url, { method, body, propertyId: currentPropertyId });
+  const run = async (id: string, action: () => Promise<void>) => {
+    setBusy(prev => new Set(prev).add(id)); setError(null); setNotice(null);
+    try { await action(); await load(); } catch (e: any) { setError(e.message || 'Action failed'); }
+    finally { setBusy(prev => { const n = new Set(prev); n.delete(id); return n; }); }
   };
-
-  const handleEditChannel = (channel: ChannelConnection) => {
-    setSelectedChannel(channel);
-    setView('edit');
+  const saveChannel = async (form: any) => {
+    const editing = channelForm?.id;
+    await run(editing || 'new', async () => { await request(editing ? `${API}/${editing}` : API, editing ? 'PUT' : 'POST', { ...form, propertyId: currentPropertyId }); setChannelForm(undefined); });
   };
-
-  const handleManageMappings = (channel: ChannelConnection) => {
-    setSelectedChannel(channel);
-    setView('mappings');
+  const removeChannel = (c: Channel) => { if (confirm(`Delete ${c.channel_name} and its mappings?`)) run(c.id, () => request(`${API}/${c.id}`, 'DELETE', { propertyId: currentPropertyId })); };
+  const patchChannel = (c: Channel, patch: Partial<Channel>) => run(c.id, () => request(`${API}/${c.id}`, 'PUT', { ...patch, propertyId: currentPropertyId }));
+  const sync = (c: Channel) => run(c.id, async () => {
+    const result = await request(`${API}/${c.id}/sync`, 'POST', { propertyId: currentPropertyId });
+    setNotice(result.simulated
+      ? `${c.channel_name}: simulated sync — no live endpoint contacted (test mode or missing credentials)`
+      : result.status === 'partial'
+        ? `${c.channel_name}: partial sync — ${result.failed} record(s) failed`
+        : null);
+  });
+  const test = (c: Channel) => run(c.id, async () => {
+    const result = await request(`${API}/${c.id}/test`, 'POST', { propertyId: currentPropertyId });
+    setNotice(result.success ? `${c.channel_name}: connection OK` : `${c.channel_name}: ${result.error || 'connection failed'}`);
+  });
+  const saveMapping = async (form: any) => {
+    if (!mappingChannel) return;
+    const id = mappingForm?.id;
+    await run(id || 'mapping', async () => { await request(id ? `${API}/${mappingChannel.id}/mappings/${id}` : `${API}/${mappingChannel.id}/mappings`, id ? 'PUT' : 'POST', { ...form, propertyId: currentPropertyId }); setMappingForm(undefined); });
   };
+  const removeMapping = (m: Mapping) => mappingChannel && confirm('Delete this room mapping?') && run(m.id, () => request(`${API}/${mappingChannel.id}/mappings/${m.id}`, 'DELETE', { propertyId: currentPropertyId }));
 
-  const handleDeleteChannel = (id: string) => {
-    console.log('Delete channel:', id);
-  };
+  const filtered = useMemo(() => channels.filter(c => `${c.channel_name} ${c.channel_code}`.toLowerCase().includes(search.toLowerCase())), [channels, search]);
+  const stats = useMemo(() => ({ active: channels.filter(c => c.active).length, mappings: channels.reduce((n, c) => n + c.room_mappings.length, 0), failed: channels.filter(c => c.last_sync_status === 'failed').length }), [channels]);
 
-  const handleSyncChannel = async (channelId: string) => {
-    setSyncing(new Set([...syncing, channelId]));
-    console.log('Syncing channel:', channelId);
-    setTimeout(() => {
-      setSyncing(new Set([...syncing].filter(id => id !== channelId)));
-    }, 2000);
-  };
+  if (loading && !channels.length) return <div className="p-6 flex justify-center py-20 text-slate-400"><Loader2 className="w-6 h-6 animate-spin mr-2" />Loading channels…</div>;
+  if (error && !channels.length) return <div className="p-6 flex flex-col items-center py-20 text-rose-600"><ServerCrash className="w-10 h-10 mb-3"/><p>{error}</p><button onClick={load} className="mt-4 text-blue-600">Retry</button></div>;
 
-  const handleToggleActive = (channelId: string) => {
-    console.log('Toggle active:', channelId);
-  };
-
-  const getChannelTypeColor = (type: string) => {
-    const colors = {
-      ota: 'bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300',
-      gds: 'bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300',
-      bedbank: 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300',
-      metasearch: 'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300'
-    };
-    return colors[type as keyof typeof colors] || 'bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-300';
-  };
-
-  const getSyncStatusIcon = (status: string) => {
-    const icons = {
-      success: <CheckCircle2 className="w-5 h-5 text-green-500" />,
-      failed: <XCircle className="w-5 h-5 text-red-500" />,
-      never: <Clock className="w-5 h-5 text-slate-400" />
-    };
-    return icons[status as keyof typeof icons] || <Clock className="w-5 h-5 text-slate-400" />;
-  };
-
-  return (
-    <div className="p-6 space-y-6">
-      {view === 'list' && (
-        <>
-          {/* Header */}
-          <div className="flex items-center justify-between">
-            <div>
-              <h2 className="text-2xl font-bold text-slate-900 dark:text-white">Channel Manager</h2>
-              <p className="text-slate-600 dark:text-slate-400">Manage OTA channel connections and synchronization</p>
-            </div>
-            <div className="flex items-center gap-3">
-              <button
-                onClick={() => setView('sync-status')}
-                className="flex items-center gap-2 px-4 py-2 border border-slate-300 dark:border-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700 rounded-lg text-sm font-medium transition-colors text-slate-700 dark:text-slate-300"
-              >
-                <Activity className="w-4 h-4" />
-                Sync Status
-              </button>
-              <button
-                onClick={handleAddChannel}
-                className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium transition-colors"
-              >
-                <Plus className="w-4 h-4" />
-                Add Channel
-              </button>
-            </div>
-          </div>
-
-          {/* Search */}
-          <div className="relative">
-            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-slate-400" />
-            <input
-              type="text"
-              placeholder="Search channels..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full pl-10 pr-4 py-2 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-800 text-slate-900 dark:text-white placeholder-slate-400"
-            />
-          </div>
-
-          {/* Channel List */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {filteredChannels.map((channel) => (
-              <ChannelCard
-                key={channel.id}
-                channel={channel}
-                isSyncing={syncing.has(channel.id)}
-                onEdit={() => handleEditChannel(channel)}
-                onManageMappings={() => handleManageMappings(channel)}
-                onDelete={() => handleDeleteChannel(channel.id)}
-                onSync={() => handleSyncChannel(channel.id)}
-                onToggleActive={() => handleToggleActive(channel.id)}
-                getChannelTypeColor={getChannelTypeColor}
-                getSyncStatusIcon={getSyncStatusIcon}
-              />
-            ))}
-          </div>
-
-          {filteredChannels.length === 0 && (
-            <div className="text-center py-12">
-              <Globe className="w-12 h-12 text-slate-400 mx-auto mb-4" />
-              <p className="text-slate-600 dark:text-slate-400">No channels found</p>
-            </div>
-          )}
-        </>
-      )}
-
-      {view === 'add' && (
-        <ChannelForm
-          mode="add"
-          onCancel={() => setView('list')}
-          onSave={() => setView('list')}
-        />
-      )}
-
-      {view === 'edit' && selectedChannel && (
-        <ChannelForm
-          mode="edit"
-          channel={selectedChannel}
-          onCancel={() => setView('list')}
-          onSave={() => setView('list')}
-        />
-      )}
-
-      {view === 'sync-status' && (
-        <SyncStatusDashboard onClose={() => setView('list')} />
-      )}
-
-      {view === 'mappings' && selectedChannel && (
-        <RoomMappings
-          channel={selectedChannel}
-          onClose={() => setView('list')}
-        />
-      )}
+  return <div className="p-6 space-y-6">
+    <PageHeader title="Channel Manager" subtitle="Manage OTA, GDS and distribution channel synchronization" actions={<><button className={button.secondary} onClick={() => setShowHistory(true)}><Activity className="w-4 h-4"/>Sync Status</button><button className={button.primary} onClick={() => setChannelForm(null)}><Plus className="w-4 h-4"/>Add Channel</button></>} />
+    {error && <div className="px-4 py-2 rounded-lg border border-rose-200 bg-rose-50 text-sm text-rose-600">{error}</div>}
+    {notice && <div className="px-4 py-2 rounded-lg border border-amber-200 bg-amber-50 text-sm text-amber-700">{notice}</div>}
+    <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+      <StatCard title="Channels" value={channels.length} icon={Globe} tone="info" />
+      <StatCard title="Active" value={stats.active} icon={CheckCircle2} tone="success" />
+      <StatCard title="Room Mappings" value={stats.mappings} icon={Link} tone="accent" />
+      <StatCard title="Failed Syncs" value={stats.failed} icon={XCircle} tone="danger" />
     </div>
-  );
+    <div className="relative"><Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400"/><input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search channels…" className="w-full pl-10 pr-4 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800"/></div>
+    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">{filtered.map(c => <SectionCard key={c.id} pad="md">
+      <div className="flex items-start justify-between mb-4"><div className="flex gap-3"><div className="w-11 h-11 rounded-lg bg-slate-100 dark:bg-slate-700 flex items-center justify-center"><Globe className="w-6 h-6 text-slate-500"/></div><div><div className="flex gap-2 items-center"><h3 className="font-semibold text-slate-900 dark:text-white">{c.channel_name}</h3>{c.test_mode && <Badge tone="warning">Test</Badge>}{!c.test_mode && !c.has_credentials && <Badge tone="danger">No credentials</Badge>}</div><p className="text-sm text-slate-500">{c.channel_code}</p></div></div><div className="flex gap-1"><IconButton title="Test connection" onClick={() => test(c)}><CheckCircle2 className="w-5 h-5"/></IconButton><IconButton title="Sync" onClick={() => sync(c)}><RefreshCw className={`w-5 h-5 ${busy.has(c.id) ? 'animate-spin' : ''}`}/></IconButton><IconButton title="Mappings" onClick={() => setMappingChannel(c)}><Link className="w-5 h-5"/></IconButton><IconButton title="Edit" onClick={() => setChannelForm(c)}><Edit className="w-5 h-5 text-blue-600"/></IconButton><IconButton title="Delete" onClick={() => removeChannel(c)}><Trash2 className="w-5 h-5 text-red-600"/></IconButton></div></div>
+      <div className="flex justify-between items-center mb-3"><Badge tone={typeTone[c.channel_type] || 'neutral'}>{c.channel_type.toUpperCase()}</Badge><div className="flex items-center gap-2"><Badge tone={statusTone[c.last_sync_status] || 'neutral'}>{c.last_sync_status}</Badge><span className="text-xs text-slate-500">{c.last_sync_at ? new Date(c.last_sync_at).toLocaleString() : 'Never synced'}</span></div></div>
+      {c.last_sync_error && <div className="mb-3 p-2 rounded bg-red-50 text-sm text-red-700 flex gap-2"><XCircle className="w-4 h-4 mt-0.5"/>{c.last_sync_error}</div>}
+      <div className="grid grid-cols-3 text-sm text-slate-600 dark:text-slate-400 mb-4"><span><Clock className="inline w-4 h-4 mr-1"/>{c.sync_interval_minutes}m</span><span><Building2 className="inline w-4 h-4 mr-1"/>{c.room_mappings.length} rooms</span><span>Parity {c.rate_parity_enabled ? 'On' : 'Off'}</span></div>
+      <div className="pt-4 border-t border-slate-200 dark:border-slate-700 flex flex-wrap gap-4 items-center"><Toggle label="Inventory" checked={c.inventory_sync_enabled} onChange={v => patchChannel(c,{inventory_sync_enabled:v})}/><Toggle label="Bookings" checked={c.booking_sync_enabled} onChange={v => patchChannel(c,{booking_sync_enabled:v})}/><button onClick={() => patchChannel(c,{active:!c.active})} className="ml-auto"><Badge tone={c.active ? 'success':'neutral'}>{c.active ? 'Active':'Inactive'}</Badge></button></div>
+    </SectionCard>)}</div>
+    {!filtered.length && <div className="text-center py-12 text-slate-500"><Globe className="w-12 h-12 mx-auto mb-3"/>No channels found</div>}
+    {channelForm !== undefined && <ChannelForm channel={channelForm} saving={busy.size > 0} onCancel={() => setChannelForm(undefined)} onSave={saveChannel}/>} 
+    {mappingChannel && <MappingModal channel={mappingChannel} roomTypes={roomTypes} busy={busy} onClose={() => setMappingChannel(null)} onAdd={() => setMappingForm(null)} onEdit={setMappingForm} onDelete={removeMapping}/>} 
+    {mappingForm !== undefined && mappingChannel && <MappingForm mapping={mappingForm} roomTypes={roomTypes} saving={busy.size > 0} onCancel={() => setMappingForm(undefined)} onSave={saveMapping}/>} 
+    {showHistory && <HistoryModal logs={history} channels={channels} onClose={() => setShowHistory(false)}/>} 
+  </div>;
+}
+
+function IconButton({ title, onClick, children }: { title:string; onClick:()=>void; children:React.ReactNode }) { return <button title={title} onClick={onClick} className="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-400">{children}</button>; }
+function Toggle({label,checked,onChange}:{label:string;checked:boolean;onChange:(v:boolean)=>void}) { return <label className="flex gap-2 items-center text-sm text-slate-600 dark:text-slate-400"><input type="checkbox" checked={checked} onChange={e=>onChange(e.target.checked)} className="rounded"/>{label}</label>; }
+const fieldClass="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-white";
+function Modal({title,onClose,children,footer}:{title:string;onClose:()=>void;children:React.ReactNode;footer?:React.ReactNode}) { return <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4"><div className="bg-white dark:bg-slate-800 rounded-xl shadow-xl max-w-2xl w-full max-h-[90vh] overflow-auto"><div className="p-5 border-b flex justify-between"><h3 className="font-semibold text-lg">{title}</h3><button onClick={onClose}><X className="w-5 h-5"/></button></div><div className="p-5">{children}</div>{footer && <div className="p-5 border-t flex justify-end gap-3">{footer}</div>}</div></div>; }
+
+const toChannelPayload = (f: any) => {
+  const { api_key, api_secret, token, username, password, hotel_code, ...rest } = f;
+  const credentials = Object.fromEntries(Object.entries({ api_key, api_secret, token, username, password, hotel_code }).filter(([, v]) => v !== ''));
+  return { ...rest, credentials };
 };
 
-interface ChannelCardProps {
-  channel: ChannelConnection;
-  isSyncing: boolean;
-  onEdit: () => void;
-  onManageMappings: () => void;
-  onDelete: () => void;
-  onSync: () => void;
-  onToggleActive: () => void;
-  getChannelTypeColor: (type: string) => string;
-  getSyncStatusIcon: (status: string) => React.ReactNode;
+function ChannelForm({channel,onCancel,onSave,saving}:{channel:Channel|null;onCancel:()=>void;onSave:(f:any)=>void;saving:boolean}) {
+ const [f,setF]=useState({channel_name:channel?.channel_name||'',channel_code:channel?.channel_code||'',channel_type:channel?.channel_type||'ota',api_endpoint:channel?.api_endpoint||'',api_version:channel?.api_version||'1.0',sync_interval_minutes:channel?.sync_interval_minutes||30,rate_parity_threshold:channel?.rate_parity_threshold||5,rate_parity_enabled:channel?.rate_parity_enabled??true,inventory_sync_enabled:channel?.inventory_sync_enabled??true,booking_sync_enabled:channel?.booking_sync_enabled??true,active:channel?.active??true,test_mode:channel?.test_mode??false,api_key:'',api_secret:'',token:'',username:'',password:'',hotel_code:''}); const set=(k:string,v:any)=>setF(p=>({...p,[k]:v}));
+ return <Modal title={channel?'Edit Channel':'Add Channel'} onClose={onCancel} footer={<><button className={button.secondary} onClick={onCancel}>Cancel</button><button className={button.primary} disabled={saving||!f.channel_name||!f.channel_code||!f.api_endpoint} onClick={()=>onSave(toChannelPayload(f))}>{saving&&<Loader2 className="w-4 h-4 animate-spin"/>}Save</button></>}><div className="space-y-4"><div className="grid grid-cols-2 gap-4"><Field label="Name"><input className={fieldClass} value={f.channel_name} onChange={e=>set('channel_name',e.target.value)}/></Field><Field label="Code"><input className={fieldClass} value={f.channel_code} onChange={e=>set('channel_code',e.target.value)}/></Field></div><div className="grid grid-cols-2 gap-4"><Field label="Type"><select className={fieldClass} value={f.channel_type} onChange={e=>set('channel_type',e.target.value)}><option value="ota">OTA</option><option value="gds">GDS</option><option value="bedbank">Bedbank</option><option value="metasearch">Metasearch</option></select></Field><Field label="API Version"><input className={fieldClass} value={f.api_version} onChange={e=>set('api_version',e.target.value)}/></Field></div><Field label="API Endpoint"><input className={fieldClass} value={f.api_endpoint} onChange={e=>set('api_endpoint',e.target.value)}/></Field><div className="grid grid-cols-2 gap-4"><Field label="Sync interval (minutes)"><input type="number" className={fieldClass} value={f.sync_interval_minutes} onChange={e=>set('sync_interval_minutes',Number(e.target.value))}/></Field><Field label="Parity threshold (%)"><input type="number" className={fieldClass} value={f.rate_parity_threshold} onChange={e=>set('rate_parity_threshold',Number(e.target.value))}/></Field></div><div className="border border-slate-200 dark:border-slate-600 rounded-lg p-3 space-y-3"><p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">API Credentials — {channel ? 'leave blank to keep existing' : 'required for live sync'}</p><div className="grid grid-cols-2 gap-4"><Field label="API Key"><input type="password" autoComplete="new-password" className={fieldClass} value={f.api_key} onChange={e=>set('api_key',e.target.value)}/></Field><Field label="API Secret"><input type="password" autoComplete="new-password" className={fieldClass} value={f.api_secret} onChange={e=>set('api_secret',e.target.value)}/></Field></div><div className="grid grid-cols-2 gap-4"><Field label="Username"><input autoComplete="off" className={fieldClass} value={f.username} onChange={e=>set('username',e.target.value)}/></Field><Field label="Password"><input type="password" autoComplete="new-password" className={fieldClass} value={f.password} onChange={e=>set('password',e.target.value)}/></Field></div><div className="grid grid-cols-2 gap-4"><Field label="Access Token"><input type="password" autoComplete="new-password" className={fieldClass} value={f.token} onChange={e=>set('token',e.target.value)}/></Field><Field label="Hotel Code"><input className={fieldClass} value={f.hotel_code} onChange={e=>set('hotel_code',e.target.value)} placeholder="Property code at the channel"/></Field></div></div><div className="flex flex-wrap gap-4"><Toggle label="Rate parity" checked={f.rate_parity_enabled} onChange={v=>set('rate_parity_enabled',v)}/><Toggle label="Inventory sync" checked={f.inventory_sync_enabled} onChange={v=>set('inventory_sync_enabled',v)}/><Toggle label="Booking sync" checked={f.booking_sync_enabled} onChange={v=>set('booking_sync_enabled',v)}/><Toggle label="Test mode" checked={f.test_mode} onChange={v=>set('test_mode',v)}/></div></div></Modal>;
 }
+function Field({label,children}:{label:string;children:React.ReactNode}) { return <label className="block text-sm font-medium text-slate-700 dark:text-slate-300"><span className="block mb-1">{label}</span>{children}</label>; }
 
-const ChannelCard: React.FC<ChannelCardProps> = ({
-  channel,
-  isSyncing,
-  onEdit,
-  onManageMappings,
-  onDelete,
-  onSync,
-  onToggleActive,
-  getChannelTypeColor,
-  getSyncStatusIcon
-}) => {
-  return (
-    <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 p-6">
-      <div className="flex items-start justify-between mb-4">
-        <div className="flex items-center gap-3">
-          <div className="w-12 h-12 bg-slate-100 dark:bg-slate-700 rounded-lg flex items-center justify-center">
-            <Globe className="w-6 h-6 text-slate-500 dark:text-slate-400" />
-          </div>
-          <div>
-            <div className="flex items-center gap-2 mb-1">
-              <h3 className="font-semibold text-slate-900 dark:text-white">{channel.channelName}</h3>
-              {channel.testMode && (
-                <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300">
-                  Test Mode
-                </span>
-              )}
-            </div>
-            <p className="text-sm text-slate-600 dark:text-slate-400">{channel.channelCode}</p>
-          </div>
-        </div>
-        <div className="flex items-center gap-1">
-          <button
-            onClick={onSync}
-            disabled={isSyncing}
-            className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg transition-colors disabled:opacity-50"
-            title="Sync Now"
-          >
-            {isSyncing ? (
-              <RefreshCw className="w-5 h-5 text-blue-600 dark:text-blue-400 animate-spin" />
-            ) : (
-              <RefreshCw className="w-5 h-5 text-slate-400" />
-            )}
-          </button>
-          <button
-            onClick={onManageMappings}
-            className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg transition-colors"
-            title="Manage Mappings"
-          >
-            <Link className="w-5 h-5 text-slate-400" />
-          </button>
-          <button
-            onClick={onEdit}
-            className="p-1.5 hover:bg-blue-100 dark:hover:bg-blue-900/30 rounded-lg transition-colors"
-            title="Edit"
-          >
-            <Edit className="w-5 h-5 text-blue-600 dark:text-blue-400" />
-          </button>
-          <button
-            onClick={onDelete}
-            className="p-1.5 hover:bg-red-100 dark:hover:bg-red-900/30 rounded-lg transition-colors"
-            title="Delete"
-          >
-            <Trash2 className="w-5 h-5 text-red-600 dark:text-red-400" />
-          </button>
-        </div>
-      </div>
-
-      <div className="space-y-3 mb-4">
-        <div className="flex items-center justify-between">
-          <span className={`px-2 py-1 rounded-full text-xs font-medium ${getChannelTypeColor(channel.channelType)}`}>
-            {channel.channelType.toUpperCase()}
-          </span>
-          <div className="flex items-center gap-2">
-            {getSyncStatusIcon(channel.lastSyncStatus)}
-            <span className="text-sm text-slate-600 dark:text-slate-400">
-              {channel.lastSyncStatus === 'never' ? 'Never synced' : 
-               new Date(channel.lastSyncAt).toLocaleString()}
-            </span>
-          </div>
-        </div>
-
-        {channel.lastSyncError && (
-          <div className="flex items-start gap-2 p-2 bg-red-50 dark:bg-red-900/20 rounded-lg">
-            <AlertCircle className="w-4 h-4 text-red-500 mt-0.5 flex-shrink-0" />
-            <p className="text-sm text-red-700 dark:text-red-300">{channel.lastSyncError}</p>
-          </div>
-        )}
-
-        <div className="grid grid-cols-3 gap-2 text-sm">
-          <div className="flex items-center gap-1">
-            <Calendar className="w-4 h-4 text-slate-400" />
-            <span className="text-slate-600 dark:text-slate-400">{channel.syncIntervalMinutes}m</span>
-          </div>
-          <div className="flex items-center gap-1">
-            <Building2 className="w-4 h-4 text-slate-400" />
-            <span className="text-slate-600 dark:text-slate-400">{channel.roomMappings.length} rooms</span>
-          </div>
-          <div className="flex items-center gap-1">
-            {channel.rateParityEnabled ? (
-              <CheckCircle2 className="w-4 h-4 text-green-500" />
-            ) : (
-              <XCircle className="w-4 h-4 text-slate-400" />
-            )}
-            <span className="text-slate-600 dark:text-slate-400">Parity</span>
-          </div>
-        </div>
-      </div>
-
-      <div className="flex items-center justify-between pt-4 border-t border-slate-200 dark:border-slate-700">
-        <div className="flex items-center gap-4">
-          <label className="flex items-center gap-2 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={channel.inventorySyncEnabled}
-              onChange={onToggleActive}
-              className="rounded border-slate-300"
-            />
-            <span className="text-sm text-slate-600 dark:text-slate-400">Inventory</span>
-          </label>
-          <label className="flex items-center gap-2 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={channel.bookingSyncEnabled}
-              onChange={onToggleActive}
-              className="rounded border-slate-300"
-            />
-            <span className="text-sm text-slate-600 dark:text-slate-400">Bookings</span>
-          </label>
-        </div>
-        <button
-          onClick={onToggleActive}
-          className={`flex items-center gap-1 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
-            channel.active
-              ? 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300'
-              : 'bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-300'
-          }`}
-        >
-          {channel.active ? (
-            <>
-              <CheckCircle2 className="w-4 h-4" />
-              Active
-            </>
-          ) : (
-            <>
-              <Pause className="w-4 h-4" />
-              Inactive
-            </>
-          )}
-        </button>
-      </div>
-    </div>
-  );
-};
-
-interface ChannelFormProps {
-  mode: 'add' | 'edit';
-  channel?: ChannelConnection;
-  onCancel: () => void;
-  onSave: () => void;
-}
-
-const ChannelForm: React.FC<ChannelFormProps> = ({ mode, channel, onCancel, onSave }) => {
-  return (
-    <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 p-6">
-      <div className="mb-6">
-        <h3 className="text-xl font-semibold text-slate-900 dark:text-white">
-          {mode === 'add' ? 'Add New Channel' : 'Edit Channel'}
-        </h3>
-        <p className="text-slate-600 dark:text-slate-400">
-          {mode === 'add' ? 'Configure a new OTA channel connection' : 'Update channel configuration'}
-        </p>
-      </div>
-
-      <div className="space-y-4">
-        <div className="grid grid-cols-2 gap-4">
-          <div>
-            <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
-              Channel Name
-            </label>
-            <input
-              type="text"
-              defaultValue={channel?.channelName}
-              className="w-full px-4 py-2 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-700 text-slate-900 dark:text-white"
-              placeholder="e.g., Booking.com"
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
-              Channel Code
-            </label>
-            <input
-              type="text"
-              defaultValue={channel?.channelCode}
-              className="w-full px-4 py-2 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-700 text-slate-900 dark:text-white"
-              placeholder="e.g., BOOKINGCOM"
-            />
-          </div>
-        </div>
-
-        <div className="grid grid-cols-2 gap-4">
-          <div>
-            <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
-              Channel Type
-            </label>
-            <select
-              defaultValue={channel?.channelType || 'ota'}
-              className="w-full px-4 py-2 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-700 text-slate-900 dark:text-white"
-            >
-              <option value="ota">OTA</option>
-              <option value="gds">GDS</option>
-              <option value="bedbank">Bed Bank</option>
-              <option value="metasearch">Metasearch</option>
-            </select>
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
-              API Version
-            </label>
-            <input
-              type="text"
-              defaultValue={channel?.apiVersion || '1.0'}
-              className="w-full px-4 py-2 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-700 text-slate-900 dark:text-white"
-              placeholder="e.g., 3.0"
-            />
-          </div>
-        </div>
-
-        <div>
-          <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
-            API Endpoint
-          </label>
-          <input
-            type="url"
-            defaultValue={channel?.apiEndpoint}
-            className="w-full px-4 py-2 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-700 text-slate-900 dark:text-white"
-            placeholder="https://api.example.com"
-          />
-        </div>
-
-        <div className="grid grid-cols-2 gap-4">
-          <div>
-            <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
-              Sync Interval (minutes)
-            </label>
-            <input
-              type="number"
-              defaultValue={channel?.syncIntervalMinutes || 30}
-              className="w-full px-4 py-2 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-700 text-slate-900 dark:text-white"
-              placeholder="30"
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
-              Rate Parity Threshold (%)
-            </label>
-            <input
-              type="number"
-              step="0.01"
-              defaultValue={channel?.rateParityThreshold || 5.00}
-              className="w-full px-4 py-2 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-700 text-slate-900 dark:text-white"
-              placeholder="5.00"
-            />
-          </div>
-        </div>
-
-        <div className="grid grid-cols-3 gap-4">
-          <label className="flex items-center gap-2 cursor-pointer">
-            <input
-              type="checkbox"
-              defaultChecked={channel?.rateParityEnabled ?? true}
-              className="rounded border-slate-300"
-            />
-            <span className="text-sm text-slate-700 dark:text-slate-300">Rate Parity</span>
-          </label>
-
-          <label className="flex items-center gap-2 cursor-pointer">
-            <input
-              type="checkbox"
-              defaultChecked={channel?.inventorySyncEnabled ?? true}
-              className="rounded border-slate-300"
-            />
-            <span className="text-sm text-slate-700 dark:text-slate-300">Inventory Sync</span>
-          </label>
-
-          <label className="flex items-center gap-2 cursor-pointer">
-            <input
-              type="checkbox"
-              defaultChecked={channel?.bookingSyncEnabled ?? true}
-              className="rounded border-slate-300"
-            />
-            <span className="text-sm text-slate-700 dark:text-slate-300">Booking Sync</span>
-          </label>
-        </div>
-
-        <label className="flex items-center gap-2 cursor-pointer">
-          <input
-            type="checkbox"
-            defaultChecked={channel?.testMode ?? false}
-            className="rounded border-slate-300"
-          />
-          <span className="text-sm text-slate-700 dark:text-slate-300">Test Mode (no live sync)</span>
-        </label>
-      </div>
-
-      <div className="flex items-center justify-end gap-3 mt-6 pt-6 border-t border-slate-200 dark:border-slate-700">
-        <button
-          onClick={onCancel}
-          className="px-4 py-2 border border-slate-300 dark:border-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700 rounded-lg text-sm font-medium transition-colors text-slate-700 dark:text-slate-300"
-        >
-          Cancel
-        </button>
-        <button
-          onClick={onSave}
-          className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium transition-colors"
-        >
-          {mode === 'add' ? 'Add Channel' : 'Save Changes'}
-        </button>
-      </div>
-    </div>
-  );
-};
-
-interface RoomMappingsProps {
-  channel: ChannelConnection;
-  onClose: () => void;
-}
-
-const RoomMappings: React.FC<RoomMappingsProps> = ({ channel, onClose }) => {
-  return (
-    <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 p-6">
-      <div className="mb-6">
-        <h3 className="text-xl font-semibold text-slate-900 dark:text-white">
-          Room Mappings - {channel.channelName}
-        </h3>
-        <p className="text-slate-600 dark:text-slate-400">Configure room type mappings for this channel</p>
-      </div>
-
-      <div className="space-y-4">
-        {channel.roomMappings.length === 0 ? (
-          <div className="text-center py-8">
-            <Link className="w-12 h-12 text-slate-400 mx-auto mb-4" />
-            <p className="text-slate-600 dark:text-slate-400">No room mappings configured</p>
-            <button className="mt-4 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium transition-colors">
-              Add Mapping
-            </button>
-          </div>
-        ) : (
-          <div className="space-y-3">
-            {channel.roomMappings.map((mapping) => (
-              <div key={mapping.id} className="flex items-center justify-between p-4 bg-slate-50 dark:bg-slate-700/50 rounded-lg border border-slate-200 dark:border-slate-600">
-                <div className="flex items-center gap-4">
-                  <div className="flex items-center gap-2">
-                    <div className="w-8 h-8 bg-blue-100 dark:bg-blue-900/30 rounded-lg flex items-center justify-center">
-                      <Building2 className="w-4 h-4 text-blue-600 dark:text-blue-400" />
-                    </div>
-                    <div>
-                      <p className="font-medium text-slate-900 dark:text-white">{mapping.ourRoomType}</p>
-                      <p className="text-xs text-slate-500 dark:text-slate-400">Our Room Type</p>
-                    </div>
-                  </div>
-                  <div className="text-slate-400">→</div>
-                  <div className="flex items-center gap-2">
-                    <div className="w-8 h-8 bg-green-100 dark:bg-green-900/30 rounded-lg flex items-center justify-center">
-                      <Globe className="w-4 h-4 text-green-600 dark:text-green-400" />
-                    </div>
-                    <div>
-                      <p className="font-medium text-slate-900 dark:text-white">{mapping.channelRoomName}</p>
-                      <p className="text-xs text-slate-500 dark:text-slate-400">{mapping.channelRoomCode}</p>
-                    </div>
-                  </div>
-                </div>
-                <div className="flex items-center gap-4">
-                  <div className="text-right">
-                    <p className="text-sm text-slate-600 dark:text-slate-400">Rate: x{mapping.rateMultiplier}</p>
-                    <p className="text-sm text-slate-600 dark:text-slate-400">Inv: x{mapping.inventoryMultiplier}</p>
-                  </div>
-                  <div className="flex items-center gap-1">
-                    <button className="p-1.5 hover:bg-blue-100 dark:hover:bg-blue-900/30 rounded-lg transition-colors">
-                      <Edit className="w-5 h-5 text-blue-600 dark:text-blue-400" />
-                    </button>
-                    <button className="p-1.5 hover:bg-red-100 dark:hover:bg-red-900/30 rounded-lg transition-colors">
-                      <Trash2 className="w-5 h-5 text-red-600 dark:text-red-400" />
-                    </button>
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-
-      <div className="flex items-center justify-end gap-3 mt-6 pt-6 border-t border-slate-200 dark:border-slate-700">
-        <button
-          onClick={onClose}
-          className="px-4 py-2 border border-slate-300 dark:border-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700 rounded-lg text-sm font-medium transition-colors text-slate-700 dark:text-slate-300"
-        >
-          Close
-        </button>
-      </div>
-    </div>
-  );
-};
-
-interface StatCardProps {
-  title: string;
-  value: string | number;
-  icon: React.ReactNode;
-  color: 'blue' | 'green' | 'red' | 'purple';
-}
-
-const StatCard: React.FC<StatCardProps> = ({ title, value, icon, color }) => {
-  const colorClasses = {
-    blue: 'bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 border-blue-200 dark:border-blue-800',
-    green: 'bg-green-50 dark:bg-green-900/20 text-green-600 dark:text-green-400 border-green-200 dark:border-green-800',
-    red: 'bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 border-red-200 dark:border-red-800',
-    purple: 'bg-purple-50 dark:bg-purple-900/20 text-purple-600 dark:text-purple-400 border-purple-200 dark:border-purple-800',
-  };
-
-  return (
-    <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 p-6">
-      <div className="flex items-center justify-between mb-2">
-        <div className={`p-2 rounded-lg ${colorClasses[color]} border`}>
-          {icon}
-        </div>
-      </div>
-      <p className="text-sm text-slate-600 dark:text-slate-400 mb-1">{title}</p>
-      <p className="text-2xl font-bold text-slate-900 dark:text-white">{value}</p>
-    </div>
-  );
-};
-
-interface SyncStatusDashboardProps {
-  onClose: () => void;
-}
-
-const SyncStatusDashboard: React.FC<SyncStatusDashboardProps> = ({ onClose }) => {
-  // Mock sync history data
-  const syncHistory = useMemo(() => [
-    { id: '1', channel: 'Booking.com', type: 'inventory', status: 'success', duration: 2.3, timestamp: '2026-07-19T11:00:00Z', records: 45 },
-    { id: '2', channel: 'Booking.com', type: 'rates', status: 'success', duration: 1.8, timestamp: '2026-07-19T11:00:00Z', records: 12 },
-    { id: '3', channel: 'Expedia', type: 'inventory', status: 'success', duration: 3.1, timestamp: '2026-07-19T10:30:00Z', records: 38 },
-    { id: '4', channel: 'Airbnb', type: 'inventory', status: 'failed', duration: 5.2, timestamp: '2026-07-19T09:00:00Z', records: 0, error: 'API rate limit exceeded' },
-    { id: '5', channel: 'Booking.com', type: 'bookings', status: 'success', duration: 1.5, timestamp: '2026-07-19T08:30:00Z', records: 8 },
-  ], []);
-
-  const syncStats = useMemo(() => ({
-    totalSyncs: syncHistory.length,
-    successful: syncHistory.filter(s => s.status === 'success').length,
-    failed: syncHistory.filter(s => s.status === 'failed').length,
-    avgDuration: syncHistory.reduce((sum, s) => sum + s.duration, 0) / syncHistory.length
-  }), [syncHistory]);
-
-  return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-2xl font-bold text-slate-900 dark:text-white">Sync Status Dashboard</h2>
-          <p className="text-slate-600 dark:text-slate-400">Real-time synchronization monitoring</p>
-        </div>
-        <button
-          onClick={onClose}
-          className="px-4 py-2 border border-slate-300 dark:border-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700 rounded-lg text-sm font-medium transition-colors text-slate-700 dark:text-slate-300"
-        >
-          Back to Channels
-        </button>
-      </div>
-
-      {/* Stats Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <StatCard title="Total Syncs" value={syncStats.totalSyncs} icon={<Activity className="w-5 h-5" />} color="blue" />
-        <StatCard title="Successful" value={syncStats.successful} icon={<CheckCircle2 className="w-5 h-5" />} color="green" />
-        <StatCard title="Failed" value={syncStats.failed} icon={<XCircle className="w-5 h-5" />} color="red" />
-        <StatCard title="Avg Duration" value={`${syncStats.avgDuration.toFixed(1)}s`} icon={<Clock className="w-5 h-5" />} color="purple" />
-      </div>
-
-      {/* Sync History Table */}
-      <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 overflow-hidden">
-        <div className="p-6 border-b border-slate-200 dark:border-slate-700">
-          <h3 className="text-lg font-semibold text-slate-900 dark:text-white">Recent Sync Activity</h3>
-        </div>
-        <table className="w-full">
-          <thead className="bg-slate-50 dark:bg-slate-700/50 border-b border-slate-200 dark:border-slate-700">
-            <tr>
-              <th className="px-4 py-3 text-left text-xs font-semibold text-slate-600 dark:text-slate-400 uppercase tracking-wider">
-                Channel
-              </th>
-              <th className="px-4 py-3 text-left text-xs font-semibold text-slate-600 dark:text-slate-400 uppercase tracking-wider">
-                Type
-              </th>
-              <th className="px-4 py-3 text-left text-xs font-semibold text-slate-600 dark:text-slate-400 uppercase tracking-wider">
-                Status
-              </th>
-              <th className="px-4 py-3 text-left text-xs font-semibold text-slate-600 dark:text-slate-400 uppercase tracking-wider">
-                Duration
-              </th>
-              <th className="px-4 py-3 text-left text-xs font-semibold text-slate-600 dark:text-slate-400 uppercase tracking-wider">
-                Records
-              </th>
-              <th className="px-4 py-3 text-left text-xs font-semibold text-slate-600 dark:text-slate-400 uppercase tracking-wider">
-                Timestamp
-              </th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-slate-200 dark:divide-slate-700">
-            {syncHistory.map((sync) => (
-              <tr key={sync.id} className="hover:bg-slate-50 dark:hover:bg-slate-700/50 transition-colors">
-                <td className="px-4 py-4 font-medium text-slate-900 dark:text-white">{sync.channel}</td>
-                <td className="px-4 py-4">
-                  <span className="px-2 py-1 rounded-full text-xs font-medium bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-300 capitalize">
-                    {sync.type}
-                  </span>
-                </td>
-                <td className="px-4 py-4">
-                  {sync.status === 'success' ? (
-                    <span className="inline-flex items-center gap-1 text-sm font-medium text-green-600 dark:text-green-400">
-                      <CheckCircle2 className="w-4 h-4" />
-                      Success
-                    </span>
-                  ) : (
-                    <span className="inline-flex items-center gap-1 text-sm font-medium text-red-600 dark:text-red-400">
-                      <XCircle className="w-4 h-4" />
-                      Failed
-                    </span>
-                  )}
-                </td>
-                <td className="px-4 py-4 text-sm text-slate-600 dark:text-slate-400">{sync.duration}s</td>
-                <td className="px-4 py-4 text-sm text-slate-600 dark:text-slate-400">{sync.records}</td>
-                <td className="px-4 py-4 text-sm text-slate-600 dark:text-slate-400">
-                  {new Date(sync.timestamp).toLocaleString()}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
-};
-
-export default ChannelManager;
+function MappingModal({channel,roomTypes,busy,onClose,onAdd,onEdit,onDelete}:{channel:Channel;roomTypes:RoomType[];busy:Set<string>;onClose:()=>void;onAdd:()=>void;onEdit:(m:Mapping)=>void;onDelete:(m:Mapping)=>void}) { return <Modal title={`Room Mappings — ${channel.channel_name}`} onClose={onClose} footer={<><button className={button.secondary} onClick={onClose}>Close</button><button className={button.primary} onClick={onAdd}><Plus className="w-4 h-4"/>Add Mapping</button></>}><div className="space-y-3">{channel.room_mappings.map(m=><div key={m.id} className="p-4 rounded-lg border bg-slate-50 dark:bg-slate-700/50 flex justify-between"><div><p className="font-medium">{roomTypes.find(r=>r.id===m.our_room_type_id)?.name||m.our_room_type_id} → {m.channel_room_name||m.channel_room_code}</p><p className="text-sm text-slate-500">{m.channel_room_code} · Rate ×{m.rate_multiplier} · Inventory ×{m.inventory_multiplier}</p></div><div><IconButton title="Edit" onClick={()=>onEdit(m)}><Edit className="w-4 h-4 text-blue-600"/></IconButton><IconButton title="Delete" onClick={()=>onDelete(m)}><Trash2 className={`w-4 h-4 text-red-600 ${busy.has(m.id)?'opacity-50':''}`}/></IconButton></div></div>)}{!channel.room_mappings.length&&<p className="text-center py-8 text-slate-500">No room mappings configured</p>}</div></Modal>; }
+function MappingForm({mapping,roomTypes,onCancel,onSave,saving}:{mapping:Mapping|null;roomTypes:RoomType[];onCancel:()=>void;onSave:(f:any)=>void;saving:boolean}) { const [f,setF]=useState({our_room_type_id:mapping?.our_room_type_id||'',channel_room_code:mapping?.channel_room_code||'',channel_room_name:mapping?.channel_room_name||'',quality_score:mapping?.quality_score||1,rate_multiplier:mapping?.rate_multiplier||1,inventory_multiplier:mapping?.inventory_multiplier||1,active:mapping?.active??true,sync_enabled:mapping?.sync_enabled??true}); const set=(k:string,v:any)=>setF(p=>({...p,[k]:v})); return <Modal title={mapping?'Edit Mapping':'Add Mapping'} onClose={onCancel} footer={<><button className={button.secondary} onClick={onCancel}>Cancel</button><button className={button.primary} disabled={saving||!f.our_room_type_id||!f.channel_room_code} onClick={()=>onSave(f)}>Save</button></>}><div className="space-y-4"><Field label="Our Room Type"><select className={fieldClass} value={f.our_room_type_id} onChange={e=>set('our_room_type_id',e.target.value)}><option value="">Select…</option>{roomTypes.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select></Field><div className="grid grid-cols-2 gap-4"><Field label="Channel Room Code"><input className={fieldClass} value={f.channel_room_code} onChange={e=>set('channel_room_code',e.target.value)}/></Field><Field label="Channel Room Name"><input className={fieldClass} value={f.channel_room_name} onChange={e=>set('channel_room_name',e.target.value)}/></Field></div><div className="grid grid-cols-3 gap-4"><Field label="Quality"><input type="number" step="0.01" className={fieldClass} value={f.quality_score} onChange={e=>set('quality_score',Number(e.target.value))}/></Field><Field label="Rate multiplier"><input type="number" step="0.01" className={fieldClass} value={f.rate_multiplier} onChange={e=>set('rate_multiplier',Number(e.target.value))}/></Field><Field label="Inventory multiplier"><input type="number" step="0.01" className={fieldClass} value={f.inventory_multiplier} onChange={e=>set('inventory_multiplier',Number(e.target.value))}/></Field></div><Toggle label="Sync enabled" checked={f.sync_enabled} onChange={v=>set('sync_enabled',v)}/></div></Modal>; }
+function HistoryModal({logs,channels,onClose}:{logs:SyncLog[];channels:Channel[];onClose:()=>void}) { return <Modal title="Recent Sync Activity" onClose={onClose} footer={<button className={button.secondary} onClick={onClose}>Close</button>}><div className="overflow-x-auto"><table className="w-full text-sm"><thead><tr className="border-b text-left text-slate-500"><th className="py-2">Channel</th><th>Type</th><th>Status</th><th>Records</th><th>Started</th></tr></thead><tbody>{logs.map(l=><tr key={l.id} className="border-b"><td className="py-3">{channels.find(c=>c.id===l.channel_id)?.channel_name||'Unknown'}</td><td>{l.sync_type}</td><td><Badge tone={statusTone[l.status]||'neutral'}>{l.status}</Badge></td><td>{l.records_successful}/{l.records_processed}</td><td>{new Date(l.sync_start).toLocaleString()}</td></tr>)}</tbody></table>{!logs.length&&<p className="text-center py-8 text-slate-500">No sync activity</p>}</div></Modal>; }

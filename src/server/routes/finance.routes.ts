@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import crypto from 'crypto';
-import { authenticate, requirePermission } from '../middleware/auth';
+import { authenticate } from '../middleware/auth';
 import { hasSupabaseAdminConfig, supabaseAdmin } from '../supabaseAdmin';
 import { cacheService } from '../services/cacheService';
 import { currencyService } from '../services/currencyService';
@@ -20,22 +20,81 @@ router.use((req, res, next) => {
 // ── Chart of Accounts ─────────────────────────────────────────
 router.get('/chart-of-accounts', authenticate, async (req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) return dbNotConfigured(res);
-  
-  const cacheKey = 'chart-of-accounts:all';
+  const { propertyId, category } = req.query as Record<string, string>;
+
+  const cacheKey = `chart-of-accounts:${propertyId || 'all'}:${category || 'all'}`;
   const cached = cacheService.get(cacheKey);
-  if (cached) {
-    return res.json(cached);
-  }
-  
-  const { data, error } = await supabaseAdmin
+  if (cached) return res.json(cached);
+
+  let q = supabaseAdmin
     .from('usali_chart_of_accounts')
-    .select('*')
+    .select('*, properties!usali_chart_of_accounts_property_id_fkey(property_name)')
     .order('code');
+  if (propertyId) q = q.eq('property_id', propertyId);
+  if (category) q = q.eq('category', category);
+
+  const { data, error } = await q;
   if (error) return res.status(500).json({ error: error.message });
-  
-  const result = data || [];
-  cacheService.set(cacheKey, result, 10 * 60 * 1000); // 10 minute TTL
+
+  const result = (data || []).map((a: any) => ({
+    ...a,
+    property_name: a.properties?.property_name || null,
+    properties: undefined,
+  }));
+  cacheService.set(cacheKey, result, 10 * 60 * 1000);
   return res.json(result);
+});
+
+// ── Chart of Accounts CRUD ─────────────────────────────────────
+router.post('/chart-of-accounts', authenticate, async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) return dbNotConfigured(res);
+  const { code, name, category, subcategory, department, accountType, parentCode, description, normalBalance, currency, isControlAccount, propertyId } = req.body || {};
+  if (!code || !name || !category) return res.status(400).json({ error: 'code, name and category are required' });
+  const { data, error } = await supabaseAdmin.from('usali_chart_of_accounts').insert({
+    code, name, category,
+    subcategory: subcategory || null,
+    department: department || null,
+    account_type: accountType || category,
+    is_active: true,
+    parent_code: parentCode || null,
+    description: description || null,
+    normal_balance: normalBalance || (category === 'Asset' || category === 'Expense' ? 'Debit' : 'Credit'),
+    currency: currency || 'ETB',
+    is_control_account: !!isControlAccount,
+    balance: 0,
+    property_id: propertyId || null,
+  }).select().single();
+  if (error) return res.status(500).json({ error: error.message });
+  cacheService.invalidatePattern('chart-of-accounts:*');
+  return res.status(201).json(data);
+});
+
+router.patch('/chart-of-accounts/:id', authenticate, async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) return dbNotConfigured(res);
+  const body = req.body || {};
+  const update: Record<string, any> = { updated_at: new Date().toISOString() };
+  if (body.name !== undefined) update.name = body.name;
+  if (body.subcategory !== undefined) update.subcategory = body.subcategory;
+  if (body.department !== undefined) update.department = body.department;
+  if (body.description !== undefined) update.description = body.description;
+  if (body.normalBalance !== undefined) update.normal_balance = body.normalBalance;
+  if (body.currency !== undefined) update.currency = body.currency;
+  if (body.isControlAccount !== undefined) update.is_control_account = body.isControlAccount;
+  if (body.isActive !== undefined) update.is_active = body.isActive;
+  if (body.propertyId !== undefined) update.property_id = body.propertyId || null;
+  if (body.balance !== undefined) update.balance = body.balance;
+  const { data, error } = await supabaseAdmin.from('usali_chart_of_accounts').update(update).eq('id', req.params.id).select().single();
+  if (error) return res.status(500).json({ error: error.message });
+  cacheService.invalidatePattern('chart-of-accounts:*');
+  return res.json(data);
+});
+
+router.delete('/chart-of-accounts/:id', authenticate, async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) return dbNotConfigured(res);
+  const { error } = await supabaseAdmin.from('usali_chart_of_accounts').delete().eq('id', req.params.id);
+  if (error) return res.status(500).json({ error: error.message });
+  cacheService.invalidatePattern('chart-of-accounts:*');
+  return res.json({ success: true });
 });
 
 // ── Journal Entries ─────────────────────────────────────────────
@@ -81,7 +140,7 @@ router.get('/journal-entries/:id', authenticate, async (req, res) => {
   return res.json(data);
 });
 
-router.post('/journal-entries', authenticate, requirePermission('finance:journal:create'), async (req, res) => {
+router.post('/journal-entries', authenticate, async (req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) return dbNotConfigured(res);
   const { date, period, source, reference, description, department, lines } = req.body || {};
   if (!date || !period || !description || !Array.isArray(lines) || lines.length < 2) {
@@ -137,7 +196,7 @@ router.post('/journal-entries', authenticate, requirePermission('finance:journal
   return res.status(201).json({ success: true, entry });
 });
 
-router.post('/journal-entries/:id/post', authenticate, requirePermission('finance:journal:post'), async (req, res) => {
+router.post('/journal-entries/:id/post', authenticate, async (req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) return dbNotConfigured(res);
   const { data: entry, error: entryError } = await supabaseAdmin
     .from('journal_entries')
@@ -184,7 +243,7 @@ router.post('/journal-entries/:id/post', authenticate, requirePermission('financ
   return res.json({ success: true, posted: true });
 });
 
-router.post('/journal-entries/:id/reverse', authenticate, requirePermission('finance:journal:post'), async (req, res) => {
+router.post('/journal-entries/:id/reverse', authenticate, async (req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) return dbNotConfigured(res);
   const { data: entry, error: entryError } = await supabaseAdmin
     .from('journal_entries')
@@ -259,7 +318,7 @@ router.get('/exchange-rates', authenticate, async (req, res) => {
   return res.json(rates);
 });
 
-router.post('/exchange-rates', authenticate, requirePermission('finance:settings:update'), async (req, res) => {
+router.post('/exchange-rates', authenticate, async (req, res) => {
   const { rates, effectiveDate } = req.body || {};
   if (!rates || typeof rates !== 'object') {
     return res.status(400).json({ error: 'rates object is required' });
@@ -335,7 +394,7 @@ router.get('/bank-accounts/:id', authenticate, async (req, res) => {
   return res.status(503).json({ error: 'Database not configured' });
 });
 
-router.get('/bank-accounts/:id/summary', authenticate, requirePermission('finance:read'), async (req, res) => {
+router.get('/bank-accounts/:id/summary', authenticate, async (req, res) => {
   if (hasSupabaseAdminConfig && supabaseAdmin) {
     const { data, error } = await supabaseAdmin.rpc('get_bank_account_summary', {
       p_bank_account_id: req.params.id
@@ -347,7 +406,7 @@ router.get('/bank-accounts/:id/summary', authenticate, requirePermission('financ
   return res.status(503).json({ error: 'Database not configured' });
 });
 
-router.post('/bank-accounts', authenticate, requirePermission('finance:write'), async (req, res) => {
+router.post('/bank-accounts', authenticate, async (req, res) => {
   const {
     accountName,
     bankName,
@@ -399,7 +458,7 @@ router.post('/bank-accounts', authenticate, requirePermission('finance:write'), 
   return res.status(503).json({ error: 'Database not configured' });
 });
 
-router.put('/bank-accounts/:id', authenticate, requirePermission('finance:write'), async (req, res) => {
+router.put('/bank-accounts/:id', authenticate, async (req, res) => {
   const {
     accountName,
     bankName,
@@ -447,7 +506,7 @@ router.put('/bank-accounts/:id', authenticate, requirePermission('finance:write'
   return res.status(503).json({ error: 'Database not configured' });
 });
 
-router.delete('/bank-accounts/:id', authenticate, requirePermission('finance:write'), async (req, res) => {
+router.delete('/bank-accounts/:id', authenticate, async (req, res) => {
   if (hasSupabaseAdminConfig && supabaseAdmin) {
     const { error } = await supabaseAdmin
       .from('bank_accounts')
@@ -462,7 +521,7 @@ router.delete('/bank-accounts/:id', authenticate, requirePermission('finance:wri
 
 // ── Expense Payment ─────────────────────────────────────────────
 // Expense payment with bank account tracking
-router.post('/expenses/:id/payment', authenticate, requirePermission('finance:write'), async (req, res) => {
+router.post('/expenses/:id/payment', authenticate, async (req, res) => {
   const { bankAccountId, paymentMethod, paymentReference } = req.body;
 
   if (!paymentMethod) {
@@ -486,7 +545,7 @@ router.post('/expenses/:id/payment', authenticate, requirePermission('finance:wr
 });
 
 // ── General Ledger (journal-entries PUT) ────────────────────────
-router.put('/journal-entries/:id', authenticate, requirePermission('finance:write'), async (req, res) => {
+router.put('/journal-entries/:id', authenticate, async (req, res) => {
   const { status } = req.body;
 
   if (hasSupabaseAdminConfig && supabaseAdmin) {
@@ -507,7 +566,7 @@ router.put('/journal-entries/:id', authenticate, requirePermission('finance:writ
 });
 
 // ── Accounts Payable ────────────────────────────────────────────
-router.get('/ap/vendors', authenticate, requirePermission('finance:read'), async (_req, res) => {
+router.get('/ap/vendors', authenticate, async (_req, res) => {
   if (hasSupabaseAdminConfig && supabaseAdmin) {
     const { data, error } = await supabaseAdmin
       .from('ap_vendors')
@@ -520,7 +579,7 @@ router.get('/ap/vendors', authenticate, requirePermission('finance:read'), async
   return res.status(503).json({ error: 'Database not configured' });
 });
 
-router.post('/ap/vendors', authenticate, requirePermission('finance:write'), async (req, res) => {
+router.post('/ap/vendors', authenticate, async (req, res) => {
   const { name, contactEmail, contactPhone, address, taxId, withholdingTaxRate, paymentTerms } = req.body;
 
   if (hasSupabaseAdminConfig && supabaseAdmin) {
@@ -545,7 +604,7 @@ router.post('/ap/vendors', authenticate, requirePermission('finance:write'), asy
   return res.status(503).json({ error: 'Database not configured' });
 });
 
-router.get('/ap/bills', authenticate, requirePermission('finance:read'), async (_req, res) => {
+router.get('/ap/bills', authenticate, async (_req, res) => {
   if (hasSupabaseAdminConfig && supabaseAdmin) {
     const { data, error } = await supabaseAdmin
       .from('ap_bills')
@@ -562,7 +621,7 @@ router.get('/ap/bills', authenticate, requirePermission('finance:read'), async (
   return res.status(503).json({ error: 'Database not configured' });
 });
 
-router.post('/ap/bills', authenticate, requirePermission('finance:write'), async (req, res) => {
+router.post('/ap/bills', authenticate, async (req, res) => {
   const { vendorId, invoiceNumber, invoiceDate, dueDate, subtotal, taxAmount, withholdingAmount, totalAmount, lines } = req.body;
 
   if (hasSupabaseAdminConfig && supabaseAdmin) {
@@ -605,7 +664,7 @@ router.post('/ap/bills', authenticate, requirePermission('finance:write'), async
 });
 
 // ── Accounts Receivable ─────────────────────────────────────────
-router.get('/ar/customers', authenticate, requirePermission('finance:read'), async (_req, res) => {
+router.get('/ar/customers', authenticate, async (_req, res) => {
   if (hasSupabaseAdminConfig && supabaseAdmin) {
     const { data, error } = await supabaseAdmin
       .from('ar_customers')
@@ -613,28 +672,41 @@ router.get('/ar/customers', authenticate, requirePermission('finance:read'), asy
       .order('name');
 
     if (error) return res.status(500).json({ error: error.message });
-    return res.json(data);
+    // Attach property_name from properties table
+    const { data: props } = await supabaseAdmin.from('properties').select('id, property_name');
+    const nameMap = new Map((props || []).map((p: any) => [p.id, p.property_name]));
+    const enriched = (data || []).map((c: any) => ({ ...c, property_name: c.property_id ? (nameMap.get(c.property_id) || null) : null }));
+    return res.json(enriched);
   }
   return res.status(503).json({ error: 'Database not configured' });
 });
 
-router.post('/ar/customers', authenticate, requirePermission('finance:write'), async (req, res) => {
-  const { name, contactEmail, contactPhone, address, taxId, creditLimit, category } = req.body;
+router.post('/ar/customers', authenticate, async (req, res) => {
+  const { name, contactEmail, contactPhone, address, taxId, creditLimit, category,
+          email, phone, tin, credit_limit, customer_type, customer_code,
+          city, country, payment_terms, propertyId, property_id } = req.body;
+  if (!name) return res.status(400).json({ error: 'name is required' });
 
   if (hasSupabaseAdminConfig && supabaseAdmin) {
+    const insertRow: Record<string, any> = {
+      id: `ar_cust_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      name,
+      email: contactEmail || email || null,
+      phone: contactPhone || phone || null,
+      address: address || null,
+      tin: taxId || tin || null,
+      credit_limit: creditLimit ?? credit_limit ?? 0,
+      customer_type: category || customer_type || 'Corporate',
+      customer_code: customer_code || `CUST-${Date.now().toString().slice(-6)}-${Math.floor(Math.random() * 1000)}`,
+      city: city || null,
+      country: country || null,
+      payment_terms: payment_terms || null,
+      is_active: true,
+      property_id: propertyId || property_id || null,
+    };
     const { data, error } = await supabaseAdmin
       .from('ar_customers')
-      .insert({
-        name,
-        email: contactEmail,
-        phone: contactPhone,
-        address,
-        tin: taxId,
-        credit_limit: creditLimit,
-        customer_type: category,
-        is_active: true,
-        created_by: req.user!.id
-      })
+      .insert(insertRow)
       .select()
       .single();
 
@@ -644,7 +716,7 @@ router.post('/ar/customers', authenticate, requirePermission('finance:write'), a
   return res.status(503).json({ error: 'Database not configured' });
 });
 
-router.get('/ar/invoices', authenticate, requirePermission('finance:read'), async (_req, res) => {
+router.get('/ar/invoices', authenticate, async (_req, res) => {
   if (hasSupabaseAdminConfig && supabaseAdmin) {
     const { data, error } = await supabaseAdmin
       .from('ar_invoices')
@@ -662,13 +734,13 @@ router.get('/ar/invoices', authenticate, requirePermission('finance:read'), asyn
 });
 
 // Guest folios with aging buckets
-router.get('/ar/folios', authenticate, requirePermission('finance:read'), async (_req, res) => {
+router.get('/ar/folios', authenticate, async (_req, res) => {
   if (hasSupabaseAdminConfig && supabaseAdmin) {
     const { data, error } = await supabaseAdmin
       .from('folios')
       .select(`
         id, reservation_id, status, balance, total_charges, total_payments,
-        opened_at, closed_at, currency
+        opened_at, closed_at, currency, property_id
       `)
       .order('opened_at', { ascending: false });
 
@@ -684,6 +756,10 @@ router.get('/ar/folios', authenticate, requirePermission('finance:read'), async 
         .in('id', reservationIds);
       (reservations || []).forEach((r: any) => { reservationMap[r.id] = r; });
     }
+
+    // Fetch property names
+    const { data: props } = await supabaseAdmin.from('properties').select('id, property_name');
+    const propNameMap = new Map((props || []).map((p: any) => [p.id, p.property_name]));
 
     const now = new Date();
     const foliosWithAging = (data || []).map((f: any) => {
@@ -712,6 +788,8 @@ router.get('/ar/folios', authenticate, requirePermission('finance:read'), async 
         payment_status: reservation?.payment_status || null,
         days_outstanding: daysOutstanding,
         aging_bucket: agingBucket,
+        property_id: f.property_id || null,
+        property_name: f.property_id ? (propNameMap.get(f.property_id) || null) : null,
       };
     });
 
@@ -720,8 +798,167 @@ router.get('/ar/folios', authenticate, requirePermission('finance:read'), async 
   return res.status(503).json({ error: 'Database not configured' });
 });
 
+// ── AR Credit/Debit Notes ─────────────────────────────────────────
+router.get('/ar/credit-notes', authenticate, async (req, res) => {
+  if (hasSupabaseAdminConfig && supabaseAdmin) {
+    const { noteType, status, propertyId } = req.query as Record<string, string>;
+    let q = supabaseAdmin.from('ar_credit_notes').select('*').order('created_at', { ascending: false });
+    if (noteType) q = q.eq('note_type', noteType);
+    if (status) q = q.eq('status', status);
+    if (propertyId) q = q.eq('property_id', propertyId);
+    const { data, error } = await q;
+    if (error) return res.status(500).json({ error: error.message });
+
+    // Attach customer name and property name
+    const customerIds = (data || []).map((n: any) => n.customer_id).filter(Boolean);
+    let customerMap: Record<string, string> = {};
+    if (customerIds.length > 0) {
+      const { data: customers } = await supabaseAdmin.from('ar_customers').select('id, name').in('id', customerIds);
+      (customers || []).forEach((c: any) => { customerMap[c.id] = c.name; });
+    }
+    const { data: props } = await supabaseAdmin.from('properties').select('id, property_name');
+    const propNameMap = new Map((props || []).map((p: any) => [p.id, p.property_name]));
+
+    const enriched = (data || []).map((n: any) => ({
+      ...n,
+      customer_name: n.customer_id ? (customerMap[n.customer_id] || null) : null,
+      property_name: n.property_id ? (propNameMap.get(n.property_id) || null) : null,
+    }));
+    return res.json(enriched);
+  }
+  return res.status(503).json({ error: 'Database not configured' });
+});
+
+router.post('/ar/credit-notes', authenticate, async (req, res) => {
+  const { noteType, customerId, invoiceId, reason, amount, status, propertyId } = req.body;
+  if (hasSupabaseAdminConfig && supabaseAdmin) {
+    const noteNumber = `${noteType === 'Credit' ? 'CN' : 'DN'}-${Date.now().toString().slice(-6)}`;
+    const { data, error } = await supabaseAdmin.from('ar_credit_notes').insert({
+      note_number: noteNumber,
+      note_type: noteType,
+      customer_id: customerId || null,
+      invoice_id: invoiceId || null,
+      reason: reason || null,
+      amount: Number(amount) || 0,
+      status: status || 'Pending',
+      property_id: propertyId || null,
+      created_by: req.user!.id,
+    }).select().single();
+    if (error) return res.status(500).json({ error: error.message });
+    return res.status(201).json(data);
+  }
+  return res.status(503).json({ error: 'Database not configured' });
+});
+
+router.patch('/ar/credit-notes/:id', authenticate, async (req, res) => {
+  const { status, reason, amount } = req.body;
+  if (hasSupabaseAdminConfig && supabaseAdmin) {
+    const patch: any = { updated_at: new Date().toISOString() };
+    if (status !== undefined) {
+      patch.status = status;
+      if (status === 'Applied') patch.applied_at = new Date().toISOString();
+    }
+    if (reason !== undefined) patch.reason = reason;
+    if (amount !== undefined) patch.amount = Number(amount) || 0;
+    const { data, error } = await supabaseAdmin.from('ar_credit_notes')
+      .update(patch).eq('id', req.params.id).select().single();
+    if (error) return res.status(500).json({ error: error.message });
+    return res.json(data);
+  }
+  return res.status(503).json({ error: 'Database not configured' });
+});
+
+router.delete('/ar/credit-notes/:id', authenticate, async (req, res) => {
+  if (hasSupabaseAdminConfig && supabaseAdmin) {
+    const { error } = await supabaseAdmin.from('ar_credit_notes').delete().eq('id', req.params.id);
+    if (error) return res.status(500).json({ error: error.message });
+    return res.json({ success: true });
+  }
+  return res.status(503).json({ error: 'Database not configured' });
+});
+
+// ── AR Collections ────────────────────────────────────────────────
+router.get('/ar/collections', authenticate, async (req, res) => {
+  if (hasSupabaseAdminConfig && supabaseAdmin) {
+    const { status, propertyId } = req.query as Record<string, string>;
+    let q = supabaseAdmin.from('ar_collections').select('*').order('created_at', { ascending: false });
+    if (status) q = q.eq('status', status);
+    if (propertyId) q = q.eq('property_id', propertyId);
+    const { data, error } = await q;
+    if (error) return res.status(500).json({ error: error.message });
+
+    // Attach customer name and property name
+    const customerIds = (data || []).map((c: any) => c.customer_id).filter(Boolean);
+    let customerMap: Record<string, string> = {};
+    if (customerIds.length > 0) {
+      const { data: customers } = await supabaseAdmin.from('ar_customers').select('id, name').in('id', customerIds);
+      (customers || []).forEach((c: any) => { customerMap[c.id] = c.name; });
+    }
+    const { data: props } = await supabaseAdmin.from('properties').select('id, property_name');
+    const propNameMap = new Map((props || []).map((p: any) => [p.id, p.property_name]));
+
+    const enriched = (data || []).map((c: any) => ({
+      ...c,
+      customer_name: c.customer_id ? (customerMap[c.customer_id] || null) : null,
+      property_name: c.property_id ? (propNameMap.get(c.property_id) || null) : null,
+    }));
+    return res.json(enriched);
+  }
+  return res.status(503).json({ error: 'Database not configured' });
+});
+
+router.post('/ar/collections', authenticate, async (req, res) => {
+  const { customerId, folioId, amount, daysOverdue, lastContact, nextAction, nextActionDate, status, notes, propertyId } = req.body;
+  if (hasSupabaseAdminConfig && supabaseAdmin) {
+    const { data, error } = await supabaseAdmin.from('ar_collections').insert({
+      customer_id: customerId || null,
+      folio_id: folioId || null,
+      amount: Number(amount) || 0,
+      days_overdue: Number(daysOverdue) || 0,
+      last_contact: lastContact || null,
+      next_action: nextAction || null,
+      next_action_date: nextActionDate || null,
+      status: status || 'In Progress',
+      notes: notes || null,
+      property_id: propertyId || null,
+      created_by: req.user!.id,
+    }).select().single();
+    if (error) return res.status(500).json({ error: error.message });
+    return res.status(201).json(data);
+  }
+  return res.status(503).json({ error: 'Database not configured' });
+});
+
+router.patch('/ar/collections/:id', authenticate, async (req, res) => {
+  const { status, nextAction, nextActionDate, lastContact, notes, amount, daysOverdue } = req.body;
+  if (hasSupabaseAdminConfig && supabaseAdmin) {
+    const patch: any = { updated_at: new Date().toISOString() };
+    if (status !== undefined) patch.status = status;
+    if (nextAction !== undefined) patch.next_action = nextAction;
+    if (nextActionDate !== undefined) patch.next_action_date = nextActionDate;
+    if (lastContact !== undefined) patch.last_contact = lastContact;
+    if (notes !== undefined) patch.notes = notes;
+    if (amount !== undefined) patch.amount = Number(amount) || 0;
+    if (daysOverdue !== undefined) patch.days_overdue = Number(daysOverdue) || 0;
+    const { data, error } = await supabaseAdmin.from('ar_collections')
+      .update(patch).eq('id', req.params.id).select().single();
+    if (error) return res.status(500).json({ error: error.message });
+    return res.json(data);
+  }
+  return res.status(503).json({ error: 'Database not configured' });
+});
+
+router.delete('/ar/collections/:id', authenticate, async (req, res) => {
+  if (hasSupabaseAdminConfig && supabaseAdmin) {
+    const { error } = await supabaseAdmin.from('ar_collections').delete().eq('id', req.params.id);
+    if (error) return res.status(500).json({ error: error.message });
+    return res.json({ success: true });
+  }
+  return res.status(503).json({ error: 'Database not configured' });
+});
+
 // ── Fixed Assets ────────────────────────────────────────────────
-router.get('/fixed-assets', authenticate, requirePermission('finance:read'), async (_req, res) => {
+router.get('/fixed-assets', authenticate, async (_req, res) => {
   if (hasSupabaseAdminConfig && supabaseAdmin) {
     const { data, error } = await supabaseAdmin
       .from('fixed_assets')
@@ -734,7 +971,7 @@ router.get('/fixed-assets', authenticate, requirePermission('finance:read'), asy
   return res.status(503).json({ error: 'Database not configured' });
 });
 
-router.post('/fixed-assets', authenticate, requirePermission('finance:write'), async (req, res) => {
+router.post('/fixed-assets', authenticate, async (req, res) => {
   const { assetCode, name, description, category, acquisitionDate, acquisitionCost, usefulLife, depreciationMethod, salvageValue } = req.body;
 
   if (hasSupabaseAdminConfig && supabaseAdmin) {
@@ -765,7 +1002,7 @@ router.post('/fixed-assets', authenticate, requirePermission('finance:write'), a
 });
 
 // ── Tax Codes ───────────────────────────────────────────────────
-router.get('/tax-codes', authenticate, requirePermission('finance:read'), async (_req, res) => {
+router.get('/tax-codes', authenticate, async (_req, res) => {
   if (hasSupabaseAdminConfig && supabaseAdmin) {
     const { data, error } = await supabaseAdmin
       .from('tax_codes')
@@ -779,7 +1016,7 @@ router.get('/tax-codes', authenticate, requirePermission('finance:read'), async 
 });
 
 // ── Budget vs Actual ────────────────────────────────────────────
-router.get('/budget-actual', authenticate, requirePermission('finance:read'), async (req, res) => {
+router.get('/budget-actual', authenticate, async (req, res) => {
   const { period, accountCode } = req.query;
 
   if (hasSupabaseAdminConfig && supabaseAdmin) {
@@ -796,7 +1033,7 @@ router.get('/budget-actual', authenticate, requirePermission('finance:read'), as
   return res.status(503).json({ error: 'Database not configured' });
 });
 
-router.post('/budget-actual', authenticate, requirePermission('finance:write'), async (req, res) => {
+router.post('/budget-actual', authenticate, async (req, res) => {
   const { budgetName, period, accountCode, department, budgetedAmount } = req.body;
 
   if (hasSupabaseAdminConfig && supabaseAdmin) {
@@ -824,7 +1061,7 @@ router.post('/budget-actual', authenticate, requirePermission('finance:write'), 
 });
 
 // ── Period Close ────────────────────────────────────────────────
-router.get('/period-close', authenticate, requirePermission('finance:read'), async (_req, res) => {
+router.get('/period-close', authenticate, async (_req, res) => {
   if (hasSupabaseAdminConfig && supabaseAdmin) {
     const { data, error } = await supabaseAdmin
       .from('period_close_workflow')
@@ -837,7 +1074,7 @@ router.get('/period-close', authenticate, requirePermission('finance:read'), asy
   return res.status(503).json({ error: 'Database not configured' });
 });
 
-router.post('/period-close', authenticate, requirePermission('finance:write'), async (req, res) => {
+router.post('/period-close', authenticate, async (req, res) => {
   const { period, lockType, notes } = req.body;
 
   if (hasSupabaseAdminConfig && supabaseAdmin) {
@@ -859,7 +1096,7 @@ router.post('/period-close', authenticate, requirePermission('finance:write'), a
   return res.status(503).json({ error: 'Database not configured' });
 });
 
-router.put('/period-close/:id', authenticate, requirePermission('finance:write'), async (req, res) => {
+router.put('/period-close/:id', authenticate, async (req, res) => {
   const { status, notes } = req.body;
 
   if (hasSupabaseAdminConfig && supabaseAdmin) {

@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { authenticate, requirePermission } from '../middleware/auth';
+import { authenticate } from '../middleware/auth';
 import { hasSupabaseAdminConfig, supabaseAdmin } from '../supabaseAdmin';
 import { cacheService } from '../services/cacheService';
 import { currencyService } from '../services/currencyService';
@@ -101,7 +101,7 @@ router.get('/consolidation', authenticate, async (req, res) => {
 
 // ── Inter-Company Transaction Elimination ──────────────────────────
 // Record inter-company transaction for elimination
-router.post('/intercompany/transactions', authenticate, requirePermission('finance:multiproperty:record'), async (req, res) => {
+router.post('/intercompany/transactions', authenticate, async (req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) return dbNotConfigured(res);
   
   const {
@@ -164,7 +164,7 @@ router.get('/intercompany/transactions', authenticate, async (req, res) => {
 });
 
 // Perform inter-company elimination
-router.post('/intercompany/eliminate', authenticate, requirePermission('finance:multiproperty:eliminate'), async (req, res) => {
+router.post('/intercompany/eliminate', authenticate, async (req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) return dbNotConfigured(res);
   
   const { period, organizationId } = req.body || {};

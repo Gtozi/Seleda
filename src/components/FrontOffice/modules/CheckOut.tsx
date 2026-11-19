@@ -51,8 +51,17 @@ import {
   printInvoice,
   printGroupInvoice,
   downloadInvoiceCsv,
+  processGroupSettlement,
+  markStepForGroup,
+  expressCheckOutGroup,
+  crossCheckFolioForAction,
+  crossCheckFolioForGroup,
+  autoCheckBillSteps,
   type CheckOutRequest,
   type FolioDetails,
+  type GroupBatchResult,
+  type BillAction,
+  type FolioCrossCheckResult,
 } from '../../../services/checkOutService';
 import { supabase } from '../../../lib/supabase';
 
@@ -123,6 +132,15 @@ const CheckOut = ({ onNavigateToFolio }: CheckOutProps) => {
   const [expandedGroupIds, setExpandedGroupIds] = useState<Set<string>>(new Set());
   const [groupActionLoading, setGroupActionLoading] = useState(false);
 
+  // Group-level settlement modal state
+  const [groupSettlement, setGroupSettlement] = useState<{
+    group: any;
+    members: CheckOutRequest[];
+  } | null>(null);
+  const [groupSettlementAmount, setGroupSettlementAmount] = useState(0);
+  const [groupSettlementMethod, setGroupSettlementMethod] = useState<PaymentMethod>('credit_card');
+  const [groupSettlementReference, setGroupSettlementReference] = useState('');
+
   // Fetch check-outs from database
   const fetchCheckOuts = useCallback(async () => {
     setLoading(true);
@@ -188,6 +206,7 @@ const CheckOut = ({ onNavigateToFolio }: CheckOutProps) => {
           const matching = checkOuts.find((co) => co.reservationId === res.id);
           if (matching) return matching;
           // Fallback: construct a minimal CheckOutRequest
+          const fallbackBalance = Math.max(0, Number(res.total_amount || 0) - Number(res.deposit_amount || 0));
           return {
             id: `CO-${res.id}`,
             guestName: res.guest_name,
@@ -201,11 +220,12 @@ const CheckOut = ({ onNavigateToFolio }: CheckOutProps) => {
             status: res.status === 'CheckedOut' ? 'completed' as const : 'pending' as const,
             folioId: null,
             folioBalance: 0,
-            balance: Math.max(0, Number(res.total_amount || 0) - Number(res.deposit_amount || 0)),
+            balance: fallbackBalance,
             lateCheckoutRequested: Boolean(res.late_check_out_requested),
-            invoiceReviewed: false,
-            settlementProcessed: false,
-            refundProcessed: false,
+            // Auto-check rules: invoice & settlement when balance === 0, refund when balance >= 0
+            invoiceReviewed: fallbackBalance === 0,
+            settlementProcessed: fallbackBalance === 0,
+            refundProcessed: fallbackBalance >= 0,
             feedbackCollected: false,
             folioClosed: false,
             groupBookingId: res.group_booking_id || null,
@@ -253,6 +273,30 @@ const CheckOut = ({ onNavigateToFolio }: CheckOutProps) => {
     );
   };
 
+  // ── Folio cross-check helper ────────────────────────────────────────────
+  // Before any bill-related action, verify the folio state against the DB.
+  // If routing is needed and onNavigateToFolio is available, route the user
+  // to the Folio & Billing module and return null. Otherwise return the
+  // fresh cross-check result so the caller can proceed (and optionally use
+  // the live folio details).
+  const crossCheckAndRoute = async (
+    checkOut: CheckOutRequest,
+    action: BillAction
+  ): Promise<FolioCrossCheckResult | null> => {
+    const check = await crossCheckFolioForAction(checkOut.reservationId, checkOut, action);
+    if (check.needsRouting) {
+      if (onNavigateToFolio) {
+        alert(check.reason);
+        onNavigateToFolio(checkOut.reservationId);
+        return null;
+      }
+      // No folio navigation available — still warn but let the caller decide.
+      alert(`Folio attention needed:\n\n${check.reason}\n\nPlease visit Folio & Billing to resolve this before proceeding.`);
+      return null;
+    }
+    return check;
+  };
+
   // Toggle a checklist step
   const handleStepToggle = async (checkOut: CheckOutRequest, step: keyof CheckOutRequest) => {
     setBusyId(checkOut.reservationId);
@@ -268,12 +312,19 @@ const CheckOut = ({ onNavigateToFolio }: CheckOutProps) => {
 
   // ── Invoice Review ──────────────────────────────────────────────────────
   const handleReviewInvoice = async (checkOut: CheckOutRequest) => {
+    setBusyId(checkOut.reservationId);
+    // Cross-check folio before opening invoice review
+    const check = await crossCheckAndRoute(checkOut, 'invoice');
+    if (!check) {
+      setBusyId(null);
+      return;
+    }
     setInvoiceModalCheckOut(checkOut);
     setFolioLoading(true);
     setFolioDetails(null);
     try {
-      const details = await getFolioDetails(checkOut.reservationId);
-      setFolioDetails(details);
+      // Use the fresh details from the cross-check
+      setFolioDetails(check.details);
       // Mark invoice reviewed step if not already
       if (!checkOut.invoiceReviewed) {
         const ok = await updateCheckOutStep(checkOut.reservationId, 'invoiceReviewed', true);
@@ -284,21 +335,26 @@ const CheckOut = ({ onNavigateToFolio }: CheckOutProps) => {
       alert('Failed to load folio details.');
     } finally {
       setFolioLoading(false);
+      setBusyId(null);
     }
   };
 
   // ── Settlement ──────────────────────────────────────────────────────────
-  const openSettlementModal = (checkOut: CheckOutRequest) => {
-    // If there's an open folio, navigate to folio-billing instead of opening modal
-    if (checkOut.folioId && onNavigateToFolio) {
-      onNavigateToFolio(checkOut.reservationId);
+  const openSettlementModal = async (checkOut: CheckOutRequest) => {
+    setBusyId(checkOut.reservationId);
+    // Cross-check folio — routes to Folio & Billing if there's an open
+    // folio with a balance (full payment workflow lives there).
+    const check = await crossCheckAndRoute(checkOut, 'settlement');
+    if (!check) {
+      setBusyId(null);
       return;
     }
-    // Fallback to existing modal behavior
+    // Folio balance is 0 or no folio — use the modal fallback
     setSettlementCheckOut(checkOut);
     setSettlementAmount(checkOut.balance > 0 ? checkOut.balance : 0);
     setSettlementMethod('credit_card');
     setSettlementReference('');
+    setBusyId(null);
   };
 
   const handleProcessSettlement = async () => {
@@ -315,11 +371,17 @@ const CheckOut = ({ onNavigateToFolio }: CheckOutProps) => {
       settlementReference
     );
     if (ok) {
+      const newBalance = Math.max(0, settlementCheckOut.balance - settlementAmount);
       const stepOk = await updateCheckOutStep(settlementCheckOut.reservationId, 'settlementProcessed', true);
       if (stepOk) {
         updateLocalStep(settlementCheckOut.reservationId, 'settlementProcessed', true);
-        updateLocalStep(settlementCheckOut.reservationId, 'balance', Math.max(0, settlementCheckOut.balance - settlementAmount));
+        updateLocalStep(settlementCheckOut.reservationId, 'balance', newBalance);
       }
+      // Auto-check invoice/settlement when balance === 0, refund when balance >= 0
+      const auto = await autoCheckBillSteps(settlementCheckOut.reservationId, newBalance);
+      if (auto.invoiceReviewed) updateLocalStep(settlementCheckOut.reservationId, 'invoiceReviewed', true);
+      if (auto.settlementProcessed) updateLocalStep(settlementCheckOut.reservationId, 'settlementProcessed', true);
+      if (auto.refundProcessed) updateLocalStep(settlementCheckOut.reservationId, 'refundProcessed', true);
       setSettlementCheckOut(null);
       setRefreshTrigger((prev) => prev + 1);
     } else {
@@ -329,11 +391,19 @@ const CheckOut = ({ onNavigateToFolio }: CheckOutProps) => {
   };
 
   // ── Refund ──────────────────────────────────────────────────────────────
-  const openRefundModal = (checkOut: CheckOutRequest) => {
+  const openRefundModal = async (checkOut: CheckOutRequest) => {
+    setBusyId(checkOut.reservationId);
+    // Cross-check folio — refunds require an existing folio with payments
+    const check = await crossCheckAndRoute(checkOut, 'refund');
+    if (!check) {
+      setBusyId(null);
+      return;
+    }
     setRefundCheckOut(checkOut);
     setRefundAmount(0);
     setRefundMethod('credit_card');
     setRefundReference('');
+    setBusyId(null);
   };
 
   const handleProcessRefund = async () => {
@@ -392,16 +462,21 @@ const CheckOut = ({ onNavigateToFolio }: CheckOutProps) => {
 
   // ── Folio Closure ───────────────────────────────────────────────────────
   const handleCloseFolio = async (checkOut: CheckOutRequest) => {
-    if (!checkOut.folioId) {
-      alert('No folio exists for this reservation. Nothing to close.');
-      return;
-    }
     if (!checkOut.invoiceReviewed || !checkOut.settlementProcessed) {
       alert('Please complete invoice review and settlement before closing the folio.');
       return;
     }
-    if (!confirm('Close this folio? This action finalizes the guest account.')) return;
     setBusyId(checkOut.reservationId);
+    // Cross-check folio — verifies folio exists, is open, and has zero balance
+    const check = await crossCheckAndRoute(checkOut, 'closeFolio');
+    if (!check) {
+      setBusyId(null);
+      return;
+    }
+    if (!confirm('Close this folio? This action finalizes the guest account.')) {
+      setBusyId(null);
+      return;
+    }
     const ok = await closeFolio(checkOut.reservationId);
     if (ok) {
       const stepOk = await updateCheckOutStep(checkOut.reservationId, 'folioClosed', true);
@@ -425,8 +500,17 @@ const CheckOut = ({ onNavigateToFolio }: CheckOutProps) => {
       alert('All check-out steps must be completed before finishing.');
       return;
     }
-    if (!confirm(`Complete check-out for ${checkOut.guestName}? This will mark the reservation as checked out.`)) return;
     setBusyId(checkOut.reservationId);
+    // Cross-check folio — verifies the folio is actually closed in the DB
+    const check = await crossCheckAndRoute(checkOut, 'complete');
+    if (!check) {
+      setBusyId(null);
+      return;
+    }
+    if (!confirm(`Complete check-out for ${checkOut.guestName}? This will mark the reservation as checked out.`)) {
+      setBusyId(null);
+      return;
+    }
     const ok = await completeCheckOut(checkOut.reservationId);
     if (ok) {
       setCheckOuts((prev) =>
@@ -447,8 +531,17 @@ const CheckOut = ({ onNavigateToFolio }: CheckOutProps) => {
       alert('Express check-out is only available for guests with a zero balance.');
       return;
     }
-    if (!confirm(`Process express check-out for ${checkOut.guestName}?`)) return;
     setBusyId(checkOut.reservationId);
+    // Cross-check folio — verifies zero balance and closed folio in DB
+    const check = await crossCheckAndRoute(checkOut, 'express');
+    if (!check) {
+      setBusyId(null);
+      return;
+    }
+    if (!confirm(`Process express check-out for ${checkOut.guestName}?`)) {
+      setBusyId(null);
+      return;
+    }
     // Mark all required steps
     const steps: (keyof CheckOutRequest)[] = [
       'invoiceReviewed',
@@ -574,12 +667,18 @@ const CheckOut = ({ onNavigateToFolio }: CheckOutProps) => {
 
   // Review invoice for a group member
   const handleGroupMemberReviewInvoice = async (checkOut: CheckOutRequest) => {
+    setBusyId(checkOut.reservationId);
+    // Cross-check folio before opening invoice review
+    const check = await crossCheckAndRoute(checkOut, 'invoice');
+    if (!check) {
+      setBusyId(null);
+      return;
+    }
     setInvoiceModalCheckOut(checkOut);
     setFolioLoading(true);
     setFolioDetails(null);
     try {
-      const details = await getFolioDetails(checkOut.reservationId);
-      setFolioDetails(details);
+      setFolioDetails(check.details);
       if (!checkOut.invoiceReviewed) {
         const ok = await updateCheckOutStep(checkOut.reservationId, 'invoiceReviewed', true);
         if (ok) updateGroupMemberLocal(checkOut.reservationId, 'invoiceReviewed', true);
@@ -589,12 +688,13 @@ const CheckOut = ({ onNavigateToFolio }: CheckOutProps) => {
       alert('Failed to load folio details.');
     } finally {
       setFolioLoading(false);
+      setBusyId(null);
     }
   };
 
-  // Settlement for a group member (opens same modal)
-  const handleGroupMemberSettlement = (checkOut: CheckOutRequest) => {
-    openSettlementModal(checkOut);
+  // Settlement for a group member (opens same modal — cross-check inside)
+  const handleGroupMemberSettlement = async (checkOut: CheckOutRequest) => {
+    await openSettlementModal(checkOut);
   };
 
   // Complete check-out for a single group member
@@ -609,8 +709,17 @@ const CheckOut = ({ onNavigateToFolio }: CheckOutProps) => {
       alert('All check-out steps must be completed before finishing.');
       return;
     }
-    if (!confirm(`Complete check-out for ${checkOut.guestName}?`)) return;
     setBusyId(checkOut.reservationId);
+    // Cross-check folio — verifies the folio is actually closed in the DB
+    const check = await crossCheckAndRoute(checkOut, 'complete');
+    if (!check) {
+      setBusyId(null);
+      return;
+    }
+    if (!confirm(`Complete check-out for ${checkOut.guestName}?`)) {
+      setBusyId(null);
+      return;
+    }
     const ok = await completeCheckOut(checkOut.reservationId);
     if (ok) {
       updateGroupMemberLocal(checkOut.reservationId, 'status', 'completed');
@@ -627,8 +736,17 @@ const CheckOut = ({ onNavigateToFolio }: CheckOutProps) => {
       alert('Express check-out is only available for guests with a zero balance.');
       return;
     }
-    if (!confirm(`Process express check-out for ${checkOut.guestName}?`)) return;
     setBusyId(checkOut.reservationId);
+    // Cross-check folio — verifies zero balance and closed folio in DB
+    const check = await crossCheckAndRoute(checkOut, 'express');
+    if (!check) {
+      setBusyId(null);
+      return;
+    }
+    if (!confirm(`Process express check-out for ${checkOut.guestName}?`)) {
+      setBusyId(null);
+      return;
+    }
     const steps: (keyof CheckOutRequest)[] = ['invoiceReviewed', 'settlementProcessed', 'refundProcessed', 'feedbackCollected', 'folioClosed'];
     for (const step of steps) {
       if (!(checkOut as any)[step]) {
@@ -669,48 +787,295 @@ const CheckOut = ({ onNavigateToFolio }: CheckOutProps) => {
 
   // ── Group-level batch handlers ───────────────────────────────────────────
 
-  // Close folios for all group members
-  const handleGroupCloseFoliosAll = async (groupMembers: CheckOutRequest[]) => {
-    setGroupActionLoading(true);
-    for (const co of groupMembers) {
-      if (!co.folioClosed && co.folioId) {
-        const ok = await closeFolio(co.reservationId);
-        if (ok) {
-          await updateCheckOutStep(co.reservationId, 'folioClosed', true);
-          updateGroupMemberLocal(co.reservationId, 'folioClosed', true);
-        }
-      }
+  // Helper: summarize a list of GroupBatchResult into an alert string
+  const summarizeBatchResults = (results: GroupBatchResult[]): string => {
+    const success = results.filter((r) => r.success);
+    const failed = results.filter((r) => !r.success);
+    let msg = `${success.length} of ${results.length} succeeded.`;
+    if (failed.length > 0) {
+      msg += `\n\nFailed:\n${failed.map((r) => `• ${r.guestName}: ${r.error || 'Unknown error'}`).join('\n')}`;
     }
-    setGroupActionLoading(false);
-    setRefreshTrigger((prev) => prev + 1);
+    return msg;
   };
 
-  // Complete check-out for all group members
-  const handleGroupCompleteCheckOutAll = async (group: any, groupMembers: CheckOutRequest[]) => {
-    const eligible = groupMembers.filter((co) =>
-      co.invoiceReviewed && co.settlementProcessed && co.refundProcessed && co.feedbackCollected && co.folioClosed
-    );
-    if (eligible.length === 0) {
-      alert('No members have completed all check-out steps yet.');
+  // Mark invoice reviewed for all group members (parallel) — with folio cross-check
+  const handleGroupMarkAllInvoicesReviewed = async (groupMembers: CheckOutRequest[]) => {
+    const pending = groupMembers.filter((m) => !m.invoiceReviewed);
+    if (pending.length === 0) {
+      alert('All members already have invoices reviewed.');
       return;
     }
-    if (!confirm(`Complete check-out for all ${eligible.length} eligible member(s) in group "${group.group_name || group.name || group.id}"?`)) return;
     setGroupActionLoading(true);
-    let successCount = 0;
-    for (const co of eligible) {
-      const ok = await completeCheckOut(co.reservationId);
-      if (ok) {
-        updateGroupMemberLocal(co.reservationId, 'status', 'completed');
-        successCount++;
+    // Cross-check folios for all pending members in parallel
+    const checks = await crossCheckFolioForGroup(pending, 'invoice');
+    const needsRouting = checks.filter((c) => c.check.needsRouting);
+    if (needsRouting.length > 0) {
+      setGroupActionLoading(false);
+      const reasons = needsRouting.map((c) => `• ${c.member.guestName}: ${c.check.reason}`).join('\n');
+      if (onNavigateToFolio) {
+        alert(`The following member(s) need folio attention before invoice review:\n\n${reasons}\n\nRouting to Folio & Billing for the first member.`);
+        onNavigateToFolio(needsRouting[0].member.reservationId);
+      } else {
+        alert(`The following member(s) need folio attention before invoice review:\n\n${reasons}\n\nPlease visit Folio & Billing to resolve these before proceeding.`);
       }
+      return;
     }
-    // Update group booking status
+    if (!confirm(`Mark invoice reviewed for ${pending.length} member(s)?`)) {
+      setGroupActionLoading(false);
+      return;
+    }
+    const results = await markStepForGroup(pending, 'invoiceReviewed', true);
+    results.forEach((r) => {
+      if (r.success) updateGroupMemberLocal(r.reservationId, 'invoiceReviewed', true);
+    });
+    setGroupActionLoading(false);
+    setRefreshTrigger((prev) => prev + 1);
+    alert(summarizeBatchResults(results));
+  };
+
+  // Mark refund processed for all group members (parallel)
+  const handleGroupMarkAllRefundsProcessed = async (groupMembers: CheckOutRequest[]) => {
+    const pending = groupMembers.filter((m) => !m.refundProcessed);
+    if (pending.length === 0) {
+      alert('All members already have refunds processed.');
+      return;
+    }
+    if (!confirm(`Mark refund processed for ${pending.length} member(s)?`)) return;
+    setGroupActionLoading(true);
+    const results = await markStepForGroup(pending, 'refundProcessed', true);
+    results.forEach((r) => {
+      if (r.success) updateGroupMemberLocal(r.reservationId, 'refundProcessed', true);
+    });
+    setGroupActionLoading(false);
+    setRefreshTrigger((prev) => prev + 1);
+    alert(summarizeBatchResults(results));
+  };
+
+  // Mark feedback collected for all group members (parallel)
+  const handleGroupMarkAllFeedbackCollected = async (groupMembers: CheckOutRequest[]) => {
+    const pending = groupMembers.filter((m) => !m.feedbackCollected);
+    if (pending.length === 0) {
+      alert('All members already have feedback collected.');
+      return;
+    }
+    if (!confirm(`Mark feedback collected for ${pending.length} member(s)?`)) return;
+    setGroupActionLoading(true);
+    const results = await markStepForGroup(pending, 'feedbackCollected', true);
+    results.forEach((r) => {
+      if (r.success) updateGroupMemberLocal(r.reservationId, 'feedbackCollected', true);
+    });
+    setGroupActionLoading(false);
+    setRefreshTrigger((prev) => prev + 1);
+    alert(summarizeBatchResults(results));
+  };
+
+  // Close folios for all group members (parallel) — with folio cross-check
+  const handleGroupCloseFoliosAll = async (groupMembers: CheckOutRequest[]) => {
+    const pending = groupMembers.filter((co) => !co.folioClosed && co.folioId);
+    if (pending.length === 0) {
+      alert('No open folios to close (or no folios exist).');
+      return;
+    }
+    setGroupActionLoading(true);
+    // Cross-check folios for all pending members in parallel
+    const checks = await crossCheckFolioForGroup(pending, 'closeFolio');
+    const needsRouting = checks.filter((c) => c.check.needsRouting);
+    if (needsRouting.length > 0) {
+      setGroupActionLoading(false);
+      const reasons = needsRouting.map((c) => `• ${c.member.guestName}: ${c.check.reason}`).join('\n');
+      if (onNavigateToFolio) {
+        alert(`The following member(s) need folio attention before closing:\n\n${reasons}\n\nRouting to Folio & Billing for the first member.`);
+        onNavigateToFolio(needsRouting[0].member.reservationId);
+      } else {
+        alert(`The following member(s) need folio attention before closing:\n\n${reasons}\n\nPlease visit Folio & Billing to resolve these before proceeding.`);
+      }
+      return;
+    }
+    if (!confirm(`Close folios for ${pending.length} member(s)?`)) {
+      setGroupActionLoading(false);
+      return;
+    }
+    const tasks = pending.map(async (co) => {
+      const ok = await closeFolio(co.reservationId);
+      if (ok) {
+        await updateCheckOutStep(co.reservationId, 'folioClosed', true);
+        updateGroupMemberLocal(co.reservationId, 'folioClosed', true);
+      }
+      return { reservationId: co.reservationId, guestName: co.guestName, success: ok, error: ok ? undefined : 'Failed to close folio' };
+    });
+    const results = await Promise.all(tasks);
+    setGroupActionLoading(false);
+    setRefreshTrigger((prev) => prev + 1);
+    alert(summarizeBatchResults(results));
+  };
+
+  // Express check-out for all zero-balance group members (parallel) — with folio cross-check
+  const handleGroupExpressCheckOutAll = async (group: any, groupMembers: CheckOutRequest[]) => {
+    const eligible = groupMembers.filter((co) => co.balance <= 0 && co.status !== 'completed');
+    if (eligible.length === 0) {
+      alert('No eligible zero-balance members for express check-out.');
+      return;
+    }
+    setGroupActionLoading(true);
+    // Cross-check folios for all eligible members in parallel
+    const checks = await crossCheckFolioForGroup(eligible, 'express');
+    const needsRouting = checks.filter((c) => c.check.needsRouting);
+    if (needsRouting.length > 0) {
+      setGroupActionLoading(false);
+      const reasons = needsRouting.map((c) => `• ${c.member.guestName}: ${c.check.reason}`).join('\n');
+      if (onNavigateToFolio) {
+        alert(`The following member(s) need folio attention before express check-out:\n\n${reasons}\n\nRouting to Folio & Billing for the first member.`);
+        onNavigateToFolio(needsRouting[0].member.reservationId);
+      } else {
+        alert(`The following member(s) need folio attention before express check-out:\n\n${reasons}\n\nPlease visit Folio & Billing to resolve these before proceeding.`);
+      }
+      return;
+    }
+    if (!confirm(`Express check-out for ${eligible.length} zero-balance member(s) in group "${group.group_name || group.name || group.id}"?`)) {
+      setGroupActionLoading(false);
+      return;
+    }
+    const results = await expressCheckOutGroup(eligible);
+    results.forEach((r) => {
+      if (r.success) updateGroupMemberLocal(r.reservationId, 'status', 'completed');
+    });
+    const successCount = results.filter((r) => r.success).length;
     if (successCount > 0 && group.id) {
       await supabase.from('group_bookings').update({ status: 'Completed' }).eq('id', group.id);
     }
     setGroupActionLoading(false);
     setRefreshTrigger((prev) => prev + 1);
-    alert(`Group check-out: ${successCount} of ${eligible.length} completed.`);
+    alert(summarizeBatchResults(results));
+  };
+
+  // Open the group-level settlement modal — with folio cross-check
+  const handleGroupSettlementOpen = async (group: any, groupMembers: CheckOutRequest[]) => {
+    const payable = groupMembers.filter((m) => m.balance > 0);
+    if (payable.length === 0) {
+      alert('No members have an outstanding balance to settle.');
+      return;
+    }
+    setGroupActionLoading(true);
+    // Cross-check folios for all payable members in parallel
+    const checks = await crossCheckFolioForGroup(payable, 'settlement');
+    const needsRouting = checks.filter((c) => c.check.needsRouting);
+    if (needsRouting.length > 0) {
+      setGroupActionLoading(false);
+      const reasons = needsRouting.map((c) => `• ${c.member.guestName}: ${c.check.reason}`).join('\n');
+      if (onNavigateToFolio) {
+        alert(`The following member(s) need folio attention before group settlement:\n\n${reasons}\n\nRouting to Folio & Billing for the first member.`);
+        onNavigateToFolio(needsRouting[0].member.reservationId);
+      } else {
+        alert(`The following member(s) need folio attention before group settlement:\n\n${reasons}\n\nPlease visit Folio & Billing to resolve these before proceeding.`);
+      }
+      return;
+    }
+    // Use fresh balances from the cross-check for the modal
+    const freshMembers = groupMembers.map((m) => {
+      const check = checks.find((c) => c.member.reservationId === m.reservationId);
+      if (check) {
+        return { ...m, balance: check.check.details.balance, folioBalance: check.check.details.balance };
+      }
+      return m;
+    });
+    const totalBalance = freshMembers.reduce((s, m) => s + Math.max(0, m.balance), 0);
+    setGroupSettlement({ group, members: freshMembers });
+    setGroupSettlementAmount(totalBalance);
+    setGroupSettlementMethod('credit_card');
+    setGroupSettlementReference('');
+    setGroupActionLoading(false);
+  };
+
+  // Process the group-level settlement
+  const handleGroupSettlementProcess = async () => {
+    if (!groupSettlement) return;
+    if (groupSettlementAmount <= 0) {
+      alert('Settlement amount must be greater than zero.');
+      return;
+    }
+    const { group, members } = groupSettlement;
+    const payable = members.filter((m) => m.balance > 0);
+    if (payable.length === 0) {
+      alert('No members have an outstanding balance to settle.');
+      return;
+    }
+    setGroupActionLoading(true);
+    const results = await processGroupSettlement(
+      payable,
+      groupSettlementAmount,
+      groupSettlementMethod,
+      groupSettlementReference
+    );
+    results.forEach((r) => {
+      if (r.success) {
+        updateGroupMemberLocal(r.reservationId, 'settlementProcessed', true);
+        const member = members.find((m) => m.reservationId === r.reservationId);
+        if (member) {
+          const totalBalance = members.reduce((s, m) => s + Math.max(0, m.balance), 0);
+          const proportional = groupSettlementAmount < totalBalance && totalBalance > 0;
+          const settled = proportional
+            ? Math.min(member.balance, Math.round((groupSettlementAmount * member.balance / totalBalance) * 100) / 100)
+            : member.balance;
+          const remainingBalance = Math.max(0, member.balance - settled);
+          updateGroupMemberLocal(r.reservationId, 'balance', remainingBalance);
+          // Auto-check invoice/settlement when balance === 0, refund when balance >= 0
+          if (remainingBalance === 0) {
+            updateGroupMemberLocal(r.reservationId, 'invoiceReviewed', true);
+            updateGroupMemberLocal(r.reservationId, 'settlementProcessed', true);
+          }
+          if (remainingBalance >= 0) updateGroupMemberLocal(r.reservationId, 'refundProcessed', true);
+        }
+      }
+    });
+    setGroupActionLoading(false);
+    setGroupSettlement(null);
+    setRefreshTrigger((prev) => prev + 1);
+    alert(`Group settlement for "${group.group_name || group.name || group.id}":\n\n${summarizeBatchResults(results)}`);
+  };
+
+  // Complete check-out for all eligible group members (parallel) — with folio cross-check
+  const handleGroupCompleteCheckOutAll = async (group: any, groupMembers: CheckOutRequest[]) => {
+    const eligible = groupMembers.filter((co) =>
+      co.invoiceReviewed && co.settlementProcessed && co.refundProcessed && co.feedbackCollected && co.folioClosed && co.status !== 'completed'
+    );
+    if (eligible.length === 0) {
+      alert('No members have completed all check-out steps yet.');
+      return;
+    }
+    setGroupActionLoading(true);
+    // Cross-check folios for all eligible members in parallel
+    const checks = await crossCheckFolioForGroup(eligible, 'complete');
+    const needsRouting = checks.filter((c) => c.check.needsRouting);
+    if (needsRouting.length > 0) {
+      setGroupActionLoading(false);
+      const reasons = needsRouting.map((c) => `• ${c.member.guestName}: ${c.check.reason}`).join('\n');
+      if (onNavigateToFolio) {
+        alert(`The following member(s) need folio attention before completing check-out:\n\n${reasons}\n\nRouting to Folio & Billing for the first member.`);
+        onNavigateToFolio(needsRouting[0].member.reservationId);
+      } else {
+        alert(`The following member(s) need folio attention before completing check-out:\n\n${reasons}\n\nPlease visit Folio & Billing to resolve these before proceeding.`);
+      }
+      return;
+    }
+    if (!confirm(`Complete check-out for all ${eligible.length} eligible member(s) in group "${group.group_name || group.name || group.id}"?`)) {
+      setGroupActionLoading(false);
+      return;
+    }
+    const tasks = eligible.map(async (co) => {
+      const ok = await completeCheckOut(co.reservationId);
+      if (ok) updateGroupMemberLocal(co.reservationId, 'status', 'completed');
+      return { reservationId: co.reservationId, guestName: co.guestName, success: ok, error: ok ? undefined : 'Failed to complete check-out' };
+    });
+    const results = await Promise.all(tasks);
+    const successCount = results.filter((r) => r.success).length;
+    // Update group booking status only when ALL members are checked out
+    const allMembersComplete = groupMembers.every((m) => m.status === 'completed' || results.find((r) => r.reservationId === m.reservationId && r.success));
+    if (successCount > 0 && allMembersComplete && group.id) {
+      await supabase.from('group_bookings').update({ status: 'Completed' }).eq('id', group.id);
+    }
+    setGroupActionLoading(false);
+    setRefreshTrigger((prev) => prev + 1);
+    alert(summarizeBatchResults(results));
   };
 
   // Print group invoice (primary contact + per-member folio summary)
@@ -903,9 +1268,13 @@ const CheckOut = ({ onNavigateToFolio }: CheckOutProps) => {
               const groupName = group.group_name || group.name || group.id;
               const allInvoice = groupMembers.every((m) => m.invoiceReviewed);
               const allSettlement = groupMembers.every((m) => m.settlementProcessed);
+              const allRefund = groupMembers.every((m) => m.refundProcessed);
+              const allFeedback = groupMembers.every((m) => m.feedbackCollected);
               const allFolio = groupMembers.every((m) => m.folioClosed);
               const allComplete = groupMembers.every((m) => m.status === 'completed');
-              const totalBalance = groupMembers.reduce((s, m) => s + m.balance, 0);
+              const totalBalance = groupMembers.reduce((s, m) => s + Math.max(0, m.balance), 0);
+              const zeroBalanceCount = groupMembers.filter((m) => m.balance <= 0 && m.status !== 'completed').length;
+              const completedCount = groupMembers.filter((m) => m.status === 'completed').length;
 
               return (
                 <div key={`group-${group.id}`} className="p-4 bg-purple-50/30 dark:bg-purple-900/10">
@@ -996,8 +1365,13 @@ const CheckOut = ({ onNavigateToFolio }: CheckOutProps) => {
 
                       {/* Group-Level Checklist Summary + Batch Actions */}
                       <div className="bg-white dark:bg-slate-800 rounded-lg p-4 border border-gray-200 dark:border-slate-700">
-                        <h4 className="text-sm font-bold text-gray-900 dark:text-white mb-3">Group Check-Out Process (applies to all {groupMembers.length} members)</h4>
-                        <div className="grid grid-cols-2 md:grid-cols-5 gap-2 mb-3">
+                        <div className="flex items-center justify-between mb-3">
+                          <h4 className="text-sm font-bold text-gray-900 dark:text-white">Group Check-Out Process (applies to all {groupMembers.length} members)</h4>
+                          <span className="text-xs text-gray-500 dark:text-gray-400">
+                            {completedCount}/{groupMembers.length} checked out · {zeroBalanceCount} zero-balance
+                          </span>
+                        </div>
+                        <div className="grid grid-cols-2 md:grid-cols-6 gap-2 mb-3">
                           <div className={`flex items-center gap-2 p-2 rounded-lg ${allInvoice ? 'bg-green-100 dark:bg-green-900/30' : 'bg-gray-50 dark:bg-slate-900/50'}`}>
                             <FileText className={`w-4 h-4 ${allInvoice ? 'text-green-600 dark:text-green-400' : 'text-gray-400'}`} />
                             <div className="text-xs">
@@ -1013,6 +1387,22 @@ const CheckOut = ({ onNavigateToFolio }: CheckOutProps) => {
                               <div className="text-gray-500 dark:text-gray-400">{allSettlement ? 'All settled' : 'Pending'}</div>
                             </div>
                             {allSettlement && <CheckCircle2 className="w-4 h-4 text-green-600 dark:text-green-400 ml-auto" />}
+                          </div>
+                          <div className={`flex items-center gap-2 p-2 rounded-lg ${allRefund ? 'bg-green-100 dark:bg-green-900/30' : 'bg-gray-50 dark:bg-slate-900/50'}`}>
+                            <DollarSign className={`w-4 h-4 ${allRefund ? 'text-green-600 dark:text-green-400' : 'text-gray-400'}`} />
+                            <div className="text-xs">
+                              <div className="font-medium text-gray-900 dark:text-white">Refund</div>
+                              <div className="text-gray-500 dark:text-gray-400">{allRefund ? 'All processed' : 'Pending'}</div>
+                            </div>
+                            {allRefund && <CheckCircle2 className="w-4 h-4 text-green-600 dark:text-green-400 ml-auto" />}
+                          </div>
+                          <div className={`flex items-center gap-2 p-2 rounded-lg ${allFeedback ? 'bg-green-100 dark:bg-green-900/30' : 'bg-gray-50 dark:bg-slate-900/50'}`}>
+                            <MessageSquare className={`w-4 h-4 ${allFeedback ? 'text-green-600 dark:text-green-400' : 'text-gray-400'}`} />
+                            <div className="text-xs">
+                              <div className="font-medium text-gray-900 dark:text-white">Feedback</div>
+                              <div className="text-gray-500 dark:text-gray-400">{allFeedback ? 'All collected' : 'Pending'}</div>
+                            </div>
+                            {allFeedback && <CheckCircle2 className="w-4 h-4 text-green-600 dark:text-green-400 ml-auto" />}
                           </div>
                           <div className={`flex items-center gap-2 p-2 rounded-lg ${allFolio ? 'bg-green-100 dark:bg-green-900/30' : 'bg-gray-50 dark:bg-slate-900/50'}`}>
                             <Receipt className={`w-4 h-4 ${allFolio ? 'text-green-600 dark:text-green-400' : 'text-gray-400'}`} />
@@ -1034,6 +1424,51 @@ const CheckOut = ({ onNavigateToFolio }: CheckOutProps) => {
                         {/* Group-level batch action buttons */}
                         <div className="flex items-center gap-2 flex-wrap">
                           <button
+                            onClick={() => handleGroupMarkAllInvoicesReviewed(groupMembers)}
+                            disabled={groupActionLoading || allInvoice}
+                            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition-colors text-xs disabled:opacity-50 disabled:cursor-not-allowed ${
+                              allInvoice
+                                ? 'bg-green-600 text-white'
+                                : 'bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 hover:bg-gray-50 dark:hover:bg-slate-700 text-gray-700 dark:text-gray-300'
+                            }`}
+                          >
+                            <FileText className="w-3.5 h-3.5" />
+                            {allInvoice ? 'All Invoices Reviewed' : 'Mark All Invoices Reviewed'}
+                          </button>
+                          <button
+                            onClick={() => handleGroupSettlementOpen(group, groupMembers)}
+                            disabled={groupActionLoading || totalBalance <= 0 || allSettlement}
+                            className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-xs disabled:opacity-50 disabled:cursor-not-allowed"
+                            title={totalBalance <= 0 ? 'No outstanding balance' : 'Settle the entire group balance in one payment'}
+                          >
+                            <CreditCard className="w-3.5 h-3.5" />
+                            Group Settlement
+                          </button>
+                          <button
+                            onClick={() => handleGroupMarkAllRefundsProcessed(groupMembers)}
+                            disabled={groupActionLoading || allRefund}
+                            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition-colors text-xs disabled:opacity-50 disabled:cursor-not-allowed ${
+                              allRefund
+                                ? 'bg-green-600 text-white'
+                                : 'bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 hover:bg-gray-50 dark:hover:bg-slate-700 text-gray-700 dark:text-gray-300'
+                            }`}
+                          >
+                            <DollarSign className="w-3.5 h-3.5" />
+                            {allRefund ? 'All Refunds Processed' : 'Mark All Refunds Processed'}
+                          </button>
+                          <button
+                            onClick={() => handleGroupMarkAllFeedbackCollected(groupMembers)}
+                            disabled={groupActionLoading || allFeedback}
+                            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition-colors text-xs disabled:opacity-50 disabled:cursor-not-allowed ${
+                              allFeedback
+                                ? 'bg-green-600 text-white'
+                                : 'bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 hover:bg-gray-50 dark:hover:bg-slate-700 text-gray-700 dark:text-gray-300'
+                            }`}
+                          >
+                            <MessageSquare className="w-3.5 h-3.5" />
+                            {allFeedback ? 'All Feedback Collected' : 'Mark All Feedback Collected'}
+                          </button>
+                          <button
                             onClick={() => handleGroupCloseFoliosAll(groupMembers)}
                             disabled={groupActionLoading || allFolio}
                             className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition-colors text-xs disabled:opacity-50 disabled:cursor-not-allowed ${
@@ -1052,6 +1487,15 @@ const CheckOut = ({ onNavigateToFolio }: CheckOutProps) => {
                           >
                             <Printer className="w-3.5 h-3.5" />
                             Print Group Invoice
+                          </button>
+                          <button
+                            onClick={() => handleGroupExpressCheckOutAll(group, groupMembers)}
+                            disabled={groupActionLoading || zeroBalanceCount === 0}
+                            className="flex items-center gap-1.5 px-3 py-1.5 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors text-xs font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+                            title={zeroBalanceCount === 0 ? 'No zero-balance members' : `Express check-out for ${zeroBalanceCount} zero-balance member(s)`}
+                          >
+                            <LogOut className="w-3.5 h-3.5" />
+                            Express Check-Out All ({zeroBalanceCount})
                           </button>
                           <button
                             onClick={() => handleGroupCompleteCheckOutAll(group, groupMembers)}
@@ -1671,6 +2115,85 @@ const CheckOut = ({ onNavigateToFolio }: CheckOutProps) => {
             </div>
           )}
         </Modal>
+      )}
+
+      {/* ── Group Settlement Modal ───────────────────────────────────────── */}
+      {groupSettlement && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white dark:bg-slate-800 rounded-xl shadow-xl max-w-lg w-full max-h-[90vh] overflow-y-auto">
+            <div className="p-4 border-b border-gray-200 dark:border-slate-700 flex items-center justify-between">
+              <div>
+                <h3 className="text-lg font-bold text-gray-900 dark:text-white">Group Settlement</h3>
+                <p className="text-xs text-gray-500 dark:text-gray-400">
+                  {groupSettlement.group.group_name || groupSettlement.group.name || groupSettlement.group.id} · {groupSettlement.members.filter((m) => m.balance > 0).length} member(s) with balance
+                </p>
+              </div>
+              <button onClick={() => setGroupSettlement(null)} className="text-gray-500 hover:text-gray-700 dark:hover:text-gray-300">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="p-6 space-y-4">
+              {/* Member balance breakdown */}
+              <div className="bg-gray-50 dark:bg-slate-900/50 rounded-lg p-3 max-h-48 overflow-y-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-gray-200 dark:border-slate-700">
+                      <th className="text-left py-1.5">Guest</th>
+                      <th className="text-right py-1.5">Balance</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {groupSettlement.members.filter((m) => m.balance > 0).map((m) => (
+                      <tr key={m.reservationId} className="border-b border-gray-100 dark:border-slate-700">
+                        <td className="py-1.5 text-gray-900 dark:text-white">{m.guestName}</td>
+                        <td className="py-1.5 text-right text-gray-900 dark:text-white">${m.balance.toFixed(2)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-gray-600 dark:text-gray-400">Total Group Balance:</span>
+                <span className="text-lg font-bold text-gray-900 dark:text-white">
+                  ${groupSettlement.members.reduce((s, m) => s + Math.max(0, m.balance), 0).toFixed(2)}
+                </span>
+              </div>
+
+              <Field label="Settlement Amount">
+                <input
+                  type="number"
+                  min={0}
+                  step={0.01}
+                  value={groupSettlementAmount}
+                  onChange={(e) => setGroupSettlementAmount(Number(e.target.value))}
+                  className={inputCls}
+                />
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                  If less than the total, the amount is distributed proportionally across member folios.
+                </p>
+              </Field>
+              <Field label="Payment Method">
+                <select value={groupSettlementMethod} onChange={(e) => setGroupSettlementMethod(e.target.value as PaymentMethod)} className={inputCls}>
+                  {PAYMENT_METHODS.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
+                </select>
+              </Field>
+              <Field label="Reference (optional)">
+                <input type="text" value={groupSettlementReference} onChange={(e) => setGroupSettlementReference(e.target.value)} className={inputCls} />
+              </Field>
+              <div className="flex justify-end gap-2 pt-2">
+                <button onClick={() => setGroupSettlement(null)} className="px-4 py-2 bg-gray-200 dark:bg-slate-700 text-gray-800 dark:text-white rounded-lg hover:bg-gray-300 dark:hover:bg-slate-600">Cancel</button>
+                <button
+                  onClick={handleGroupSettlementProcess}
+                  disabled={groupActionLoading || groupSettlementAmount <= 0}
+                  className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
+                >
+                  {groupActionLoading ? 'Processing...' : 'Process Group Settlement'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

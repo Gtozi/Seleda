@@ -1,15 +1,32 @@
 /**
- * Daily Briefing
- * Generate the hotel's operational briefing
+ * Daily Briefing — Operations Portal (/erp/operations/daily-briefing).
+ *
+ * The hotel's operational briefing, aggregated live from the real tables
+ * of every other portal: reservations & VIP guests (Front Office),
+ * group blocks, banquet events & venues, engineering work orders +
+ * corrective maintenance, airport transfers & flight status,
+ * department shift requirements, F&B orders, spa appointments, and the
+ * ops_command_alerts feed for outstanding issues.
+ *
+ * DB-integrated via /api/ops-portal/daily-briefing (migration 628):
+ *  - GET returns the persisted snapshot for the selected date when one
+ *    exists (persisted badge + generated-by), otherwise live data.
+ *  - "Generate & Save" recomputes and upserts ops_daily_briefings so the
+ *    date can be revisited later.
+ *  - Download produces a real Markdown file; Share copies a summary to
+ *    the clipboard.
+ *
+ * UI follows the shared portal design language (PageHeader, SectionCard,
+ * StatCard, Badge, brandTheme tokens) — same as the HK / Engineering /
+ * F&B modules and the Operations Command Center.
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   FileText,
   Calendar,
   Users,
   Star,
-  Cloud,
   Plane,
   Briefcase,
   DollarSign,
@@ -19,499 +36,493 @@ import {
   Share2,
   Clock,
   MapPin,
-  Utensils,
   Wrench,
   CheckCircle2,
-  ChevronRight
+  BedDouble,
+  LogIn,
+  Loader2,
+  Save,
 } from 'lucide-react';
+import StatCard from '../../FrontOffice/StatCard';
+import { PageHeader, SectionCard, Badge } from '../../FrontOffice/ui';
+import { button, layout, statusTone, type StatusTone } from '../../FrontOffice/brandTheme';
+import { useERP } from '../../../context/ERPContext';
+import {
+  fetchDailyBriefing,
+  generateDailyBriefing,
+  type DailyBriefing as DailyBriefingData,
+  type DailyBriefingStaffingDept,
+} from '../../../services/operationsService';
 
-interface BriefingData {
-  date: string;
-  occupancyForecast: {
-    current: number;
-    expected: number;
-    pickup: number;
-  };
-  vipArrivals: Array<{
-    name: string;
-    room: string;
-    time: string;
-    notes: string;
-  }>;
-  groupArrivals: Array<{
-    name: string;
-    rooms: number;
-    guests: number;
-    time: string;
-  }>;
-  events: Array<{
-    name: string;
-    time: string;
-    location: string;
-    type: string;
-    attendees: number;
-  }>;
-  maintenance: Array<{
-    task: string;
-    location: string;
-    impact: string;
-  }>;
-  weather: {
-    condition: string;
-    temperature: string;
-    forecast: string;
-  };
-  flightDelays: Array<{
-    airline: string;
-    flight: string;
-    delay: string;
-    affectedGuests: number;
-  }>;
-  staffing: {
-    overall: string;
-    departments: Array<{
-      name: string;
-      status: string;
-      gap: number;
-    }>;
-  };
-  revenue: {
-    yesterday: number;
-    forecast: number;
-    variance: number;
-  };
-  outstandingIssues: Array<{
-    issue: string;
-    department: string;
-    priority: string;
-  }>;
+// ── Static maps ──────────────────────────────────────────────────────────
+
+const SEVERITY_TONE: Record<string, StatusTone> = {
+  critical: 'danger',
+  warning: 'warning',
+  info: 'info',
+  high: 'danger',
+  urgent: 'danger',
+  emergency: 'danger',
+  medium: 'warning',
+  normal: 'neutral',
+  low: 'neutral',
+};
+
+const toneFor = (value: string): StatusTone =>
+  SEVERITY_TONE[String(value || '').toLowerCase()] ?? 'neutral';
+
+const FLIGHT_TONE: Record<string, StatusTone> = {
+  'in flight': 'info',
+  landed: 'success',
+  scheduled: 'neutral',
+  delayed: 'warning',
+  cancelled: 'danger',
+  diverted: 'danger',
+};
+
+// ── Helpers ──────────────────────────────────────────────────────────────
+
+function fmtDate(dateStr: string): string {
+  const d = new Date(`${dateStr}T12:00:00`);
+  return isNaN(d.getTime())
+    ? dateStr
+    : d.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
 }
 
+function todayStr(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+// Plain-text/markdown rendering used by Download and Share.
+function briefingToMarkdown(b: DailyBriefingData, fmtMoney: (n: number) => string): string {
+  const lines: string[] = [
+    `# Daily Briefing — ${fmtDate(b.date)}`,
+    '',
+    `Occupancy: ${b.occupancy.current}% (${b.occupancy.occupied}/${b.occupancy.roomsTotal} rooms) — expected ${b.occupancy.expected}%`,
+    `Arrivals: ${b.occupancy.arrivals}   Departures: ${b.occupancy.departures}   In-house guests: ${b.occupancy.inHouseGuests}`,
+    `Revenue — yesterday: ${fmtMoney(b.revenue.yesterday)}   forecast: ${fmtMoney(b.revenue.forecast)}   variance: ${fmtMoney(b.revenue.variance)}`,
+    b.staffing.overall !== null ? `Staffing coverage: ${b.staffing.overall}%` : 'Staffing coverage: not tracked',
+    '',
+  ];
+  const list = (title: string, items: string[]) => {
+    lines.push(`## ${title}`, ...(items.length ? items.map(i => `- ${i}`) : ['- None']), '');
+  };
+  list('VIP Arrivals', b.vipArrivals.map(v => `${v.name} — ${v.room}${v.notes ? ` (${v.notes})` : ''}`));
+  list('Group Arrivals', b.groupArrivals.map(g => `${g.name} — ${g.rooms} rooms${g.guests ? `, ${g.guests} guests` : ''}`));
+  list('Events', b.events.map(e => `${e.name} (${e.type}) — ${e.location}, ${e.attendees} attendees [${e.status}]`));
+  list('Airport Transfers & Flights', b.flights.map(f =>
+    `${f.airline} ${f.flight} — ${f.scheduledTime} ${f.flightStatus}${f.delay ? ` (delay: ${f.delay})` : ''}${f.guestName ? ` — ${f.guestName}` : ''}`));
+  list('Maintenance Impacts', b.maintenance.map(m => `[${m.priority}] ${m.task} — ${m.location} (${m.status})`));
+  list('Staffing', b.staffing.departments.map(d =>
+    `${d.name}: ${d.assigned === null ? d.status : `${d.assigned}/${d.required} — ${d.status}`}`));
+  list('Outstanding Issues', b.outstandingIssues.map(i => `[${i.priority}] ${i.issue} — ${i.department}`));
+  return lines.join('\n');
+}
+
+// ── Component ────────────────────────────────────────────────────────────
+
 const DailyBriefing: React.FC = () => {
-  const [isGenerating, setIsGenerating] = useState(false);
-  const [briefingData, setBriefingData] = useState<BriefingData | null>(null);
-  const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
+  const { currentPropertyId, addNotification, formatAmount } = useERP();
 
-  const mockBriefingData: BriefingData = {
-    date: selectedDate,
-    occupancyForecast: {
-      current: 78,
-      expected: 82,
-      pickup: 4
-    },
-    vipArrivals: [
-      {
-        name: 'Mr. John Smith',
-        room: 'Presidential Suite',
-        time: '14:00',
-        notes: 'VVIP - Requires butler service and private dining'
-      },
-      {
-        name: 'Ms. Sarah Johnson',
-        room: 'Royal Suite 301',
-        time: '16:00',
-        notes: 'VIP - Allergy to nuts, special amenities required'
-      },
-      {
-        name: 'Dr. Michael Chen',
-        room: 'Executive Suite 205',
-        time: '18:00',
-        notes: 'VIP - Late check-in expected, key to be left at reception'
-      }
-    ],
-    groupArrivals: [
-      {
-        name: 'TechCorp Annual Conference',
-        rooms: 45,
-        guests: 90,
-        time: '12:00'
-      },
-      {
-        name: 'Johnson Family Wedding',
-        rooms: 12,
-        guests: 35,
-        time: '15:00'
-      }
-    ],
-    events: [
-      {
-        name: 'TechCorp Annual Conference',
-        time: '09:00 - 18:00',
-        location: 'Grand Ballroom',
-        type: 'Conference',
-        attendees: 200
-      },
-      {
-        name: 'Johnson Wedding Reception',
-        time: '19:00 - 23:00',
-        location: 'Garden Terrace',
-        type: 'Wedding',
-        attendees: 150
-      }
-    ],
-    maintenance: [
-      {
-        task: 'HVAC System Repair',
-        location: 'Floor 3',
-        impact: '12 rooms affected, fans provided'
-      },
-      {
-        task: 'Elevator Maintenance',
-        location: 'North Wing',
-        impact: 'Service elevator only, minimal impact'
-      }
-    ],
-    weather: {
-      condition: 'Partly Cloudy',
-      temperature: '24°C',
-      forecast: 'Clearing in the afternoon, high of 26°C'
-    },
-    flightDelays: [
-      {
-        airline: 'Ethiopian Airlines',
-        flight: 'ET802',
-        delay: '2 hours',
-        affectedGuests: 8
-      }
-    ],
-    staffing: {
-      overall: '95%',
-      departments: [
-        { name: 'Front Office', status: 'Fully Staffed', gap: 0 },
-        { name: 'Housekeeping', status: 'Gap', gap: 3 },
-        { name: 'F&B', status: 'Fully Staffed', gap: 0 },
-        { name: 'Engineering', status: 'Fully Staffed', gap: 0 }
-      ]
-    },
-    revenue: {
-      yesterday: 45230,
-      forecast: 48500,
-      variance: 3270
-    },
-    outstandingIssues: [
-      {
-        issue: 'Room 305 water leak',
-        department: 'Engineering',
-        priority: 'High'
-      },
-      {
-        issue: 'Missing amenities in VIP suite',
-        department: 'Housekeeping',
-        priority: 'Medium'
-      }
-    ]
+  const [briefing, setBriefing] = useState<DailyBriefingData | null>(null);
+  const [selectedDate, setSelectedDate] = useState(todayStr());
+  const [loading, setLoading] = useState(true);
+  const [generating, setGenerating] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const data = await fetchDailyBriefing(currentPropertyId || undefined, selectedDate);
+      setBriefing(data);
+      setError(null);
+    } catch (e: any) {
+      setError(e?.message || 'Failed to load daily briefing');
+    } finally {
+      setLoading(false);
+    }
+  }, [currentPropertyId, selectedDate]);
+
+  useEffect(() => { load(); }, [load]);
+
+  // Recompute from live data and persist the snapshot for this date.
+  const generate = async () => {
+    setGenerating(true);
+    try {
+      const data = await generateDailyBriefing(currentPropertyId || undefined, selectedDate);
+      setBriefing(data);
+      setError(null);
+      addNotification('Daily briefing generated and saved.', 'task', 'Executive');
+    } catch (e: any) {
+      addNotification(e?.message || 'Failed to generate briefing', 'warning', 'Executive');
+    } finally {
+      setGenerating(false);
+    }
   };
 
-  useEffect(() => {
-    generateBriefing();
-  }, [selectedDate]);
-
-  const generateBriefing = async () => {
-    setIsGenerating(true);
-    // Simulate API call
-    await new Promise(resolve => setTimeout(resolve, 1500));
-    setBriefingData(mockBriefingData);
-    setIsGenerating(false);
+  const download = () => {
+    if (!briefing) return;
+    const blob = new Blob([briefingToMarkdown(briefing, formatAmount)], { type: 'text/markdown' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `daily-briefing-${briefing.date}.md`;
+    a.click();
+    URL.revokeObjectURL(url);
+    addNotification('Briefing downloaded.', 'task', 'Executive');
   };
 
-  const handleDownload = () => {
-    // Implement PDF download
-    console.log('Downloading briefing as PDF');
+  const share = async () => {
+    if (!briefing) return;
+    try {
+      await navigator.clipboard.writeText(briefingToMarkdown(briefing, formatAmount));
+      addNotification('Briefing summary copied to clipboard.', 'task', 'Executive');
+    } catch {
+      addNotification('Could not copy to clipboard', 'warning', 'Executive');
+    }
   };
 
-  const handleShare = () => {
-    // Implement sharing functionality
-    console.log('Sharing briefing');
-  };
+  const staffing = useMemo(() => briefing?.staffing.departments || [], [briefing]);
 
-  if (!briefingData) {
+  // ── Render ────────────────────────────────────────────────────────────
+
+  if (loading && !briefing) {
     return (
-      <div className="p-6 flex items-center justify-center">
-        <div className="text-center">
-          <RefreshCw size={48} className="animate-spin text-indigo-600 mx-auto mb-4" />
-          <p className="text-slate-600 dark:text-slate-400">Generating daily briefing...</p>
-        </div>
+      <div className="flex items-center justify-center py-24">
+        <Loader2 size={28} className="animate-spin text-[var(--color-accent-operations)]" />
       </div>
     );
   }
 
   return (
-    <div className="p-6 space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-slate-900 dark:text-white flex items-center gap-3">
-            <FileText size={28} />
-            Daily Briefing
-          </h1>
-          <p className="text-slate-600 dark:text-slate-400 mt-1">
-            Hotel operational briefing for {new Date(selectedDate).toLocaleDateString('en-US', { 
-              weekday: 'long', 
-              year: 'numeric', 
-              month: 'long', 
-              day: 'numeric' 
-            })}
-          </p>
-        </div>
-        <div className="flex items-center gap-3">
-          <input
-            type="date"
-            value={selectedDate}
-            onChange={(e) => setSelectedDate(e.target.value)}
-            className="px-4 py-2 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg focus:ring-1 focus:ring-indigo-500 outline-none"
-          />
-          <button
-            onClick={generateBriefing}
-            disabled={isGenerating}
-            className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors flex items-center gap-2 disabled:opacity-50"
-          >
-            <RefreshCw size={18} className={isGenerating ? 'animate-spin' : ''} />
-            Refresh
-          </button>
-          <button
-            onClick={handleDownload}
-            className="p-2 bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors"
-          >
-            <Download size={20} className="text-slate-600 dark:text-slate-400" />
-          </button>
-          <button
-            onClick={handleShare}
-            className="p-2 bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors"
-          >
-            <Share2 size={20} className="text-slate-600 dark:text-slate-400" />
-          </button>
-        </div>
-      </div>
+    <div className={layout.sectionStack}>
+      <PageHeader
+        title="Daily Briefing"
+        subtitle={`Hotel operational briefing for ${fmtDate(selectedDate)}`}
+        icon={FileText}
+        actions={
+          <>
+            <input
+              type="date"
+              value={selectedDate}
+              onChange={e => setSelectedDate(e.target.value)}
+              className="px-3 py-2 bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-lg text-sm focus:ring-1 focus:ring-[var(--color-accent-operations)] outline-none"
+            />
+            <button
+              onClick={generate}
+              disabled={generating || loading}
+              className={button.primary}
+              title="Recompute from live data and save this date's briefing"
+            >
+              {generating ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
+              Generate &amp; Save
+            </button>
+            <button onClick={load} disabled={loading} className={button.secondary} title="Reload">
+              <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
+            </button>
+            <button onClick={download} disabled={!briefing} className={button.secondary} title="Download as Markdown">
+              <Download size={16} />
+            </button>
+            <button onClick={share} disabled={!briefing} className={button.secondary} title="Copy summary to clipboard">
+              <Share2 size={16} />
+            </button>
+          </>
+        }
+      />
 
-      {/* Key Metrics Row */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <div className="bg-white dark:bg-slate-800 rounded-xl p-4 border border-slate-200 dark:border-slate-700">
-          <div className="flex items-center gap-2 mb-2">
-            <Users size={18} className="text-indigo-600" />
-            <span className="text-xs font-mono uppercase text-slate-500 font-bold">Occupancy</span>
-          </div>
-          <p className="text-2xl font-bold text-slate-900 dark:text-white">
-            {briefingData.occupancyForecast.current}%
-          </p>
-          <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-            Expected: {briefingData.occupancyForecast.expected}% (+{briefingData.occupancyForecast.pickup}%)
-          </p>
-        </div>
-
-        <div className="bg-white dark:bg-slate-800 rounded-xl p-4 border border-slate-200 dark:border-slate-700">
-          <div className="flex items-center gap-2 mb-2">
-            <Star size={18} className="text-amber-500" />
-            <span className="text-xs font-mono uppercase text-slate-500 font-bold">VIP Arrivals</span>
-          </div>
-          <p className="text-2xl font-bold text-slate-900 dark:text-white">
-            {briefingData.vipArrivals.length}
-          </p>
-          <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-            Special attention required
-          </p>
-        </div>
-
-        <div className="bg-white dark:bg-slate-800 rounded-xl p-4 border border-slate-200 dark:border-slate-700">
-          <div className="flex items-center gap-2 mb-2">
-            <DollarSign size={18} className="text-emerald-600" />
-            <span className="text-xs font-mono uppercase text-slate-500 font-bold">Revenue</span>
-          </div>
-          <p className="text-2xl font-bold text-slate-900 dark:text-white">
-            ${briefingData.revenue.forecast.toLocaleString()}
-          </p>
-          <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-            Forecast for today
-          </p>
-        </div>
-
-        <div className="bg-white dark:bg-slate-800 rounded-xl p-4 border border-slate-200 dark:border-slate-700">
-          <div className="flex items-center gap-2 mb-2">
-            <Briefcase size={18} className="text-blue-600" />
-            <span className="text-xs font-mono uppercase text-slate-500 font-bold">Staffing</span>
-          </div>
-          <p className="text-2xl font-bold text-slate-900 dark:text-white">
-            {briefingData.staffing.overall}
-          </p>
-          <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-            Overall coverage
-          </p>
-        </div>
-      </div>
-
-      {/* VIP Arrivals */}
-      <div className="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700">
-        <div className="p-4 border-b border-slate-200 dark:border-slate-700">
-          <h3 className="font-bold text-slate-900 dark:text-white flex items-center gap-2">
-            <Star size={18} className="text-amber-500" />
-            VIP Arrivals
-          </h3>
-        </div>
-        <div className="p-4 space-y-3">
-          {briefingData.vipArrivals.map((vip, index) => (
-            <div key={index} className="flex items-start gap-3 p-3 bg-amber-50 dark:bg-amber-950/20 rounded-lg">
-              <div className="w-10 h-10 rounded-full bg-amber-100 dark:bg-amber-900/30 flex items-center justify-center">
-                <Star size={20} className="text-amber-600 dark:text-amber-400" />
-              </div>
-              <div className="flex-1">
-                <p className="font-semibold text-slate-900 dark:text-white">{vip.name}</p>
-                <p className="text-sm text-slate-600 dark:text-slate-400">{vip.room}</p>
-                <div className="flex items-center gap-3 mt-1 text-xs text-slate-500 dark:text-slate-500">
-                  <span className="flex items-center gap-1">
-                    <Clock size={12} />
-                    {vip.time}
-                  </span>
-                </div>
-                <p className="text-xs text-slate-600 dark:text-slate-400 mt-1">{vip.notes}</p>
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {/* Events and Groups */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <div className="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700">
-          <div className="p-4 border-b border-slate-200 dark:border-slate-700">
-            <h3 className="font-bold text-slate-900 dark:text-white flex items-center gap-2">
-              <Calendar size={18} className="text-indigo-600" />
-              Events Today
-            </h3>
-          </div>
-          <div className="p-4 space-y-3">
-            {briefingData.events.map((event, index) => (
-              <div key={index} className="p-3 bg-slate-50 dark:bg-slate-900/50 rounded-lg">
-                <div className="flex items-start justify-between">
-                  <div>
-                    <p className="font-semibold text-slate-900 dark:text-white">{event.name}</p>
-                    <p className="text-sm text-slate-600 dark:text-slate-400">{event.type}</p>
-                  </div>
-                  <span className="text-xs font-mono bg-indigo-100 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-400 px-2 py-1 rounded">
-                    {event.attendees} guests
-                  </span>
-                </div>
-                <div className="flex items-center gap-3 mt-2 text-xs text-slate-500 dark:text-slate-500">
-                  <span className="flex items-center gap-1">
-                    <Clock size={12} />
-                    {event.time}
-                  </span>
-                  <span className="flex items-center gap-1">
-                    <MapPin size={12} />
-                    {event.location}
-                  </span>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div className="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700">
-          <div className="p-4 border-b border-slate-200 dark:border-slate-700">
-            <h3 className="font-bold text-slate-900 dark:text-white flex items-center gap-2">
-              <Users size={18} className="text-blue-600" />
-              Group Arrivals
-            </h3>
-          </div>
-          <div className="p-4 space-y-3">
-            {briefingData.groupArrivals.map((group, index) => (
-              <div key={index} className="p-3 bg-blue-50 dark:bg-blue-950/20 rounded-lg">
-                <p className="font-semibold text-slate-900 dark:text-white">{group.name}</p>
-                <div className="flex items-center gap-4 mt-2 text-sm text-slate-600 dark:text-slate-400">
-                  <span>{group.rooms} rooms</span>
-                  <span>{group.guests} guests</span>
-                  <span className="flex items-center gap-1">
-                    <Clock size={12} />
-                    {group.time}
-                  </span>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
-
-      {/* Weather and Flight Info */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <div className="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700">
-          <div className="p-4 border-b border-slate-200 dark:border-slate-700">
-            <h3 className="font-bold text-slate-900 dark:text-white flex items-center gap-2">
-              <Cloud size={18} className="text-sky-600" />
-              Weather
-            </h3>
-          </div>
-          <div className="p-4">
-            <div className="flex items-center gap-4">
-              <div className="text-4xl font-bold text-slate-900 dark:text-white">
-                {briefingData.weather.temperature}
-              </div>
-              <div>
-                <p className="font-medium text-slate-900 dark:text-white">
-                  {briefingData.weather.condition}
-                </p>
-                <p className="text-sm text-slate-600 dark:text-slate-400">
-                  {briefingData.weather.forecast}
-                </p>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div className="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700">
-          <div className="p-4 border-b border-slate-200 dark:border-slate-700">
-            <h3 className="font-bold text-slate-900 dark:text-white flex items-center gap-2">
-              <Plane size={18} className="text-rose-600" />
-              Flight Delays
-            </h3>
-          </div>
-          <div className="p-4 space-y-2">
-            {briefingData.flightDelays.length === 0 ? (
-              <p className="text-sm text-slate-500 dark:text-slate-400">No flight delays reported</p>
-            ) : (
-              briefingData.flightDelays.map((flight, index) => (
-                <div key={index} className="flex items-center justify-between p-2 bg-rose-50 dark:bg-rose-950/20 rounded-lg">
-                  <div>
-                    <p className="font-medium text-slate-900 dark:text-white">
-                      {flight.airline} {flight.flight}
-                    </p>
-                    <p className="text-xs text-slate-600 dark:text-slate-400">
-                      {flight.affectedGuests} guests affected
-                    </p>
-                  </div>
-                  <span className="text-sm font-medium text-rose-600 dark:text-rose-400">
-                    {flight.delay}
-                  </span>
-                </div>
-              ))
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* Outstanding Issues */}
-      <div className="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700">
-        <div className="p-4 border-b border-slate-200 dark:border-slate-700">
-          <h3 className="font-bold text-slate-900 dark:text-white flex items-center gap-2">
-            <AlertTriangle size={18} className="text-amber-500" />
-            Outstanding Issues
-          </h3>
-        </div>
-        <div className="p-4 space-y-2">
-          {briefingData.outstandingIssues.map((issue, index) => (
-            <div key={index} className="flex items-center justify-between p-3 bg-amber-50 dark:bg-amber-950/20 rounded-lg">
-              <div>
-                <p className="font-medium text-slate-900 dark:text-white">{issue.issue}</p>
-                <p className="text-xs text-slate-600 dark:text-slate-400">{issue.department}</p>
-              </div>
-              <span className={`text-xs font-medium px-2 py-1 rounded ${
-                issue.priority === 'High' 
-                  ? 'bg-rose-100 dark:bg-rose-900/30 text-rose-700 dark:text-rose-400'
-                  : 'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400'
-              }`}>
-                {issue.priority}
+      {briefing && (
+        <div className="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
+          {briefing.persisted ? (
+            <>
+              <Badge tone="success" icon={CheckCircle2}>Saved snapshot</Badge>
+              <span>
+                Generated{briefing.generatedBy ? ` by ${briefing.generatedBy}` : ''} ·{' '}
+                {new Date(briefing.generatedAt).toLocaleString()}
               </span>
-            </div>
-          ))}
+            </>
+          ) : (
+            <>
+              <Badge tone="info" icon={Clock}>Live data</Badge>
+              <span>Not yet saved — use Generate &amp; Save to persist this date's briefing.</span>
+            </>
+          )}
         </div>
-      </div>
+      )}
+
+      {error && (
+        <div className="flex items-center gap-3 p-4 rounded-2xl border border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-800">
+          <AlertTriangle size={18} className="text-[var(--color-warning)] shrink-0" />
+          <p className="text-sm text-gray-700 dark:text-gray-300 flex-1">{error}</p>
+          <button onClick={load} className={button.secondary}>Retry</button>
+        </div>
+      )}
+
+      {briefing && (
+        <>
+          {/* KPI row */}
+          <div className={layout.kpiGrid}>
+            <StatCard
+              title="Occupancy"
+              value={`${briefing.occupancy.current}%`}
+              icon={BedDouble}
+              tone="accent"
+              caption={`${briefing.occupancy.occupied}/${briefing.occupancy.roomsTotal} rooms · expected ${briefing.occupancy.expected}%`}
+            />
+            <StatCard
+              title="Arrivals / Departures"
+              value={`${briefing.occupancy.arrivals} / ${briefing.occupancy.departures}`}
+              icon={LogIn}
+              tone="info"
+              caption={`${briefing.occupancy.inHouseGuests} guests in-house`}
+            />
+            <StatCard
+              title="Revenue Forecast"
+              value={formatAmount(briefing.revenue.forecast)}
+              icon={DollarSign}
+              tone="success"
+              caption={`yesterday ${formatAmount(briefing.revenue.yesterday)} · ${briefing.revenue.variance >= 0 ? '+' : ''}${formatAmount(briefing.revenue.variance)}`}
+            />
+            <StatCard
+              title="Staffing Coverage"
+              value={briefing.staffing.overall !== null ? `${briefing.staffing.overall}%` : '—'}
+              icon={Briefcase}
+              tone="warning"
+              caption={briefing.staffing.departments.filter(d => (d.gap ?? 0) > 0).map(d => d.name).join(', ') || 'all tracked departments covered'}
+            />
+          </div>
+
+          {/* VIP Arrivals */}
+          <SectionCard
+            title="VIP Arrivals"
+            subtitle="VIP guests checking in today + housekeeping VIP preparations"
+            icon={Star}
+            tone="warning"
+            pad="md"
+            actions={<Badge tone="warning">{briefing.vipArrivals.length}</Badge>}
+          >
+            {briefing.vipArrivals.length === 0 ? (
+              <p className="text-sm text-gray-500 dark:text-gray-400">No VIP arrivals on the books for this date.</p>
+            ) : (
+              <div className="space-y-3">
+                {briefing.vipArrivals.map((vip, i) => (
+                  <div key={i} className="flex items-start gap-3 p-3 rounded-xl bg-[var(--color-warning)]/5 border border-[var(--color-warning)]/20">
+                    <div className={`shrink-0 p-2.5 rounded-xl ${statusTone.warning.soft}`}>
+                      <Star size={18} />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <p className="font-semibold text-gray-900 dark:text-white">{vip.name}</p>
+                        <Badge tone={vip.status === 'CheckedIn' ? 'success' : 'neutral'}>{vip.status}</Badge>
+                        <Badge tone="info">{vip.source}</Badge>
+                      </div>
+                      <p className="text-sm text-gray-600 dark:text-gray-400 mt-0.5">{vip.room}</p>
+                      {vip.notes && <p className="text-xs text-gray-500 dark:text-gray-500 mt-1">{vip.notes}</p>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </SectionCard>
+
+          {/* Events + Group arrivals */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <SectionCard
+              title="Events"
+              subtitle="Banquet & event bookings covering this date"
+              icon={Calendar}
+              tone="accent"
+              pad="md"
+              actions={<Badge tone="accent">{briefing.events.length}</Badge>}
+            >
+              {briefing.events.length === 0 ? (
+                <p className="text-sm text-gray-500 dark:text-gray-400">No events scheduled.</p>
+              ) : (
+                <div className="space-y-3">
+                  {briefing.events.map((ev, i) => (
+                    <div key={i} className="p-3 rounded-xl bg-gray-50 dark:bg-slate-900/50">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <p className="font-semibold text-gray-900 dark:text-white truncate">{ev.name}</p>
+                          <p className="text-sm text-gray-600 dark:text-gray-400">{ev.type}</p>
+                        </div>
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          {ev.attendees > 0 && <Badge tone="info">{ev.attendees} guests</Badge>}
+                          <Badge tone={ev.status === 'InProgress' ? 'success' : 'neutral'}>{ev.status}</Badge>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-3 mt-2 text-xs text-gray-500 dark:text-gray-500">
+                        <span className="flex items-center gap-1"><Clock size={12} />{ev.dateRange}</span>
+                        <span className="flex items-center gap-1"><MapPin size={12} />{ev.location}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </SectionCard>
+
+            <SectionCard
+              title="Group Arrivals"
+              subtitle="Group blocks & group reservations checking in"
+              icon={Users}
+              tone="info"
+              pad="md"
+              actions={<Badge tone="info">{briefing.groupArrivals.length}</Badge>}
+            >
+              {briefing.groupArrivals.length === 0 ? (
+                <p className="text-sm text-gray-500 dark:text-gray-400">No group arrivals for this date.</p>
+              ) : (
+                <div className="space-y-3">
+                  {briefing.groupArrivals.map((g, i) => (
+                    <div key={i} className="p-3 rounded-xl bg-[var(--color-info)]/5 border border-[var(--color-info)]/20">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="font-semibold text-gray-900 dark:text-white truncate">{g.name}</p>
+                        <Badge tone="neutral">{g.source}</Badge>
+                      </div>
+                      <div className="flex items-center gap-4 mt-2 text-sm text-gray-600 dark:text-gray-400">
+                        <span>{g.rooms} rooms</span>
+                        {g.guests > 0 && <span>{g.guests} guests</span>}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </SectionCard>
+          </div>
+
+          {/* Maintenance + Airport transfers */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <SectionCard
+              title="Maintenance Impacts"
+              subtitle="Open work orders & corrective tasks, highest priority first"
+              icon={Wrench}
+              tone="danger"
+              pad="md"
+              actions={<Badge tone="danger">{briefing.maintenance.length}</Badge>}
+            >
+              {briefing.maintenance.length === 0 ? (
+                <p className="text-sm text-gray-500 dark:text-gray-400">No open maintenance items.</p>
+              ) : (
+                <div className="space-y-2">
+                  {briefing.maintenance.map((m, i) => (
+                    <div key={i} className="flex items-center justify-between gap-3 p-3 rounded-xl bg-gray-50 dark:bg-slate-900/50">
+                      <div className="min-w-0">
+                        <p className="font-medium text-gray-900 dark:text-white truncate">{m.task}</p>
+                        <p className="text-xs text-gray-500 dark:text-gray-500 mt-0.5">
+                          {m.location} · {m.source} · {m.status}
+                        </p>
+                      </div>
+                      <Badge tone={toneFor(m.priority)} className="shrink-0">{m.priority}</Badge>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </SectionCard>
+
+            <SectionCard
+              title="Airport Transfers & Flights"
+              subtitle="Scheduled transfers with live flight status"
+              icon={Plane}
+              tone="info"
+              pad="md"
+              actions={<Badge tone="info">{briefing.flights.length}</Badge>}
+            >
+              {briefing.flights.length === 0 ? (
+                <p className="text-sm text-gray-500 dark:text-gray-400">No airport transfers scheduled for this date.</p>
+              ) : (
+                <div className="space-y-2">
+                  {briefing.flights.map((f, i) => (
+                    <div key={i} className="flex items-center justify-between gap-3 p-3 rounded-xl bg-gray-50 dark:bg-slate-900/50">
+                      <div className="min-w-0">
+                        <p className="font-medium text-gray-900 dark:text-white">
+                          {f.airline} {f.flight}
+                        </p>
+                        <p className="text-xs text-gray-500 dark:text-gray-500 mt-0.5">
+                          {f.scheduledTime && `${f.scheduledTime} · `}{f.direction}
+                          {f.guestName && ` · ${f.guestName}`}
+                          {f.guests > 0 && ` · ${f.guests} pax`}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        {f.delay && <Badge tone="warning">delay {f.delay}</Badge>}
+                        <Badge tone={FLIGHT_TONE[f.flightStatus.toLowerCase()] ?? 'neutral'}>{f.flightStatus}</Badge>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </SectionCard>
+          </div>
+
+          {/* Staffing */}
+          <SectionCard
+            title="Staffing Coverage"
+            subtitle="Assigned vs. required staff across department shifts"
+            icon={Briefcase}
+            tone="warning"
+            pad="md"
+          >
+            <div className="space-y-3">
+              {staffing.map((d: DailyBriefingStaffingDept) => {
+                const pct = d.assigned === null || d.required === 0
+                  ? null
+                  : Math.min(100, Math.round((d.assigned / d.required) * 100));
+                return (
+                  <div key={d.name} className="flex items-center gap-4">
+                    <div className="w-32 shrink-0">
+                      <p className="text-sm font-medium text-gray-900 dark:text-white">{d.name}</p>
+                    </div>
+                    <div className="flex-1 h-2 rounded-full bg-gray-100 dark:bg-slate-700 overflow-hidden">
+                      {pct !== null && (
+                        <div
+                          className={`h-full rounded-full ${pct >= 100 ? 'bg-[var(--color-success)]' : pct >= 75 ? 'bg-[var(--color-warning)]' : 'bg-[var(--color-danger)]'}`}
+                          style={{ width: `${pct}%` }}
+                        />
+                      )}
+                    </div>
+                    <div className="w-40 shrink-0 text-right">
+                      <span className="text-xs text-gray-500 dark:text-gray-400">
+                        {d.assigned === null ? '—' : `${d.assigned}/${d.required}`}
+                      </span>{' '}
+                      <Badge tone={d.gap === null ? 'neutral' : d.gap === 0 ? 'success' : 'warning'}>
+                        {d.status}
+                      </Badge>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </SectionCard>
+
+          {/* Outstanding issues */}
+          <SectionCard
+            title="Outstanding Issues"
+            subtitle="Active alerts from the Operations Command Center feed"
+            icon={AlertTriangle}
+            tone="danger"
+            pad="none"
+            actions={<Badge tone="danger">{briefing.outstandingIssues.length}</Badge>}
+          >
+            {briefing.outstandingIssues.length === 0 ? (
+              <p className="px-6 py-4 text-sm text-gray-500 dark:text-gray-400">No outstanding issues — all clear.</p>
+            ) : (
+              <div className="divide-y divide-gray-100 dark:divide-slate-700">
+                {briefing.outstandingIssues.map((issue, i) => (
+                  <div
+                    key={i}
+                    className={`flex items-center justify-between gap-3 px-6 py-3 border-l-4 ${statusTone[toneFor(issue.priority)].border}`}
+                  >
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium text-gray-900 dark:text-white">{issue.issue}</p>
+                      <p className="text-xs text-gray-500 dark:text-gray-500 mt-0.5">{issue.department}</p>
+                    </div>
+                    <Badge tone={toneFor(issue.priority)} className="shrink-0 capitalize">{issue.priority}</Badge>
+                  </div>
+                ))}
+              </div>
+            )}
+          </SectionCard>
+        </>
+      )}
     </div>
   );
 };

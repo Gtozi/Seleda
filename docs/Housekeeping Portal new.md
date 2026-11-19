@@ -501,7 +501,8 @@ Items requested from the Inventory Portal:
 
 | Portal                | Integration                                          |
 | --------------------- | ---------------------------------------------------- |
-| Front Office (PMS)    | Room Status, Check-out, Room Release, Guest Requests |
+| Front Office (PMS)    | Room Status, Check-out, Room Release, Guest Requests 
+ |
 | Engineering           | Maintenance Requests, Room Out of Order              |
 | Laundry               | Linen Collection and Return                          |
 | Inventory             | Amenities, Chemicals, Linen Replenishment            |

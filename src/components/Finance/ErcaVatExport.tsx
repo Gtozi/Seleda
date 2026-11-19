@@ -66,7 +66,30 @@ const ErcaVatExport = () => {
             <RefreshCw size={16} />
             Refresh
           </button>
-          <button className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white font-bold py-2.5 px-4 rounded-2xl flex items-center gap-2 text-xs hover:bg-slate-50 transition shadow-sm">
+          <button
+            onClick={() => {
+              if (!vatExport) return;
+              const rows = [
+                ['Account Code', 'Account Name', 'VAT Output', 'VAT Input', 'Net VAT'],
+                ...vatExport.vat_accounts.map((a: VatAccount) => [
+                  a.account_code,
+                  a.account_name,
+                  a.vat_output.toFixed(2),
+                  a.vat_input.toFixed(2),
+                  (a.vat_output - a.vat_input).toFixed(2),
+                ]),
+              ];
+              const csv = rows.map(r => r.map(c => `"${c}"`).join(',')).join('\n');
+              const blob = new Blob([csv], { type: 'text/csv' });
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement('a');
+              a.href = url;
+              a.download = `erca-vat-export-${periodStart}-to-${periodEnd}.csv`;
+              a.click();
+              URL.revokeObjectURL(url);
+            }}
+            className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white font-bold py-2.5 px-4 rounded-2xl flex items-center gap-2 text-xs hover:bg-slate-50 transition shadow-sm"
+          >
             <Download size={16} />
             Export CSV
           </button>

@@ -8,7 +8,7 @@
  */
 
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams, useNavigate } from 'react-router-dom';
 import {
   Search,
   Plus,
@@ -260,6 +260,7 @@ const GuestProfiles = ({ selectedGuestId, selectedGroupId }: { selectedGuestId?:
   // ?new=1        → new-guest form
   // (none)        → list view
   const [searchParams, setSearchParams] = useSearchParams();
+  const navigate = useNavigate();
   const [guests, setGuests] = useState<GuestProfile[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
@@ -296,6 +297,10 @@ const GuestProfiles = ({ selectedGuestId, selectedGroupId }: { selectedGuestId?:
   const currentGroupId = searchParams.get('groupId');
   const editId = searchParams.get('edit');
   const isNew = searchParams.get('new') === '1';
+  // "from" marks the module that triggered the edit (e.g. check-in scan
+  // button). After saving, we return to that module instead of the guest
+  // detail page.
+  const fromModule = searchParams.get('from');
   const viewMode: 'list' | 'guest-detail' | 'group-detail' | 'new-guest' =
     editId ? 'new-guest' :
     isNew ? 'new-guest' :
@@ -308,6 +313,12 @@ const GuestProfiles = ({ selectedGuestId, selectedGroupId }: { selectedGuestId?:
   const [fetchedEditGuest, setFetchedEditGuest] = useState<GuestProfile | null>(null);
   const [editGuestLoading, setEditGuestLoading] = useState(false);
   const [editGuestError, setEditGuestError] = useState<string | null>(null);
+  // Keep a ref of the current guests list so the edit-fetch effect can check
+  // whether the guest is already in memory WITHOUT depending on `guests` in its
+  // dependency array. This prevents the list-fetch (which updates `guests` on
+  // mount) from cancelling the in-flight edit-fetch via the effect cleanup.
+  const guestsRef = useRef<GuestProfile[]>([]);
+  guestsRef.current = guests;
   const editingGuest: GuestProfile | null = useMemo(() => {
     if (!editId) return null;
     return guests.find((g) => g.id === editId) || fetchedEditGuest;
@@ -316,11 +327,11 @@ const GuestProfiles = ({ selectedGuestId, selectedGroupId }: { selectedGuestId?:
   useEffect(() => {
     if (!editId) { setFetchedEditGuest(null); setEditGuestError(null); return; }
     // Already resolved from the list — no fetch needed
-    if (guests.some((g) => g.id === editId)) { setFetchedEditGuest(null); setEditGuestError(null); return; }
+    if (guestsRef.current.some((g) => g.id === editId)) { setFetchedEditGuest(null); setEditGuestError(null); return; }
     let cancelled = false;
     setEditGuestLoading(true);
     setEditGuestError(null);
-    fetch(`/api/front-office/guests/${editId}`, {
+    fetch(`/api/front-office/guests/${editId}?minimal=true`, {
       credentials: 'include',
       headers: { 'Authorization': `Bearer ${getAuthToken()}` },
     })
@@ -339,7 +350,8 @@ const GuestProfiles = ({ selectedGuestId, selectedGroupId }: { selectedGuestId?:
       })
       .finally(() => { if (!cancelled) setEditGuestLoading(false); });
     return () => { cancelled = true; };
-  }, [editId, guests]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editId]);
 
   // Navigate to a guest profile (updates the URL → shareable link)
   const handleViewGuest = (guestId: string) => {
@@ -348,8 +360,14 @@ const GuestProfiles = ({ selectedGuestId, selectedGroupId }: { selectedGuestId?:
 
   // Navigate back to the list (clears the profile from the URL)
   const backToList = useCallback(() => {
+    // If the edit was triggered from another module (e.g. the Check-In scan
+    // button), canceling returns to that module instead of the guest list.
+    if (fromModule === 'check-in') {
+      navigate('/erp/frontoffice/check-in');
+      return;
+    }
     setSearchParams({});
-  }, [setSearchParams]);
+  }, [setSearchParams, fromModule, navigate]);
 
   // Fetch guests from database (debounced search + filters + sort + pagination)
   const fetchGuests = useCallback(async (search: string, status: string, tier: string, sort: string, order: 'asc' | 'desc', off: number) => {
@@ -473,7 +491,13 @@ const GuestProfiles = ({ selectedGuestId, selectedGroupId }: { selectedGuestId?:
       }
 
       await fetchGuests(debouncedSearch, filterStatus, filterLoyaltyTier, sortBy, sortOrder, offset);
-      // After save, navigate to the guest's detail page (URL-driven)
+      // After save, return to the module that triggered the edit (e.g. the
+      // Check-In scan button). Otherwise navigate to the guest's detail page.
+      if (fromModule === 'check-in') {
+        success(editingGuest ? 'Guest updated successfully' : 'Guest created successfully');
+        navigate('/erp/frontoffice/check-in');
+        return;
+      }
       if (guestId) {
         setSearchParams({ guestId });
       } else {

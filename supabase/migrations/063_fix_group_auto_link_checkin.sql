@@ -111,8 +111,9 @@ begin
   end if;
 
   -- Resolve a guest_id for this reservation if needed
+  -- Use AND condition to ensure both email AND name match before reusing guest profile
   if new.guest_id is null and new.guest_email is not null then
-    select id into v_guest_id from guests where email = new.guest_email limit 1;
+    select id into v_guest_id from guests where email = new.guest_email and name = new.guest_name limit 1;
 
     if v_guest_id is null then
       v_guest_id := 'G-' || gen_random_uuid()::text;
@@ -137,7 +138,7 @@ begin
       returning id into v_guest_id;
 
       if v_guest_id is null then
-        select id into v_guest_id from guests where email = new.guest_email limit 1;
+        select id into v_guest_id from guests where email = new.guest_email and name = new.guest_name limit 1;
       end if;
     end if;
 
@@ -193,10 +194,11 @@ begin
   select type into v_relationship_type from group_profiles where id = v_group_id;
 
   -- Determine guest_id, preferring the reservation's guest_id then email lookup
+  -- Use AND condition to ensure both email AND name match before reusing guest profile
   if new.guest_id is not null then
     v_guest_id := new.guest_id;
   elsif new.guest_email is not null then
-    select id into v_guest_id from guests where email = new.guest_email limit 1;
+    select id into v_guest_id from guests where email = new.guest_email and name = new.guest_name limit 1;
   end if;
 
   if v_guest_id is null then

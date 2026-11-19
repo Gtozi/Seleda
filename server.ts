@@ -87,6 +87,11 @@ async function startServer() {
     import('./src/server/scheduler').then(({ loadAndStartJobs }) => {
       loadAndStartJobs().catch(err => console.error('[Scheduler] Failed to start:', err.message));
     });
+    // Start channel sync runner (honors each channel's sync_interval_minutes;
+    // only live channels with credentials are synced — test-mode is manual only)
+    import('./src/server/services/channelSync').then(({ startChannelSyncScheduler }) => {
+      startChannelSyncScheduler();
+    });
   });
 }
 

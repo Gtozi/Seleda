@@ -1,8 +1,16 @@
-import React, { useState } from 'react';
-import { 
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Fleet Management — complete fleet overview and vehicle status.
+ * DB-integrated via /api/transport/vehicles/* (transport_vehicles table).
+ * UI follows the F&B / Housekeeping portal pattern.
+ */
+
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import {
   Car,
   Search,
-  Filter,
   Gauge,
   AlertTriangle,
   CheckCircle2,
@@ -11,402 +19,466 @@ import {
   Wrench,
   Plus,
   Eye,
-  Edit,
-  MoreVertical
+  Pencil,
+  Trash2,
+  MapPin,
+  Users,
+  Loader2,
+  RefreshCw,
 } from 'lucide-react';
+import { useERP } from '../../context/ERPContext';
+import StatCard from '../FrontOffice/StatCard';
+import { PageHeader, SectionCard, Badge } from '../FrontOffice/ui';
+import { ModalSystem } from '../Shared/ModalSystem';
+import { button, layout, type StatusTone } from '../FrontOffice/brandTheme';
 
-const FleetManagement: React.FC = () => {
-  const [searchTerm, setSearchTerm] = useState('');
+interface Vehicle {
+  id: string;
+  vehicle_number: string;
+  registration_number: string | null;
+  vin: string | null;
+  make: string | null;
+  model: string | null;
+  year: number | null;
+  color: string | null;
+  category: string;
+  capacity: number;
+  fuel_type: string;
+  insurance_provider: string | null;
+  insurance_policy: string | null;
+  insurance_expiry: string | null;
+  registration_expiry: string | null;
+  status: string;
+  mileage: number;
+  last_service: string | null;
+  next_service: string | null;
+  driver_id: string | null;
+  current_location: string | null;
+  fuel_level: number;
+  utilization: number;
+  condition: string;
+  transport_drivers: { id: string; employees: { name: string; phone: string | null } | null } | null;
+}
+
+interface Driver {
+  id: string;
+  assigned_vehicle: string | null;
+  employees: { name: string } | null;
+}
+
+const VEHICLE_CATEGORIES = ['Sedan', 'SUV', 'Van', 'Minibus', 'Luxury', 'Shuttle Bus', 'Utility Vehicle', 'Motorcycle', 'Electric', 'Electric Vehicle'];
+const VEHICLE_STATUSES = ['Active', 'In Use', 'Maintenance', 'Out of Service', 'Retired', 'Sold'];
+const VEHICLE_CONDITIONS = ['Excellent', 'Good', 'Fair', 'Service Required'];
+const FUEL_TYPES = ['Gasoline', 'Diesel', 'Electric', 'Hybrid'];
+
+function authHeaders(json = false): Record<string, string> {
+  const token = typeof window !== 'undefined' ? localStorage.getItem('auth_token') : null;
+  const headers: Record<string, string> = {};
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+  if (json) headers['Content-Type'] = 'application/json';
+  return headers;
+}
+
+const inputCls = 'w-full px-3 py-2 bg-slate-50 dark:bg-slate-850 border border-gray-200 dark:border-slate-700 rounded-xl text-sm outline-none focus:ring-1 focus:ring-indigo-500 font-sans';
+const filterSelectCls = 'px-3 py-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl text-xs outline-none focus:ring-1 focus:ring-indigo-500 font-sans w-auto';
+
+function Field({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <label className="block">
+      <span className="block text-xs font-bold text-gray-500 uppercase tracking-wide mb-1.5">{label}</span>
+      {children}
+    </label>
+  );
+}
+
+function statusTone(status: string): StatusTone {
+  switch (status) {
+    case 'Active': return 'success';
+    case 'In Use': return 'info';
+    case 'Maintenance': return 'warning';
+    case 'Out of Service': case 'Retired': case 'Sold': return 'danger';
+    default: return 'neutral';
+  }
+}
+
+function conditionTone(condition: string): StatusTone {
+  switch (condition) {
+    case 'Excellent': return 'success';
+    case 'Good': return 'info';
+    case 'Fair': return 'warning';
+    case 'Service Required': return 'danger';
+    default: return 'neutral';
+  }
+}
+
+function fuelBar(level: number): string {
+  if (level >= 50) return 'bg-emerald-500';
+  if (level >= 25) return 'bg-amber-500';
+  return 'bg-rose-500';
+}
+
+function formatDate(d?: string | null): string {
+  if (!d) return '—';
+  return new Date(d).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+function serviceDueWithin(nextService: string | null, days: number): boolean {
+  if (!nextService) return false;
+  const diff = (new Date(nextService).getTime() - Date.now()) / (1000 * 60 * 60 * 24);
+  return diff <= days;
+}
+
+const emptyForm = {
+  vehicleNumber: '', registrationNumber: '', vin: '', make: '', model: '', year: '',
+  color: '', category: 'Sedan', capacity: 4, fuelType: 'Gasoline',
+  insuranceProvider: '', insurancePolicy: '', insuranceExpiry: '', registrationExpiry: '',
+  status: 'Active', mileage: 0, lastService: '', nextService: '',
+  driverId: '', currentLocation: '', fuelLevel: 100, utilization: 0, condition: 'Good',
+};
+
+const FleetManagement = () => {
+  const { currentPropertyId, addNotification } = useERP();
+  const [vehicles, setVehicles] = useState<Vehicle[]>([]);
+  const [drivers, setDrivers] = useState<Driver[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [categoryFilter, setCategoryFilter] = useState('all');
+  const [showModal, setShowModal] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [viewing, setViewing] = useState<Vehicle | null>(null);
+  const [form, setForm] = useState({ ...emptyForm });
 
-  const fleet = [
-    {
-      id: 'VH-001',
-      category: 'Sedan',
-      make: 'Toyota',
-      model: 'Camry',
-      year: 2023,
-      plate: 'ABC-1234',
-      status: 'Active',
-      location: 'Hotel Garage',
-      driver: 'Elena R.',
-      fuelLevel: 85,
-      mileage: 45230,
-      lastService: '2026-06-15',
-      nextService: '2026-09-15',
-      utilization: 78,
-      condition: 'Good'
-    },
-    {
-      id: 'VH-002',
-      category: 'SUV',
-      make: 'Ford',
-      model: 'Explorer',
-      year: 2022,
-      plate: 'DEF-5678',
-      status: 'Active',
-      location: 'Hotel Garage',
-      driver: 'Mike T.',
-      fuelLevel: 92,
-      mileage: 67890,
-      lastService: '2026-06-20',
-      nextService: '2026-09-20',
-      utilization: 85,
-      condition: 'Good'
-    },
-    {
-      id: 'VH-003',
-      category: 'Sedan',
-      make: 'Honda',
-      model: 'Accord',
-      year: 2023,
-      plate: 'GHI-9012',
-      status: 'In Use',
-      location: 'JFK Airport',
-      driver: 'John D.',
-      fuelLevel: 45,
-      mileage: 38450,
-      lastService: '2026-06-10',
-      nextService: '2026-09-10',
-      utilization: 92,
-      condition: 'Good'
-    },
-    {
-      id: 'VH-004',
-      category: 'Van',
-      make: 'Mercedes',
-      model: 'Sprinter',
-      year: 2021,
-      plate: 'JKL-3456',
-      status: 'Active',
-      location: 'Hotel Garage',
-      driver: 'Carlos M.',
-      fuelLevel: 78,
-      mileage: 89500,
-      lastService: '2026-06-25',
-      nextService: '2026-09-25',
-      utilization: 70,
-      condition: 'Fair'
-    },
-    {
-      id: 'VH-005',
-      category: 'Luxury',
-      make: 'BMW',
-      model: '7 Series',
-      year: 2024,
-      plate: 'MNO-7890',
-      status: 'Maintenance',
-      location: 'Service Center',
-      driver: 'Unassigned',
-      fuelLevel: 60,
-      mileage: 12500,
-      lastService: '2026-07-28',
-      nextService: '2026-10-28',
-      utilization: 0,
-      condition: 'Service Required'
-    },
-    {
-      id: 'VH-006',
-      category: 'Electric',
-      make: 'Tesla',
-      model: 'Model S',
-      year: 2023,
-      plate: 'PQR-2345',
-      status: 'Active',
-      location: 'Hotel Garage',
-      driver: 'Sarah L.',
-      fuelLevel: 88,
-      mileage: 28750,
-      lastService: '2026-06-18',
-      nextService: '2026-12-18',
-      utilization: 82,
-      condition: 'Excellent'
-    },
-    {
-      id: 'VH-007',
-      category: 'Minibus',
-      make: 'Ford',
-      model: 'Transit',
-      year: 2022,
-      plate: 'STU-6789',
-      status: 'In Use',
-      location: 'Convention Center',
-      driver: 'David L.',
-      fuelLevel: 35,
-      mileage: 56780,
-      lastService: '2026-06-22',
-      nextService: '2026-09-22',
-      utilization: 88,
-      condition: 'Good'
-    },
-    {
-      id: 'VH-008',
-      category: 'Sedan',
-      make: 'Chevrolet',
-      model: 'Malibu',
-      year: 2022,
-      plate: 'VWX-0123',
-      status: 'Active',
-      location: 'Hotel Garage',
-      driver: 'Available',
-      fuelLevel: 45,
-      mileage: 72340,
-      lastService: '2026-06-12',
-      nextService: '2026-09-12',
-      utilization: 65,
-      condition: 'Fair'
-    },
-  ];
+  const fetchAll = useCallback(async () => {
+    if (!currentPropertyId) return;
+    setLoading(true);
+    try {
+      const [vRes, dRes] = await Promise.all([
+        fetch(`/api/transport/vehicles/${currentPropertyId}`, { headers: authHeaders() }),
+        fetch(`/api/transport/drivers/${currentPropertyId}`, { headers: authHeaders() }),
+      ]);
+      if (vRes.ok) setVehicles(((await vRes.json()) as { vehicles: Vehicle[] }).vehicles || []);
+      if (dRes.ok) setDrivers(((await dRes.json()) as { drivers: Driver[] }).drivers || []);
+    } catch { /* non-fatal */ }
+    setLoading(false);
+  }, [currentPropertyId]);
 
-  const getStatusColor = (status: string) => {
-    switch (status) {
-      case 'Active': return 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900 dark:text-emerald-200';
-      case 'In Use': return 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200';
-      case 'Maintenance': return 'bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200';
-      case 'Out of Service': return 'bg-rose-100 text-rose-800 dark:bg-rose-900 dark:text-rose-200';
-      default: return 'bg-slate-100 text-slate-800 dark:bg-slate-700 dark:text-slate-200';
-    }
+  useEffect(() => { if (currentPropertyId) fetchAll(); }, [currentPropertyId, fetchAll]);
+
+  const filtered = useMemo(() => {
+    let list = vehicles;
+    if (statusFilter !== 'all') list = list.filter((v) => v.status === statusFilter);
+    if (categoryFilter !== 'all') list = list.filter((v) => v.category === categoryFilter);
+    if (!search.trim()) return list;
+    const q = search.toLowerCase();
+    return list.filter((v) =>
+      v.vehicle_number.toLowerCase().includes(q) ||
+      (v.make || '').toLowerCase().includes(q) ||
+      (v.model || '').toLowerCase().includes(q) ||
+      (v.registration_number || '').toLowerCase().includes(q)
+    );
+  }, [vehicles, search, statusFilter, categoryFilter]);
+
+  const stats = useMemo(() => ({
+    total: vehicles.length,
+    active: vehicles.filter((v) => v.status === 'Active').length,
+    inUse: vehicles.filter((v) => v.status === 'In Use').length,
+    maintenance: vehicles.filter((v) => v.status === 'Maintenance').length,
+    avgUtilization: vehicles.length ? Math.round(vehicles.reduce((s, v) => s + v.utilization, 0) / vehicles.length) : 0,
+    serviceDue: vehicles.filter((v) => serviceDueWithin(v.next_service, 30)).length,
+  }), [vehicles]);
+
+  const openCreate = () => {
+    setEditingId(null);
+    setForm({ ...emptyForm });
+    setShowModal(true);
   };
 
-  const getConditionColor = (condition: string) => {
-    switch (condition) {
-      case 'Excellent': return 'bg-emerald-500 text-white';
-      case 'Good': return 'bg-blue-500 text-white';
-      case 'Fair': return 'bg-amber-500 text-white';
-      case 'Service Required': return 'bg-rose-500 text-white';
-      default: return 'bg-slate-500 text-white';
-    }
+  const openEdit = (v: Vehicle) => {
+    setEditingId(v.id);
+    setForm({
+      vehicleNumber: v.vehicle_number, registrationNumber: v.registration_number || '',
+      vin: v.vin || '', make: v.make || '', model: v.model || '',
+      year: v.year !== null ? String(v.year) : '', color: v.color || '',
+      category: v.category, capacity: v.capacity, fuelType: v.fuel_type,
+      insuranceProvider: v.insurance_provider || '', insurancePolicy: v.insurance_policy || '',
+      insuranceExpiry: v.insurance_expiry || '', registrationExpiry: v.registration_expiry || '',
+      status: v.status, mileage: v.mileage,
+      lastService: v.last_service || '', nextService: v.next_service || '',
+      driverId: v.driver_id || '', currentLocation: v.current_location || '',
+      fuelLevel: v.fuel_level, utilization: v.utilization, condition: v.condition,
+    });
+    setShowModal(true);
   };
 
-  const getFuelColor = (level: number) => {
-    if (level >= 50) return 'bg-emerald-500';
-    if (level >= 25) return 'bg-amber-500';
-    return 'bg-rose-500';
+  const handleSave = async () => {
+    if (!currentPropertyId) return;
+    setSaving(true);
+    try {
+      const endpoint = editingId ? `/api/transport/vehicles/${editingId}` : '/api/transport/vehicles/';
+      const body = {
+        propertyId: currentPropertyId,
+        vehicleNumber: form.vehicleNumber,
+        registrationNumber: form.registrationNumber || null,
+        vin: form.vin || null,
+        make: form.make || null, model: form.model || null,
+        year: form.year === '' ? null : Number(form.year),
+        color: form.color || null,
+        category: form.category, capacity: form.capacity, fuelType: form.fuelType,
+        insuranceProvider: form.insuranceProvider || null, insurancePolicy: form.insurancePolicy || null,
+        insuranceExpiry: form.insuranceExpiry || null, registrationExpiry: form.registrationExpiry || null,
+        status: form.status, mileage: form.mileage,
+        lastService: form.lastService || null, nextService: form.nextService || null,
+        driverId: form.driverId || null, currentLocation: form.currentLocation || null,
+        fuelLevel: form.fuelLevel, utilization: form.utilization, condition: form.condition,
+      };
+      const res = await fetch(endpoint, { method: editingId ? 'PUT' : 'POST', headers: authHeaders(true), body: JSON.stringify(body) });
+      if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error(err.error || `Failed (${res.status})`); }
+      addNotification(editingId ? 'Vehicle updated' : 'Vehicle added', 'success', 'Transportation');
+      setShowModal(false); fetchAll();
+    } catch (e: any) { addNotification(e?.message || 'Failed', 'danger', 'Transportation'); } finally { setSaving(false); }
   };
 
-  const filteredFleet = fleet.filter(vehicle => {
-    const matchesSearch = vehicle.id.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                         vehicle.make.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                         vehicle.model.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                         vehicle.plate.toLowerCase().includes(searchTerm.toLowerCase());
-    const matchesStatus = statusFilter === 'all' || vehicle.status === statusFilter;
-    const matchesCategory = categoryFilter === 'all' || vehicle.category === categoryFilter;
-    return matchesSearch && matchesStatus && matchesCategory;
-  });
-
-  const fleetStats = {
-    total: fleet.length,
-    active: fleet.filter(v => v.status === 'Active').length,
-    inUse: fleet.filter(v => v.status === 'In Use').length,
-    maintenance: fleet.filter(v => v.status === 'Maintenance').length,
-    avgUtilization: Math.round(fleet.reduce((sum, v) => sum + v.utilization, 0) / fleet.length),
-    serviceDue: fleet.filter(v => new Date(v.nextService) <= new Date('2026-08-15')).length
+  const handleStatusChange = async (v: Vehicle, status: string) => {
+    setSaving(true);
+    try {
+      const res = await fetch(`/api/transport/vehicles/${v.id}`, {
+        method: 'PUT', headers: authHeaders(true), body: JSON.stringify({ status }),
+      });
+      if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error(err.error || `Failed (${res.status})`); }
+      addNotification(`Vehicle ${status.toLowerCase()}`, 'success', 'Transportation');
+      setViewing(null); fetchAll();
+    } catch (e: any) { addNotification(e?.message || 'Failed', 'danger', 'Transportation'); } finally { setSaving(false); }
   };
+
+  const handleDelete = async (id: string) => {
+    if (!confirm('Remove this vehicle from the fleet?')) return;
+    setSaving(true);
+    try {
+      const res = await fetch(`/api/transport/vehicles/${id}`, { method: 'DELETE', headers: authHeaders() });
+      if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error(err.error || `Failed (${res.status})`); }
+      addNotification('Vehicle removed', 'success', 'Transportation');
+      fetchAll();
+    } catch (e: any) { addNotification(e?.message || 'Failed', 'danger', 'Transportation'); } finally { setSaving(false); }
+  };
+
+  if (!currentPropertyId) {
+    return (
+      <div className={layout.sectionStack}>
+        <PageHeader title="Fleet Management" subtitle="Complete fleet overview and vehicle status" icon={Car} />
+        <SectionCard><div className="flex flex-col items-center justify-center py-16 text-slate-400"><Car className="w-10 h-10 mb-3 opacity-40" /><p className="text-sm">Select a property to view the fleet.</p></div></SectionCard>
+      </div>
+    );
+  }
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold text-slate-900 dark:text-white">Fleet Management</h1>
-          <p className="text-slate-600 dark:text-slate-400 mt-1">Complete fleet overview and vehicle status</p>
-        </div>
-        <button className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition">
-          <Plus className="w-4 h-4" />
-          Add Vehicle
-        </button>
-      </div>
+    <div className={layout.sectionStack}>
+      <PageHeader
+        title="Fleet Management"
+        subtitle="Complete fleet overview and vehicle status"
+        icon={Car}
+        actions={
+          <div className="flex items-center gap-2">
+            <button onClick={fetchAll} className={button.ghost}><RefreshCw className="w-4 h-4" /> Refresh</button>
+            <button onClick={openCreate} className={button.primary}><Plus className="w-4 h-4" /> Add Vehicle</button>
+          </div>
+        }
+      />
 
-      {/* Fleet Statistics */}
-      <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-4">
-        <div className="bg-white dark:bg-slate-800 rounded-xl p-4 shadow-sm border border-slate-200 dark:border-slate-700">
-          <div className="flex items-center gap-3">
-            <div className="p-2 bg-blue-100 dark:bg-blue-900 rounded-lg">
-              <Car className="w-5 h-5 text-blue-600 dark:text-blue-400" />
-            </div>
-            <div>
-              <p className="text-sm text-slate-600 dark:text-slate-400">Total Fleet</p>
-              <p className="text-xl font-bold text-slate-900 dark:text-white">{fleetStats.total}</p>
-            </div>
-          </div>
-        </div>
-        <div className="bg-white dark:bg-slate-800 rounded-xl p-4 shadow-sm border border-slate-200 dark:border-slate-700">
-          <div className="flex items-center gap-3">
-            <div className="p-2 bg-emerald-100 dark:bg-emerald-900 rounded-lg">
-              <CheckCircle2 className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />
-            </div>
-            <div>
-              <p className="text-sm text-slate-600 dark:text-slate-400">Active</p>
-              <p className="text-xl font-bold text-slate-900 dark:text-white">{fleetStats.active}</p>
-            </div>
-          </div>
-        </div>
-        <div className="bg-white dark:bg-slate-800 rounded-xl p-4 shadow-sm border border-slate-200 dark:border-slate-700">
-          <div className="flex items-center gap-3">
-            <div className="p-2 bg-blue-100 dark:bg-blue-900 rounded-lg">
-              <Gauge className="w-5 h-5 text-blue-600 dark:text-blue-400" />
-            </div>
-            <div>
-              <p className="text-sm text-slate-600 dark:text-slate-400">In Use</p>
-              <p className="text-xl font-bold text-slate-900 dark:text-white">{fleetStats.inUse}</p>
-            </div>
-          </div>
-        </div>
-        <div className="bg-white dark:bg-slate-800 rounded-xl p-4 shadow-sm border border-slate-200 dark:border-slate-700">
-          <div className="flex items-center gap-3">
-            <div className="p-2 bg-amber-100 dark:bg-amber-900 rounded-lg">
-              <Wrench className="w-5 h-5 text-amber-600 dark:text-amber-400" />
-            </div>
-            <div>
-              <p className="text-sm text-slate-600 dark:text-slate-400">Maintenance</p>
-              <p className="text-xl font-bold text-slate-900 dark:text-white">{fleetStats.maintenance}</p>
-            </div>
-          </div>
-        </div>
-        <div className="bg-white dark:bg-slate-800 rounded-xl p-4 shadow-sm border border-slate-200 dark:border-slate-700">
-          <div className="flex items-center gap-3">
-            <div className="p-2 bg-purple-100 dark:bg-purple-900 rounded-lg">
-              <Gauge className="w-5 h-5 text-purple-600 dark:text-purple-400" />
-            </div>
-            <div>
-              <p className="text-sm text-slate-600 dark:text-slate-400">Avg Utilization</p>
-              <p className="text-xl font-bold text-slate-900 dark:text-white">{fleetStats.avgUtilization}%</p>
-            </div>
-          </div>
-        </div>
-        <div className="bg-white dark:bg-slate-800 rounded-xl p-4 shadow-sm border border-slate-200 dark:border-slate-700">
-          <div className="flex items-center gap-3">
-            <div className="p-2 bg-rose-100 dark:bg-rose-900 rounded-lg">
-              <AlertTriangle className="w-5 h-5 text-rose-600 dark:text-rose-400" />
-            </div>
-            <div>
-              <p className="text-sm text-slate-600 dark:text-slate-400">Service Due</p>
-              <p className="text-xl font-bold text-slate-900 dark:text-white">{fleetStats.serviceDue}</p>
-            </div>
-          </div>
-        </div>
+      {/* KPIs */}
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
+        <StatCard title="Total Fleet" value={String(stats.total)} icon={Car} tone="accent" />
+        <StatCard title="Active" value={String(stats.active)} icon={CheckCircle2} tone="success" />
+        <StatCard title="In Use" value={String(stats.inUse)} icon={Gauge} tone="info" />
+        <StatCard title="Maintenance" value={String(stats.maintenance)} icon={Wrench} tone="warning" />
+        <StatCard title="Avg Utilization" value={`${stats.avgUtilization}%`} icon={Gauge} tone="neutral" />
+        <StatCard title="Service Due" value={String(stats.serviceDue)} icon={AlertTriangle} tone="danger" />
       </div>
 
       {/* Filters */}
-      <div className="bg-white dark:bg-slate-800 rounded-xl p-4 shadow-sm border border-slate-200 dark:border-slate-700">
-        <div className="flex flex-wrap gap-4">
-          <div className="flex-1 min-w-[200px]">
-            <div className="relative">
-              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-slate-400 w-4 h-4" />
-              <input
-                type="text"
-                placeholder="Search by ID, make, model, or plate..."
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                className="w-full pl-10 pr-4 py-2 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-700 text-slate-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-              />
-            </div>
-          </div>
-          <select
-            value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value)}
-            className="px-4 py-2 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-700 text-slate-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-          >
-            <option value="all">All Status</option>
-            <option value="Active">Active</option>
-            <option value="In Use">In Use</option>
-            <option value="Maintenance">Maintenance</option>
-            <option value="Out of Service">Out of Service</option>
-          </select>
-          <select
-            value={categoryFilter}
-            onChange={(e) => setCategoryFilter(e.target.value)}
-            className="px-4 py-2 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-700 text-slate-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-          >
-            <option value="all">All Categories</option>
-            <option value="Sedan">Sedan</option>
-            <option value="SUV">SUV</option>
-            <option value="Van">Van</option>
-            <option value="Luxury">Luxury</option>
-            <option value="Electric">Electric</option>
-            <option value="Minibus">Minibus</option>
-          </select>
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="relative w-full sm:w-72">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={14} />
+          <input type="text" placeholder="Search by ID, make, model, or plate..." value={search} onChange={(e) => setSearch(e.target.value)} className="pl-9 pr-4 py-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl text-xs w-full focus:outline-none focus:ring-1 focus:ring-indigo-500 font-sans" />
         </div>
+        <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className={filterSelectCls}>
+          <option value="all">All Status</option>
+          {VEHICLE_STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
+        </select>
+        <select value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)} className={filterSelectCls}>
+          <option value="all">All Categories</option>
+          {VEHICLE_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+        </select>
       </div>
 
       {/* Fleet Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-        {filteredFleet.map((vehicle) => (
-          <div key={vehicle.id} className="bg-white dark:bg-slate-800 rounded-xl p-4 shadow-sm border border-slate-200 dark:border-slate-700">
-            <div className="flex items-start justify-between mb-3">
-              <div>
-                <div className="flex items-center gap-2">
-                  <span className="font-medium text-slate-900 dark:text-white">{vehicle.id}</span>
-                  <span className={`px-2 py-0.5 text-xs font-medium rounded-full ${getStatusColor(vehicle.status)}`}>
-                    {vehicle.status}
-                  </span>
+      {loading ? <SectionCard><div className="flex items-center justify-center py-16 text-slate-400"><Loader2 className="w-5 h-5 animate-spin mr-2" /> Loading…</div></SectionCard>
+        : filtered.length === 0 ? <SectionCard><div className="flex flex-col items-center justify-center py-16 text-slate-400"><Car className="w-8 h-8 mb-2 opacity-40" /><p className="text-sm">No vehicles found.</p></div></SectionCard>
+        : (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+            {filtered.map((v) => (
+              <SectionCard key={v.id} pad="none">
+                <div className="p-4">
+                  <div className="flex items-start justify-between mb-3">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-semibold text-slate-900 dark:text-white">{v.vehicle_number}</span>
+                        <Badge tone={statusTone(v.status)}>{v.status}</Badge>
+                      </div>
+                      <p className="text-sm font-medium text-slate-900 dark:text-white mt-1">{v.make} {v.model}</p>
+                      <p className="text-xs text-slate-500">{v.year || '—'} • {v.category}</p>
+                    </div>
+                    <Badge tone={conditionTone(v.condition)}>{v.condition}</Badge>
+                  </div>
+
+                  <div className="space-y-1.5 text-xs">
+                    <div className="flex items-center justify-between">
+                      <span className="text-slate-500">Plate</span>
+                      <span className="font-medium text-slate-900 dark:text-white">{v.registration_number || '—'}</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-slate-500">Driver</span>
+                      <span className="font-medium text-slate-900 dark:text-white">{v.transport_drivers?.employees?.name || 'Unassigned'}</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-slate-500">Location</span>
+                      <span className="font-medium text-slate-900 dark:text-white truncate ml-2">{v.current_location || '—'}</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-slate-500">Mileage</span>
+                      <span className="font-medium text-slate-900 dark:text-white">{Number(v.mileage).toLocaleString()} km</span>
+                    </div>
+                  </div>
+
+                  <div className="mt-3 space-y-1.5">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="text-slate-500 flex items-center gap-1"><Fuel size={11} /> Fuel</span>
+                      <span className="font-medium text-slate-900 dark:text-white">{v.fuel_level}%</span>
+                    </div>
+                    <div className="w-full bg-slate-200 dark:bg-slate-600 rounded-full h-2">
+                      <div className={`h-2 rounded-full ${fuelBar(v.fuel_level)}`} style={{ width: `${v.fuel_level}%` }} />
+                    </div>
+                  </div>
+
+                  <div className="mt-3 flex items-center justify-between text-xs text-slate-500">
+                    <span className="flex items-center gap-1"><Gauge size={11} /> Utilization: {v.utilization}%</span>
+                    <span className={`flex items-center gap-1 ${serviceDueWithin(v.next_service, 30) ? 'text-rose-500 font-semibold' : ''}`}>
+                      <Clock size={11} /> Next: {formatDate(v.next_service)}
+                    </span>
+                  </div>
+
+                  <div className="mt-3 flex gap-1">
+                    <button onClick={() => setViewing(v)} className="flex-1 flex items-center justify-center gap-1 px-3 py-1.5 text-xs bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition"><Eye size={12} /> View</button>
+                    <button onClick={() => openEdit(v)} className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition"><Pencil size={14} className="text-slate-400" /></button>
+                    <button onClick={() => handleDelete(v.id)} className="p-1.5 hover:bg-rose-50 dark:hover:bg-rose-500/10 rounded-lg transition"><Trash2 size={14} className="text-rose-400" /></button>
+                  </div>
                 </div>
-                <p className="text-sm font-medium text-slate-900 dark:text-white mt-1">{vehicle.make} {vehicle.model}</p>
-                <p className="text-xs text-slate-500 dark:text-slate-400">{vehicle.year} • {vehicle.category}</p>
-              </div>
-              <span className={`px-2 py-1 text-xs font-medium rounded-full ${getConditionColor(vehicle.condition)}`}>
-                {vehicle.condition}
-              </span>
-            </div>
-            
-            <div className="space-y-2 text-sm">
-              <div className="flex items-center justify-between">
-                <span className="text-slate-600 dark:text-slate-400">Plate</span>
-                <span className="font-medium text-slate-900 dark:text-white">{vehicle.plate}</span>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-slate-600 dark:text-slate-400">Driver</span>
-                <span className="font-medium text-slate-900 dark:text-white">{vehicle.driver}</span>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-slate-600 dark:text-slate-400">Location</span>
-                <span className="font-medium text-slate-900 dark:text-white">{vehicle.location}</span>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-slate-600 dark:text-slate-400">Mileage</span>
-                <span className="font-medium text-slate-900 dark:text-white">{vehicle.mileage.toLocaleString()} km</span>
-              </div>
-            </div>
+              </SectionCard>
+            ))}
+          </div>
+        )}
 
-            <div className="mt-3 space-y-2">
-              <div className="flex items-center justify-between text-xs">
-                <span className="text-slate-600 dark:text-slate-400">Fuel Level</span>
-                <span className="font-medium text-slate-900 dark:text-white">{vehicle.fuelLevel}%</span>
+      {/* Create / Edit Modal */}
+      <ModalSystem
+        isOpen={showModal}
+        onClose={() => setShowModal(false)}
+        onConfirm={handleSave}
+        title={editingId ? 'Edit Vehicle' : 'Add Vehicle'}
+        variant="form"
+        size="lg"
+        confirmLabel={saving ? 'Saving…' : 'Save'}
+        confirmColor="indigo"
+        loading={saving}
+      >
+        <div className="grid grid-cols-2 gap-4">
+          <Field label="Vehicle Number"><input className={inputCls} value={form.vehicleNumber} onChange={(e) => setForm(f => ({ ...f, vehicleNumber: e.target.value }))} placeholder="e.g. VH-010" /></Field>
+          <Field label="Plate"><input className={inputCls} value={form.registrationNumber} onChange={(e) => setForm(f => ({ ...f, registrationNumber: e.target.value }))} /></Field>
+          <Field label="Make"><input className={inputCls} value={form.make} onChange={(e) => setForm(f => ({ ...f, make: e.target.value }))} /></Field>
+          <Field label="Model"><input className={inputCls} value={form.model} onChange={(e) => setForm(f => ({ ...f, model: e.target.value }))} /></Field>
+          <Field label="Year"><input type="number" className={inputCls} value={form.year} onChange={(e) => setForm(f => ({ ...f, year: e.target.value }))} /></Field>
+          <Field label="VIN"><input className={inputCls} value={form.vin} onChange={(e) => setForm(f => ({ ...f, vin: e.target.value }))} /></Field>
+          <Field label="Category">
+            <select className={inputCls} value={form.category} onChange={(e) => setForm(f => ({ ...f, category: e.target.value }))}>
+              {VEHICLE_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </Field>
+          <Field label="Status">
+            <select className={inputCls} value={form.status} onChange={(e) => setForm(f => ({ ...f, status: e.target.value }))}>
+              {VEHICLE_STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
+            </select>
+          </Field>
+          <Field label="Capacity"><input type="number" min={1} className={inputCls} value={form.capacity} onChange={(e) => setForm(f => ({ ...f, capacity: Number(e.target.value) }))} /></Field>
+          <Field label="Fuel Type">
+            <select className={inputCls} value={form.fuelType} onChange={(e) => setForm(f => ({ ...f, fuelType: e.target.value }))}>
+              {FUEL_TYPES.map((f) => <option key={f} value={f}>{f}</option>)}
+            </select>
+          </Field>
+          <Field label="Condition">
+            <select className={inputCls} value={form.condition} onChange={(e) => setForm(f => ({ ...f, condition: e.target.value }))}>
+              {VEHICLE_CONDITIONS.map((c) => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </Field>
+          <Field label="Fuel Level %"><input type="number" min={0} max={100} className={inputCls} value={form.fuelLevel} onChange={(e) => setForm(f => ({ ...f, fuelLevel: Number(e.target.value) }))} /></Field>
+          <Field label="Mileage (km)"><input type="number" min={0} className={inputCls} value={form.mileage} onChange={(e) => setForm(f => ({ ...f, mileage: Number(e.target.value) }))} /></Field>
+          <Field label="Utilization %"><input type="number" min={0} max={100} className={inputCls} value={form.utilization} onChange={(e) => setForm(f => ({ ...f, utilization: Number(e.target.value) }))} /></Field>
+          <Field label="Current Location"><input className={inputCls} value={form.currentLocation} onChange={(e) => setForm(f => ({ ...f, currentLocation: e.target.value }))} placeholder="e.g. Hotel Garage" /></Field>
+          <Field label="Driver">
+            <select className={inputCls} value={form.driverId} onChange={(e) => setForm(f => ({ ...f, driverId: e.target.value }))}>
+              <option value="">Unassigned</option>
+              {drivers.map((d) => <option key={d.id} value={d.id}>{d.employees?.name || d.id}</option>)}
+            </select>
+          </Field>
+          <Field label="Last Service"><input type="date" className={inputCls} value={form.lastService} onChange={(e) => setForm(f => ({ ...f, lastService: e.target.value }))} /></Field>
+          <Field label="Next Service"><input type="date" className={inputCls} value={form.nextService} onChange={(e) => setForm(f => ({ ...f, nextService: e.target.value }))} /></Field>
+          <Field label="Insurance Provider"><input className={inputCls} value={form.insuranceProvider} onChange={(e) => setForm(f => ({ ...f, insuranceProvider: e.target.value }))} /></Field>
+          <Field label="Insurance Expiry"><input type="date" className={inputCls} value={form.insuranceExpiry} onChange={(e) => setForm(f => ({ ...f, insuranceExpiry: e.target.value }))} /></Field>
+          <Field label="Registration Expiry"><input type="date" className={inputCls} value={form.registrationExpiry} onChange={(e) => setForm(f => ({ ...f, registrationExpiry: e.target.value }))} /></Field>
+        </div>
+      </ModalSystem>
+
+      {/* Detail Modal */}
+      <ModalSystem
+        isOpen={!!viewing}
+        onClose={() => setViewing(null)}
+        title={viewing ? `${viewing.vehicle_number} — ${viewing.make || ''} ${viewing.model || ''}` : ''}
+        variant="info"
+        size="lg"
+        showFooter={false}
+      >
+        {viewing && (
+          <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-base font-semibold text-slate-900 dark:text-white">{viewing.year} {viewing.make} {viewing.model}</p>
+                <p className="text-xs text-slate-500">{viewing.category} • {viewing.registration_number || 'No plate'} • {viewing.fuel_type}</p>
               </div>
-              <div className="w-full bg-slate-200 dark:bg-slate-600 rounded-full h-2">
-                <div 
-                  className={`h-2 rounded-full ${getFuelColor(vehicle.fuelLevel)}`}
-                  style={{ width: `${vehicle.fuelLevel}%` }}
-                />
+              <div className="flex items-center gap-2">
+                <Badge tone={conditionTone(viewing.condition)}>{viewing.condition}</Badge>
+                <Badge tone={statusTone(viewing.status)}>{viewing.status}</Badge>
               </div>
             </div>
-
-            <div className="mt-3 flex items-center justify-between text-xs">
-              <div className="flex items-center gap-1 text-slate-600 dark:text-slate-400">
-                <Gauge className="w-3 h-3" />
-                Utilization: {vehicle.utilization}%
-              </div>
-              <div className="flex items-center gap-1 text-slate-600 dark:text-slate-400">
-                <Clock className="w-3 h-3" />
-                Next: {vehicle.nextService.split('-')[1]}/{vehicle.nextService.split('-')[2]}
-              </div>
+            <div className="grid grid-cols-2 gap-3 text-sm">
+              <div className="flex items-center gap-2 text-slate-600 dark:text-slate-300"><Users size={14} />{viewing.transport_drivers?.employees?.name || 'Unassigned'}</div>
+              <div className="flex items-center gap-2 text-slate-600 dark:text-slate-300"><MapPin size={14} />{viewing.current_location || '—'}</div>
+              <div className="flex items-center gap-2 text-slate-600 dark:text-slate-300"><Gauge size={14} />{Number(viewing.mileage).toLocaleString()} km • {viewing.utilization}% util.</div>
+              <div className="flex items-center gap-2 text-slate-600 dark:text-slate-300"><Fuel size={14} />{viewing.fuel_level}% fuel • cap. {viewing.capacity}</div>
             </div>
-
-            <div className="mt-3 flex gap-2">
-              <button className="flex-1 flex items-center justify-center gap-1 px-3 py-1.5 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 transition">
-                <Eye className="w-3 h-3" />
-                View
-              </button>
-              <button className="p-1 text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-900/30 rounded">
-                <Edit className="w-4 h-4" />
-              </button>
-              <button className="p-1 text-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700/30 rounded">
-                <MoreVertical className="w-4 h-4" />
-              </button>
+            <div className="grid grid-cols-2 gap-3 text-xs text-slate-500 p-3 bg-slate-50 dark:bg-slate-800/40 rounded-xl">
+              <span>Last service: {formatDate(viewing.last_service)}</span>
+              <span className={serviceDueWithin(viewing.next_service, 30) ? 'text-rose-500 font-semibold' : ''}>Next service: {formatDate(viewing.next_service)}</span>
+              <span>Insurance: {viewing.insurance_provider || '—'} (exp. {formatDate(viewing.insurance_expiry)})</span>
+              <span>Reg. expiry: {formatDate(viewing.registration_expiry)}</span>
+            </div>
+            <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-100 dark:border-slate-800">
+              {viewing.status !== 'Active' && viewing.status !== 'In Use' && <button onClick={() => handleStatusChange(viewing, 'Active')} disabled={saving} className={button.primary}><CheckCircle2 size={14} /> Mark Active</button>}
+              {viewing.status !== 'Maintenance' && <button onClick={() => handleStatusChange(viewing, 'Maintenance')} disabled={saving} className={button.secondary}><Wrench size={14} /> Send to Maintenance</button>}
+              {viewing.status !== 'Out of Service' && <button onClick={() => handleStatusChange(viewing, 'Out of Service')} disabled={saving} className={button.ghost}><AlertTriangle size={14} /> Out of Service</button>}
+              <button onClick={() => { setViewing(null); openEdit(viewing); }} className={button.ghost}><Pencil size={14} /> Edit</button>
             </div>
           </div>
-        ))}
-      </div>
+        )}
+      </ModalSystem>
     </div>
   );
 };

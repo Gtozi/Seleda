@@ -43,10 +43,21 @@ class CacheService {
   }
 
   /**
-   * Invalidate a specific cache key
+   * Invalidate a cache key. If the key contains '*', it is treated as a
+   * glob-style pattern where '*' matches any sequence — e.g. 'sec-*' clears
+   * every key starting with 'sec-'. All other characters match literally.
    */
   invalidate(key: string): void {
-    this.cache.delete(key);
+    if (!key.includes('*')) {
+      this.cache.delete(key);
+      return;
+    }
+    const regex = new RegExp(
+      '^' + key.split('*').map(s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('.*') + '$'
+    );
+    for (const k of this.cache.keys()) {
+      if (regex.test(k)) this.cache.delete(k);
+    }
   }
 
   /**

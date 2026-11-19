@@ -1,10 +1,12 @@
 const API_BASE = '/api/period-close';
 
 async function apiRequest<T>(endpoint: string, options?: RequestInit): Promise<T> {
+  const token = localStorage.getItem('auth_token');
   const res = await fetch(`${API_BASE}${endpoint}`, {
     ...options,
     headers: {
       'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...options?.headers,
     },
   });
@@ -47,7 +49,7 @@ export async function fetchAccountingPeriods(status?: string): Promise<Accountin
   const params = new URLSearchParams();
   if (status) params.set('status', status);
   const data = await apiRequest<any[]>(`?${params.toString()}`);
-  return data.map(mapAccountingPeriodFromDb);
+  return Array.isArray(data) ? data.map(mapAccountingPeriodFromDb) : [];
 }
 
 export async function createAccountingPeriod(period: Omit<AccountingPeriod, 'id' | 'status' | 'closed_by' | 'closed_at' | 'created_at' | 'updated_at'>): Promise<AccountingPeriod> {
@@ -74,4 +76,57 @@ export async function reopenAccountingPeriod(periodId: string): Promise<{ succes
   return apiRequest(`/${periodId}/reopen`, {
     method: 'POST',
   });
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// Period Close Checklist
+// ══════════════════════════════════════════════════════════════════════════
+
+export interface PeriodCloseChecklistItem {
+  id: string;
+  period_id: string | null;
+  category: string;
+  task: string;
+  assigned_to: string | null;
+  completed: boolean;
+  completed_by: string | null;
+  completed_at: string | null;
+  notes: string | null;
+  sort_order: number;
+  property_id?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export async function fetchChecklistItems(params: { propertyId?: string; periodId?: string; category?: string; completed?: boolean } = {}): Promise<PeriodCloseChecklistItem[]> {
+  const search = new URLSearchParams();
+  if (params.propertyId) search.set('propertyId', params.propertyId);
+  if (params.periodId) search.set('periodId', params.periodId);
+  if (params.category) search.set('category', params.category);
+  if (params.completed !== undefined) search.set('completed', String(params.completed));
+  const qs = search.toString();
+  const data = await apiRequest<PeriodCloseChecklistItem[]>(`/checklist${qs ? `?${qs}` : ''}`);
+  return Array.isArray(data) ? data : [];
+}
+
+export async function createChecklistItem(payload: {
+  periodId?: string; category?: string; task: string;
+  assignedTo?: string; notes?: string; propertyId?: string;
+}): Promise<PeriodCloseChecklistItem> {
+  return apiRequest<PeriodCloseChecklistItem>('/checklist', {
+    method: 'POST', body: JSON.stringify(payload),
+  });
+}
+
+export async function updateChecklistItem(id: string, patch: {
+  completed?: boolean; category?: string; task?: string;
+  assignedTo?: string; notes?: string;
+}): Promise<PeriodCloseChecklistItem> {
+  return apiRequest<PeriodCloseChecklistItem>(`/checklist/${id}`, {
+    method: 'PATCH', body: JSON.stringify(patch),
+  });
+}
+
+export async function deleteChecklistItem(id: string): Promise<{ success: boolean }> {
+  return apiRequest<{ success: boolean }>(`/checklist/${id}`, { method: 'DELETE' });
 }

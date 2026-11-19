@@ -3,9 +3,10 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from 'react';
-import { Plus, Search, Edit2, Trash2, DollarSign, Users, Maximize, X } from 'lucide-react';
+import React, { useState, useRef } from 'react';
+import { Plus, Search, Edit2, Trash2, DollarSign, Users, Maximize, X, Upload, Image as ImageIcon } from 'lucide-react';
 import { ModalSystem } from '../../Shared/ModalSystem';
+import { button } from '../../FrontOffice/brandTheme';
 
 export interface RoomTypeData {
   id: string;
@@ -53,6 +54,18 @@ function RoomTypeModal({ roomType, onSave, onClose }: RoomTypeModalProps) {
     displayOrder: 0
   });
   const [amenityInput, setAmenityInput] = useState('');
+  const fileInputRefs = [useRef<HTMLInputElement>(null), useRef<HTMLInputElement>(null), useRef<HTMLInputElement>(null)];
+
+  const handleImageUpload = (index: number, file: File | null) => {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      const base64String = reader.result as string;
+      const keys = ['imageUrl1', 'imageUrl2', 'imageUrl3'] as const;
+      setForm({ ...form, [keys[index]]: base64String });
+    };
+    reader.readAsDataURL(file);
+  };
 
   const handleAddAmenity = () => {
     if (amenityInput.trim() && !form.amenities?.includes(amenityInput.trim())) {
@@ -191,48 +204,42 @@ function RoomTypeModal({ roomType, onSave, onClose }: RoomTypeModalProps) {
           <div className="space-y-3">
             <label className="text-[10px] font-mono uppercase text-slate-400 font-bold">Images</label>
             <div className="grid grid-cols-3 gap-3">
-              <div className="space-y-1.5">
-                <label className="text-[8px] text-slate-400">Primary Image</label>
-                <input 
-                  value={form.imageUrl1}
-                  onChange={(e) => setForm({ ...form, imageUrl1: e.target.value })}
-                  className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg text-[10px] outline-none focus:ring-2 focus:ring-indigo-500/20"
-                  placeholder="Image URL"
-                />
-                {form.imageUrl1 && (
-                  <div className="w-full h-20 rounded-lg overflow-hidden bg-slate-100">
-                    <img src={form.imageUrl1} alt="Preview" className="w-full h-full object-cover" />
+              {[0, 1, 2].map((index) => {
+                const keys = ['imageUrl1', 'imageUrl2', 'imageUrl3'] as const;
+                const labels = ['Primary Image', 'Secondary Image', 'Tertiary Image'];
+                const imageUrl = form[keys[index]];
+                return (
+                  <div key={index} className="space-y-1.5">
+                    <label className="text-[8px] text-slate-400">{labels[index]}</label>
+                    <div className="flex gap-1">
+                      <input
+                        ref={fileInputRefs[index]}
+                        type="file"
+                        accept="image/*"
+                        onChange={(e) => handleImageUpload(index, e.target.files?.[0] || null)}
+                        className="hidden"
+                      />
+                      <button
+                        onClick={() => fileInputRefs[index].current?.click()}
+                        className="px-2 py-1.5 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-lg text-[10px] font-bold text-slate-600 dark:text-slate-300 flex items-center gap-1 transition"
+                      >
+                        <Upload size={10} /> Upload
+                      </button>
+                    </div>
+                    <input
+                      value={imageUrl}
+                      onChange={(e) => setForm({ ...form, [keys[index]]: e.target.value })}
+                      className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg text-[10px] outline-none focus:ring-2 focus:ring-indigo-500/20"
+                      placeholder="Image URL or upload"
+                    />
+                    {imageUrl && (
+                      <div className="w-full h-20 rounded-lg overflow-hidden bg-slate-100">
+                        <img src={imageUrl} alt={`Preview ${index + 1}`} className="w-full h-full object-cover" />
+                      </div>
+                    )}
                   </div>
-                )}
-              </div>
-              <div className="space-y-1.5">
-                <label className="text-[8px] text-slate-400">Secondary Image</label>
-                <input 
-                  value={form.imageUrl2}
-                  onChange={(e) => setForm({ ...form, imageUrl2: e.target.value })}
-                  className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg text-[10px] outline-none focus:ring-2 focus:ring-indigo-500/20"
-                  placeholder="Image URL"
-                />
-                {form.imageUrl2 && (
-                  <div className="w-full h-20 rounded-lg overflow-hidden bg-slate-100">
-                    <img src={form.imageUrl2} alt="Preview" className="w-full h-full object-cover" />
-                  </div>
-                )}
-              </div>
-              <div className="space-y-1.5">
-                <label className="text-[8px] text-slate-400">Tertiary Image</label>
-                <input 
-                  value={form.imageUrl3}
-                  onChange={(e) => setForm({ ...form, imageUrl3: e.target.value })}
-                  className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg text-[10px] outline-none focus:ring-2 focus:ring-indigo-500/20"
-                  placeholder="Image URL"
-                />
-                {form.imageUrl3 && (
-                  <div className="w-full h-20 rounded-lg overflow-hidden bg-slate-100">
-                    <img src={form.imageUrl3} alt="Preview" className="w-full h-full object-cover" />
-                  </div>
-                )}
-              </div>
+                );
+              })}
             </div>
           </div>
         </div>

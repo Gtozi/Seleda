@@ -1,383 +1,121 @@
 /**
  * Property Directory Module
- * Display and browse all hotel properties in the group
+ * Properties configured in the ERP (Admin → Property Public Profile).
  */
 
-import { useState } from 'react';
-import {
-  Building,
-  MapPin,
-  Star,
-  Phone,
-  Mail,
-  Globe,
-  Award,
-  Users,
-  Bed,
-  Coffee,
-  Wifi,
-  Car,
-  UtensilsCrossed,
-  Sparkles,
-  Search,
-  SlidersHorizontal,
-  Check
-} from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
+import { Building, MapPin, Star, Phone, Mail, Bed, Search, Check, X, ArrowRight } from 'lucide-react';
+import { EmptyState, ErrorState, LoadingGrid, ModuleHeader, Reveal, SectionHead, formatMoney, usePublicData, HERO } from '../shared';
 
 interface Property {
   id: string;
   name: string;
-  type: 'hotel' | 'resort' | 'lodge' | 'apartment' | 'villa';
+  type: string;
   location: string;
   country: string;
-  rating: number;
+  rating: number | null;
   reviewCount: number;
+  starRating: number | null;
   description: string;
   imageUrl: string;
   amenities: string[];
   facilities: string[];
-  contact: {
-    phone: string;
-    email: string;
-    website: string;
-  };
+  contact: { phone: string; email: string; website: string };
   roomCount: number;
   startingPrice: number;
-  awards?: string[];
 }
 
 const PropertyDirectoryModule: React.FC = () => {
+  const { data: properties, loading, error, retry } = usePublicData<Property[]>('/api/public/properties', j => j.properties || [], []);
   const [searchTerm, setSearchTerm] = useState('');
-  const [filterType, setFilterType] = useState<string>('all');
-  const [selectedProperty, setSelectedProperty] = useState<Property | null>(null);
+  const [selected, setSelected] = useState<Property | null>(null);
 
-  const properties: Property[] = [
-    {
-      id: '1',
-      name: 'SELEDA Grand Hotel',
-      type: 'hotel',
-      location: 'Addis Ababa',
-      country: 'Ethiopia',
-      rating: 4.8,
-      reviewCount: 1234,
-      description: 'Luxury hotel in the heart of Addis Ababa with world-class amenities and services.',
-      imageUrl: 'https://images.unsplash.com/photo-1542314831-068cd1dbfeeb?auto=format&fit=crop&q=80&w=800',
-      amenities: ['Free WiFi', 'Pool', 'Spa', 'Restaurant', 'Gym', 'Bar', 'Room Service', 'Concierge'],
-      facilities: ['Conference Rooms', 'Business Center', 'Wedding Venue', 'Parking', 'Airport Shuttle'],
-      contact: {
-        phone: '+251 11 555 1234',
-        email: 'grand@seleda.com',
-        website: 'www.seleda-grand.com'
-      },
-      roomCount: 150,
-      startingPrice: 150,
-      awards: ['Best Hotel in Ethiopia 2025', 'Luxury Hotel Award']
-    },
-    {
-      id: '2',
-      name: 'SELEDA Resort',
-      type: 'resort',
-      location: 'Awasa',
-      country: 'Ethiopia',
-      rating: 4.9,
-      reviewCount: 856,
-      description: 'Beautiful lakeside resort offering stunning views and recreational activities.',
-      imageUrl: 'https://images.unsplash.com/photo-1582719508461-905c673771fd?auto=format&fit=crop&q=80&w=800',
-      amenities: ['Free WiFi', 'Private Beach', 'Pool', 'Restaurant', 'Spa', 'Kids Club', 'Water Sports'],
-      facilities: ['Conference Rooms', 'Wedding Venue', 'Tennis Court', 'Parking', 'Boat Rental'],
-      contact: {
-        phone: '+251 46 555 5678',
-        email: 'resort@seleda.com',
-        website: 'www.seleda-resort.com'
-      },
-      roomCount: 80,
-      startingPrice: 200,
-      awards: ['Best Resort 2025']
-    },
-    {
-      id: '3',
-      name: 'SELEDA Lodge',
-      type: 'lodge',
-      location: 'Bale Mountains',
-      country: 'Ethiopia',
-      rating: 4.7,
-      reviewCount: 432,
-      description: 'Mountain lodge perfect for nature lovers and hiking enthusiasts.',
-      imageUrl: 'https://images.unsplash.com/photo-1520250497591-112f2f40a3f4?auto=format&fit=crop&q=80&w=800',
-      amenities: ['Free WiFi', 'Fireplace', 'Restaurant', 'Hiking Trails', 'Wildlife Tours'],
-      facilities: ['Guided Tours', 'Library', 'Parking', 'Restaurant'],
-      contact: {
-        phone: '+251 43 555 9012',
-        email: 'lodge@seleda.com',
-        website: 'www.seleda-lodge.com'
-      },
-      roomCount: 25,
-      startingPrice: 180,
-      awards: ['Eco-Friendly Lodge Award']
-    },
-    {
-      id: '4',
-      name: 'SELEDA Apartments',
-      type: 'apartment',
-      location: 'Addis Ababa',
-      country: 'Ethiopia',
-      rating: 4.5,
-      reviewCount: 234,
-      description: 'Modern serviced apartments for extended stays with full kitchen facilities.',
-      imageUrl: 'https://images.unsplash.com/photo-1502672260266-1c1ef2d93688?auto=format&fit=crop&q=80&w=800',
-      amenities: ['Free WiFi', 'Kitchen', 'Washer/Dryer', 'Gym', 'Parking'],
-      facilities: ['Business Center', 'Parking', '24/7 Security'],
-      contact: {
-        phone: '+251 11 555 3456',
-        email: 'apartments@seleda.com',
-        website: 'www.seleda-apartments.com'
-      },
-      roomCount: 40,
-      startingPrice: 100
-    },
-    {
-      id: '5',
-      name: 'SELEDA Villas',
-      type: 'villa',
-      location: 'Lake Langano',
-      country: 'Ethiopia',
-      rating: 4.8,
-      reviewCount: 156,
-      description: 'Private luxury villas with exclusive beach access and personalized services.',
-      imageUrl: 'https://images.unsplash.com/photo-1613490493576-7fde63acd811?auto=format&fit=crop&q=80&w=800',
-      amenities: ['Private Pool', 'Kitchen', 'Private Beach', 'Butler Service', 'Spa'],
-      facilities: ['Private Chef', 'Boat Dock', 'Parking', 'Security'],
-      contact: {
-        phone: '+251 44 555 7890',
-        email: 'villas@seleda.com',
-        website: 'www.seleda-villas.com'
-      },
-      roomCount: 10,
-      startingPrice: 500,
-      awards: ['Luxury Villa Award']
-    }
-  ];
+  useEffect(() => {
+    if (!selected) return;
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && setSelected(null);
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [selected]);
 
-  const filteredProperties = properties.filter(property => {
-    const matchesSearch = property.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                         property.location.toLowerCase().includes(searchTerm.toLowerCase());
-    const matchesType = filterType === 'all' || property.type === filterType;
-    return matchesSearch && matchesType;
-  });
-
-  const getTypeIcon = (type: string) => {
-    switch (type) {
-      case 'hotel': return <Building size={24} />;
-      case 'resort': return <Sparkles size={24} />;
-      case 'lodge': return <MapPin size={24} />;
-      case 'apartment': return <Building size={24} />;
-      case 'villa': return <Award size={24} />;
-      default: return <Building size={24} />;
-    }
-  };
+  const q = searchTerm.trim().toLowerCase();
+  const filtered = properties.filter(p => !q || p.name.toLowerCase().includes(q) || p.location.toLowerCase().includes(q));
 
   return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div className="bg-gradient-to-r from-indigo-600 to-purple-600 rounded-xl p-8 text-white">
-        <h1 className="text-3xl font-bold mb-2">Our Properties</h1>
-        <p className="text-lg opacity-90">Discover our collection of luxury hotels, resorts, and unique accommodations across Ethiopia</p>
-      </div>
+    <div>
+      <ModuleHeader image={properties.find(p => p.imageUrl)?.imageUrl || HERO.properties} title="Our Properties" subtitle="Discover our hotels and where to find us" gradient="from-indigo-700 to-purple-900" eyebrow="Where to stay" />
 
-      {/* Search and Filter */}
-      <div className="bg-white dark:bg-slate-800 rounded-xl p-6 shadow-lg">
-        <div className="flex flex-col md:flex-row gap-4">
-          <div className="flex-1 relative">
-            <Search size={20} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-            <input
-              type="text"
-              placeholder="Search properties by name or location..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              className="w-full pl-10 pr-4 py-3 border border-slate-300 dark:border-slate-600 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none dark:bg-slate-700 dark:text-white"
-            />
+      <SectionHead
+        eyebrow="Stay"
+        title="Choose your property"
+        action={properties.length > 1 ? (
+          <div className="relative hidden sm:block w-72">
+            <Search size={18} className="absolute left-4 top-1/2 -translate-y-1/2 text-stone-400" />
+            <input type="search" aria-label="Search properties" placeholder="Search by name or location" value={searchTerm} onChange={e => setSearchTerm(e.target.value)} className="w-full pl-11 pr-4 py-2.5 bg-white border border-stone-200 rounded-full text-sm focus:ring-2 focus:ring-amber-400 focus:border-amber-400 outline-none transition" />
           </div>
-          <div className="flex gap-2">
-            {['all', 'hotel', 'resort', 'lodge', 'apartment', 'villa'].map((type) => (
-              <button
-                key={type}
-                onClick={() => setFilterType(type)}
-                className={`px-4 py-3 rounded-lg font-medium transition-colors ${
-                  filterType === type
-                    ? 'bg-indigo-600 text-white'
-                    : 'bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600'
-                }`}
-              >
-                {type.charAt(0).toUpperCase() + type.slice(1)}
+        ) : undefined}
+      />
+
+      {error && <ErrorState message={error} onRetry={retry} />}
+      {loading ? (
+        <LoadingGrid />
+      ) : filtered.length === 0 && !error ? (
+        <EmptyState title="No properties found." />
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          {filtered.map((p, i) => (
+            <Reveal key={p.id} delay={Math.min(i, 6) * 0.06}>
+              <button onClick={() => setSelected(p)} className="group relative block w-full h-[420px] rounded-3xl overflow-hidden bg-stone-800 shadow-lg text-left focus-visible:ring-4 ring-amber-300 outline-none">
+                {p.imageUrl ? <img src={p.imageUrl} alt={p.name} loading="lazy" className="absolute inset-0 w-full h-full object-cover group-hover:scale-105 transition-transform duration-700" /> : <Building size={56} className="absolute inset-0 m-auto text-stone-600" />}
+                <div className="absolute inset-0 bg-gradient-to-t from-stone-950/90 via-stone-950/30 to-transparent" />
+                {p.rating != null && (
+                  <div className="absolute top-4 right-4 bg-white/90 backdrop-blur-sm px-2.5 py-1 rounded-full flex items-center gap-1"><Star size={14} className="text-amber-500 fill-amber-500" /><span className="text-sm font-semibold text-stone-900">{p.rating}</span></div>
+                )}
+                <div className="absolute inset-x-0 bottom-0 p-6 text-white">
+                  <h3 className="font-serif text-2xl font-bold">{p.name}</h3>
+                  {p.starRating ? <div className="text-amber-300 text-sm mt-0.5" aria-label={`${p.starRating} star`}>{'★'.repeat(p.starRating)}</div> : null}
+                  {p.location && <div className="flex items-center gap-1.5 text-white/75 text-sm mt-1"><MapPin size={14} /><span>{p.location}</span></div>}
+                  {p.description && <p className="text-white/70 text-sm mt-3 line-clamp-2">{p.description}</p>}
+                  <div className="flex items-center justify-between mt-5">
+                    {p.startingPrice > 0 ? <div><span className="text-xs text-white/60">From </span><span className="text-2xl font-bold text-amber-300">{formatMoney(p.startingPrice)}</span><span className="text-white/60 text-sm"> / night</span></div> : <span />}
+                    <span className="inline-flex items-center gap-1.5 text-sm font-semibold text-white/90">Details <ArrowRight size={14} className="group-hover:translate-x-1 transition-transform" /></span>
+                  </div>
+                </div>
               </button>
-            ))}
-          </div>
+            </Reveal>
+          ))}
         </div>
-      </div>
+      )}
 
-      {/* Properties Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {filteredProperties.map((property) => (
-          <div
-            key={property.id}
-            className="bg-white dark:bg-slate-800 rounded-xl overflow-hidden shadow-lg hover:shadow-xl transition-all cursor-pointer"
-            onClick={() => setSelectedProperty(property)}
-          >
-            <div className="relative h-48">
-              <img
-                src={property.imageUrl}
-                alt={property.name}
-                className="w-full h-full object-cover"
-              />
-              <div className="absolute top-3 left-3 bg-white/90 backdrop-blur-sm px-3 py-1 rounded-full flex items-center gap-1">
-                {getTypeIcon(property.type)}
-                <span className="text-sm font-medium text-slate-900 capitalize">{property.type}</span>
-              </div>
-              <div className="absolute top-3 right-3 bg-white/90 backdrop-blur-sm px-2 py-1 rounded-lg flex items-center gap-1">
-                <Star size={16} className="text-amber-500 fill-amber-500" />
-                <span className="text-sm font-semibold text-slate-900">{property.rating}</span>
-              </div>
-            </div>
-            
-            <div className="p-5">
-              <h3 className="text-xl font-bold text-slate-900 dark:text-white mb-2">{property.name}</h3>
-              <div className="flex items-center gap-1 text-slate-600 dark:text-slate-400 text-sm mb-3">
-                <MapPin size={14} />
-                <span>{property.location}, {property.country}</span>
-              </div>
-              <p className="text-slate-600 dark:text-slate-400 text-sm mb-4 line-clamp-2">{property.description}</p>
-              
-              <div className="flex flex-wrap gap-1 mb-4">
-                {property.amenities.slice(0, 4).map((amenity, idx) => (
-                  <span
-                    key={idx}
-                    className="text-xs bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-300 px-2 py-1 rounded"
-                  >
-                    {amenity}
-                  </span>
-                ))}
-              </div>
-
-              <div className="flex items-center justify-between pt-4 border-t border-slate-200 dark:border-slate-700">
+      {selected && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[70] flex items-center justify-center p-4" onClick={() => setSelected(null)}>
+          <div role="dialog" aria-modal="true" aria-label={selected.name} onClick={e => e.stopPropagation()} className="bg-white rounded-[2rem] max-w-3xl w-full max-h-[90vh] overflow-y-auto shadow-2xl">
+            {selected.imageUrl && <div className="relative h-64"><img src={selected.imageUrl} alt={selected.name} className="w-full h-full object-cover" /><div className="absolute inset-0 bg-gradient-to-t from-white via-transparent to-transparent" /></div>}
+            <div className="p-6 md:p-8">
+              <div className="flex justify-between items-start gap-4 mb-4">
                 <div>
-                  <span className="text-2xl font-bold text-indigo-600">${property.startingPrice}</span>
-                  <span className="text-slate-600 dark:text-slate-400 text-sm">/night</span>
+                  <h2 className="font-serif text-3xl font-bold text-stone-900 mb-1">{selected.name}</h2>
+                  {selected.location && <div className="flex items-center gap-2 text-stone-600"><MapPin size={18} /><span>{selected.location}</span></div>}
                 </div>
-                <div className="text-sm text-slate-600 dark:text-slate-400">
-                  {property.roomCount} rooms
-                </div>
+                <button onClick={() => setSelected(null)} aria-label="Close" className="p-2 rounded-full hover:bg-stone-100"><X size={20} /></button>
               </div>
-            </div>
-          </div>
-        ))}
-      </div>
-
-      {/* Property Detail Modal */}
-      {selectedProperty && (
-        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-          <div className="bg-white dark:bg-slate-800 rounded-2xl max-w-4xl w-full max-h-[90vh] overflow-y-auto">
-            <div className="relative h-72">
-              <img
-                src={selectedProperty.imageUrl}
-                alt={selectedProperty.name}
-                className="w-full h-full object-cover"
-              />
-              <button
-                onClick={() => setSelectedProperty(null)}
-                className="absolute top-4 right-4 p-2 bg-white/90 backdrop-blur-sm rounded-full hover:bg-white transition-colors"
-              >
-                ✕
-              </button>
-            </div>
-            
-            <div className="p-6">
-              <div className="flex justify-between items-start mb-4">
-                <div>
-                  <h2 className="text-3xl font-bold text-slate-900 dark:text-white mb-2">{selectedProperty.name}</h2>
-                  <div className="flex items-center gap-2 text-slate-600 dark:text-slate-400">
-                    <MapPin size={18} />
-                    <span>{selectedProperty.location}, {selectedProperty.country}</span>
+              {selected.description && <p className="text-stone-600 leading-relaxed mb-6">{selected.description}</p>}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
+                {selected.roomCount > 0 && <div className="bg-stone-50 p-4 rounded-2xl"><Bed size={22} className="text-amber-600 mb-2" /><div className="text-sm text-stone-500">Rooms</div><div className="font-semibold text-stone-900">{selected.roomCount}</div></div>}
+                {selected.contact.phone && <a href={`tel:${selected.contact.phone}`} className="bg-stone-50 p-4 rounded-2xl hover:bg-amber-50 transition-colors"><Phone size={22} className="text-amber-600 mb-2" /><div className="text-sm text-stone-500">Phone</div><div className="font-semibold text-stone-900 text-sm">{selected.contact.phone}</div></a>}
+                {selected.contact.email && <a href={`mailto:${selected.contact.email}`} className="bg-stone-50 p-4 rounded-2xl hover:bg-amber-50 transition-colors"><Mail size={22} className="text-amber-600 mb-2" /><div className="text-sm text-stone-500">Email</div><div className="font-semibold text-stone-900 text-sm break-all">{selected.contact.email}</div></a>}
+              </div>
+              {[['Amenities', selected.amenities], ['Facilities', selected.facilities]].map(([title, items]) => (items as string[]).length > 0 && (
+                <div key={title as string} className="mb-6">
+                  <h3 className="font-serif text-xl font-bold text-stone-900 mb-3">{title as string}</h3>
+                  <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+                    {(items as string[]).map(a => <div key={a} className="flex items-center gap-2 text-stone-700 text-sm"><Check size={16} className="text-emerald-500" />{a}</div>)}
                   </div>
                 </div>
-                <div className="flex items-center gap-1 bg-amber-100 dark:bg-amber-900/30 px-3 py-1 rounded-lg">
-                  <Star size={20} className="text-amber-500 fill-amber-500" />
-                  <span className="font-bold text-amber-700 dark:text-amber-400">{selectedProperty.rating}</span>
-                  <span className="text-amber-600 dark:text-amber-400">({selectedProperty.reviewCount})</span>
-                </div>
-              </div>
-
-              <p className="text-slate-600 dark:text-slate-400 mb-6">{selectedProperty.description}</p>
-
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-                <div className="bg-slate-50 dark:bg-slate-700/50 p-4 rounded-lg">
-                  <Bed size={24} className="text-indigo-600 mb-2" />
-                  <div className="text-sm text-slate-600 dark:text-slate-400">Rooms</div>
-                  <div className="font-semibold text-slate-900 dark:text-white">{selectedProperty.roomCount}</div>
-                </div>
-                <div className="bg-slate-50 dark:bg-slate-700/50 p-4 rounded-lg">
-                  <Users size={24} className="text-indigo-600 mb-2" />
-                  <div className="text-sm text-slate-600 dark:text-slate-400">Type</div>
-                  <div className="font-semibold text-slate-900 dark:text-white capitalize">{selectedProperty.type}</div>
-                </div>
-                <div className="bg-slate-50 dark:bg-slate-700/50 p-4 rounded-lg">
-                  <Phone size={24} className="text-indigo-600 mb-2" />
-                  <div className="text-sm text-slate-600 dark:text-slate-400">Phone</div>
-                  <div className="font-semibold text-slate-900 dark:text-white text-sm">{selectedProperty.contact.phone}</div>
-                </div>
-                <div className="bg-slate-50 dark:bg-slate-700/50 p-4 rounded-lg">
-                  <Mail size={24} className="text-indigo-600 mb-2" />
-                  <div className="text-sm text-slate-600 dark:text-slate-400">Email</div>
-                  <div className="font-semibold text-slate-900 dark:text-white text-sm">{selectedProperty.contact.email}</div>
-                </div>
-              </div>
-
-              <div className="mb-6">
-                <h3 className="text-lg font-semibold text-slate-900 dark:text-white mb-3">Amenities</h3>
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-                  {selectedProperty.amenities.map((amenity, idx) => (
-                    <div key={idx} className="flex items-center gap-2 text-slate-700 dark:text-slate-300">
-                      <Check size={16} className="text-green-500" />
-                      <span className="text-sm">{amenity}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              <div className="mb-6">
-                <h3 className="text-lg font-semibold text-slate-900 dark:text-white mb-3">Facilities</h3>
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-                  {selectedProperty.facilities.map((facility, idx) => (
-                    <div key={idx} className="flex items-center gap-2 text-slate-700 dark:text-slate-300">
-                      <Check size={16} className="text-green-500" />
-                      <span className="text-sm">{facility}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              {selectedProperty.awards && selectedProperty.awards.length > 0 && (
-                <div className="mb-6 p-4 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg">
-                  <h3 className="text-lg font-semibold text-amber-800 dark:text-amber-400 mb-2">Awards & Recognition</h3>
-                  <div className="flex flex-wrap gap-2">
-                    {selectedProperty.awards.map((award, idx) => (
-                      <span key={idx} className="bg-amber-100 dark:bg-amber-900/40 text-amber-800 dark:text-amber-300 px-3 py-1 rounded-full text-sm">
-                        {award}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              )}
-
+              ))}
               <div className="flex gap-3">
-                <button className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white py-3 rounded-lg font-semibold transition-colors">
-                  Book This Property
-                </button>
-                <button
-                  onClick={() => setSelectedProperty(null)}
-                  className="px-6 py-3 border border-slate-300 dark:border-slate-600 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors text-slate-700 dark:text-slate-300"
-                >
-                  Close
-                </button>
+                <Link to="/public-portal?section=booking" className="flex-1 text-center bg-stone-900 hover:bg-stone-800 text-white py-3 rounded-full font-semibold transition-colors">Book now</Link>
+                <button onClick={() => setSelected(null)} className="px-6 py-3 border border-stone-300 rounded-full hover:bg-stone-50 text-stone-700 font-medium">Close</button>
               </div>
             </div>
           </div>

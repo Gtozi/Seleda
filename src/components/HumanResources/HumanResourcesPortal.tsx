@@ -44,9 +44,14 @@ import DocumentManagement from './DocumentManagement';
 import WorkflowApprovals from './WorkflowApprovals';
 import ReportsAnalytics from './ReportsAnalytics';
 import HRConfiguration from './HRConfiguration';
+import DepartmentRequisitionForm from '../Inventory/DepartmentRequisitionForm';
 import Onboarding from './Onboarding';
 import ApplicantTracking from './ApplicantTracking';
 import LearningDevelopment from './LearningDevelopment';
+import OffboardingManagement from './OffboardingManagement';
+import LeaveAccrual from './LeaveAccrual';
+import ContractExpiry from './ContractExpiry';
+import LoanManagement from './LoanManagement';
 
 const HumanResourcesPortal = ({ activeModule = 'dashboard' }: { activeModule?: string }) => {
 
@@ -75,8 +80,13 @@ const HumanResourcesPortal = ({ activeModule = 'dashboard' }: { activeModule?: s
         {activeModule === 'relations' && <EmployeeRelations />}
         {activeModule === 'documents' && <DocumentManagement />}
         {activeModule === 'workflow' && <WorkflowApprovals />}
+        {activeModule === 'requisitions' && <DepartmentRequisitionForm department="Human Resources" />}
         {activeModule === 'analytics' && <ReportsAnalytics />}
         {activeModule === 'configuration' && <HRConfiguration />}
+        {activeModule === 'offboarding' && <OffboardingManagement />}
+        {activeModule === 'accrual' && <LeaveAccrual />}
+        {activeModule === 'contract-expiry' && <ContractExpiry />}
+        {activeModule === 'loans' && <LoanManagement />}
       </div>
     </div>
   );

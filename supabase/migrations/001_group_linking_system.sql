@@ -333,14 +333,16 @@ begin
   select type into v_relationship_type from group_profiles where id = v_group_id;
   
   -- Check if guest profile exists
-  if not exists (select 1 from guests where email = new.guest_email limit 1) then
+  -- Use AND condition to ensure both email AND name match before reusing guest profile
+  if not exists (select 1 from guests where email = new.guest_email and name = new.guest_name limit 1) then
     -- Guest profile doesn't exist yet - will be created separately
     return new;
   end if;
   
   -- Check for existing active relationship
+  -- Use AND condition to ensure both email AND name match before reusing guest profile
   select * into v_existing_relationship from guest_group_relationships
-  where guest_id = (select id from guests where email = new.guest_email limit 1)
+  where guest_id = (select id from guests where email = new.guest_email and name = new.guest_name limit 1)
     and group_id = v_group_id
     and status = 'Active'
     and (end_date is null or end_date >= current_date)
@@ -367,7 +369,7 @@ begin
       created_by
     ) values (
       gen_random_uuid()::text,
-      (select id from guests where email = new.guest_email limit 1),
+      (select id from guests where email = new.guest_email and name = new.guest_name limit 1),
       v_group_id,
       new.id,
       v_relationship_type,
@@ -379,9 +381,11 @@ begin
     );
     
     -- Update guest's parent_group_id for backward compatibility
+    -- Use AND condition to ensure both email AND name match before reusing guest profile
     update guests
     set parent_group_id = v_group_id
-    where email = new.guest_email;
+    where email = new.guest_email
+      and name = new.guest_name;
   end if;
   
   return new;

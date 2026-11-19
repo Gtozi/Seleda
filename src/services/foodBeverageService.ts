@@ -28,7 +28,6 @@ export interface Outlet {
   // Outlet Registry framework fields
   inventory_mode?: 'recipe' | 'sku';
   charge_modes?: string[];
-  tax_profile_id?: string;
   gl_mapping_id?: string;
   requires_guest_link?: boolean;
   shift_reconciliation_required?: boolean;

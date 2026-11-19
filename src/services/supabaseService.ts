@@ -142,7 +142,7 @@ const mapRequisitionToDb = (req: Requisition) => ({
 
 const mapStockMovementFromDb = (db: any): StockMovement => ({
   id: db.id,
-  date: db.date,
+  date: db.movement_date ?? db.date,
   itemId: db.item_id,
   itemName: db.item_name,
   type: db.type,
@@ -156,7 +156,7 @@ const mapStockMovementFromDb = (db: any): StockMovement => ({
 
 const mapStockMovementToDb = (m: StockMovement) => ({
   id: m.id,
-  date: m.date,
+  movement_date: m.date,
   item_id: m.itemId,
   item_name: m.itemName,
   type: m.type,
@@ -547,76 +547,157 @@ export const supabaseService = {
     // Legacy table - migrated to group_profiles, no-op
   },
 
-  fetchInventoryStores: async (): Promise<Store[]> => fetchTable('inventory_stores', mapStoreFromDb, 'name'),
+  // @deprecated — legacy inventory sync. Now redirected to unified /api/uinv-portal endpoints.
+  fetchInventoryStores: async (): Promise<Store[]> => {
+    try {
+      const response = await fetch('/api/uinv-portal/stores', { credentials: 'include' });
+      if (!response.ok) return [];
+      const stores = await response.json();
+      return (stores || []).map((s: any) => ({
+        id: s.id,
+        name: s.store_name || s.name || '',
+        code: s.store_code || s.id,
+        location: s.location || '',
+        type: s.store_type || 'Main',
+        status: s.is_active ? 'Active' : 'Inactive',
+        manager: s.manager || '',
+        phone: s.phone || '',
+      }));
+    } catch { return []; }
+  },
   upsertInventoryStore: async (store: Store): Promise<void> => {
-    const response = await fetch('/api/inventory/stores', {
+    const response = await fetch('/api/uinv-portal/stores', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
-      body: JSON.stringify(mapStoreToDb(store)),
+      body: JSON.stringify({
+        store_name: store.name,
+        store_code: store.code || store.id,
+        store_type: store.type || 'Main',
+        location: store.location,
+        manager: store.manager,
+        phone: store.phone,
+        is_active: store.status !== 'Inactive',
+      }),
     });
     if (!response.ok) {
       const data = await response.json().catch(() => ({}));
-      throw new Error(data.error || `Upsert inventory_store failed: ${response.status}`);
+      throw new Error(data.error || `Upsert store failed: ${response.status}`);
     }
   },
   deleteInventoryStore: async (id: string): Promise<void> => {
-    const response = await fetch(`/api/inventory/stores/${encodeURIComponent(id)}`, { method: 'DELETE', credentials: 'include' });
+    const response = await fetch(`/api/uinv-portal/stores/${encodeURIComponent(id)}`, { method: 'DELETE', credentials: 'include' });
     if (!response.ok) {
       const data = await response.json().catch(() => ({}));
-      throw new Error(data.error || `Delete inventory_store failed: ${response.status}`);
+      throw new Error(data.error || `Delete store failed: ${response.status}`);
     }
   },
 
-  fetchInventoryItems: async (): Promise<InventoryItem[]> => fetchTable('inventory_items', mapInventoryItemFromDb, 'name'),
+  fetchInventoryItems: async (): Promise<InventoryItem[]> => {
+    try {
+      const response = await fetch('/api/uinv-portal/items', { credentials: 'include' });
+      if (!response.ok) return [];
+      const items = await response.json();
+      return (items || []).map((i: any) => ({
+        id: i.id,
+        code: i.item_code || '',
+        name: i.item_name || '',
+        category: i.category || '',
+        subcategory: i.subcategory || '',
+        unit: i.unit_of_measure || 'PCS',
+        currentStock: 0,
+        reorderPoint: i.reorder_point || 0,
+        avgCost: i.avg_cost || i.last_cost || 0,
+        location: '',
+        storeId: i.default_store_id || '',
+        supplier: i.brand || '',
+        status: i.is_active ? 'Active' : 'inactive',
+      }));
+    } catch { return []; }
+  },
   upsertInventoryItem: async (item: InventoryItem): Promise<void> => {
-    const response = await fetch('/api/inventory/items', {
+    const response = await fetch('/api/uinv-portal/items', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
-      body: JSON.stringify(mapInventoryItemToDb(item)),
+      body: JSON.stringify({
+        item_code: item.code,
+        item_name: item.name,
+        category: item.category || 'General',
+        subcategory: item.subcategory || '',
+        unit_of_measure: item.unit || 'PCS',
+        reorder_point: item.reorderPoint || 0,
+        last_cost: item.avgCost || 0,
+        avg_cost: item.avgCost || 0,
+        standard_cost: item.avgCost || 0,
+        is_active: item.status !== 'inactive',
+      }),
     });
     if (!response.ok) {
       const data = await response.json().catch(() => ({}));
-      throw new Error(data.error || `Upsert inventory_item failed: ${response.status}`);
+      throw new Error(data.error || `Upsert item failed: ${response.status}`);
     }
   },
   deleteInventoryItem: async (id: string): Promise<void> => {
-    const response = await fetch(`/api/inventory/items/${encodeURIComponent(id)}`, { method: 'DELETE', credentials: 'include' });
+    const response = await fetch(`/api/uinv-portal/items/${encodeURIComponent(id)}`, { method: 'DELETE', credentials: 'include' });
     if (!response.ok) {
       const data = await response.json().catch(() => ({}));
-      throw new Error(data.error || `Delete inventory_item failed: ${response.status}`);
+      throw new Error(data.error || `Delete item failed: ${response.status}`);
     }
   },
 
-  fetchInventorySuppliers: async (): Promise<Supplier[]> => fetchTable('inventory_suppliers', mapSupplierFromDb, 'name'),
-  upsertInventorySupplier: async (supplier: Supplier): Promise<void> => {
-    const response = await fetch('/api/inventory/suppliers', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      credentials: 'include',
-      body: JSON.stringify(mapSupplierToDb(supplier)),
-    });
-    if (!response.ok) {
-      const data = await response.json().catch(() => ({}));
-      throw new Error(data.error || `Upsert inventory_supplier failed: ${response.status}`);
-    }
+  fetchInventorySuppliers: async (): Promise<Supplier[]> => {
+    // Suppliers are not in the unified inventory yet; return empty
+    return [];
   },
-  deleteInventorySupplier: async (id: string): Promise<void> => {
-    const response = await fetch(`/api/inventory/suppliers/${encodeURIComponent(id)}`, { method: 'DELETE', credentials: 'include' });
-    if (!response.ok) {
-      const data = await response.json().catch(() => ({}));
-      throw new Error(data.error || `Delete inventory_supplier failed: ${response.status}`);
-    }
+  upsertInventorySupplier: async (_supplier: Supplier): Promise<void> => {
+    // No-op: suppliers are managed via procurement module
+  },
+  deleteInventorySupplier: async (_id: string): Promise<void> => {
+    // No-op: suppliers are managed via procurement module
   },
 
-  fetchInventoryRequisitions: async (): Promise<Requisition[]> => fetchTable('inventory_requisitions', mapRequisitionFromDb, 'request_date'),
+  fetchInventoryRequisitions: async (): Promise<Requisition[]> => {
+    try {
+      const response = await fetch('/api/uinv-portal/issues', { credentials: 'include' });
+      if (!response.ok) return [];
+      const issues = await response.json();
+      return (issues || []).map((r: any) => ({
+        id: r.id,
+        number: r.issue_number || '',
+        department: r.department || '',
+        requestedBy: r.requester || '',
+        requestDate: r.created_at ? String(r.created_at).slice(0, 10) : '',
+        status: r.approval_status || 'pending',
+        items: (r.lines || []).map((l: any) => ({
+          itemId: l.itemId || '',
+          itemName: l.itemName || '',
+          requestedQty: l.requestedQty || 0,
+          issuedQty: l.issuedQty || 0,
+          unit: l.unit || 'PCS',
+          unitCost: l.unitCost || 0,
+        })),
+      }));
+    } catch { return []; }
+  },
   upsertInventoryRequisition: async (req: Requisition): Promise<void> => {
-    const response = await fetch('/api/inventory/requisitions', {
+    const response = await fetch('/api/uinv-portal/issues', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
-      body: JSON.stringify(mapRequisitionToDb(req)),
+      body: JSON.stringify({
+        issue_number: req.number,
+        department: req.department,
+        requester: req.requestedBy,
+        source: 'Requisition',
+        lines: (req.items || []).map(i => ({
+          itemId: i.itemId,
+          itemName: i.itemName,
+          requestedQty: i.requestedQty,
+          unit: i.unit,
+          unitCost: i.unitCost,
+        })),
+      }),
     });
     if (!response.ok) {
       const data = await response.json().catch(() => ({}));
@@ -624,34 +705,72 @@ export const supabaseService = {
     }
   },
   deleteInventoryRequisition: async (id: string): Promise<void> => {
-    const response = await fetch(`/api/inventory/requisitions/${encodeURIComponent(id)}`, { method: 'DELETE', credentials: 'include' });
+    const response = await fetch(`/api/uinv-portal/issues/${encodeURIComponent(id)}`, { method: 'DELETE', credentials: 'include' });
     if (!response.ok) {
       const data = await response.json().catch(() => ({}));
       throw new Error(data.error || `Delete requisition failed: ${response.status}`);
     }
   },
 
-  fetchStockMovements: async (): Promise<StockMovement[]> => fetchTable('inventory_stock_movements', mapStockMovementFromDb, 'movement_date'),
-  upsertStockMovement: async (movement: StockMovement): Promise<void> => {
-    const response = await fetch('/api/inventory/stock-movements', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      credentials: 'include',
-      body: JSON.stringify(mapStockMovementToDb(movement)),
-    });
-    if (!response.ok) {
-      const data = await response.json().catch(() => ({}));
-      throw new Error(data.error || `Upsert stock_movement failed: ${response.status}`);
-    }
+  fetchStockMovements: async (): Promise<StockMovement[]> => {
+    try {
+      const response = await fetch('/api/uinv-portal/ledger', { credentials: 'include' });
+      if (!response.ok) return [];
+      const ledger = await response.json();
+      return (ledger || []).map((l: any) => ({
+        id: l.id,
+        date: l.transaction_date || '',
+        itemId: l.item_id || '',
+        itemName: '',
+        type: l.transaction_type || '',
+        quantity: (l.quantity_in || 0) - (l.quantity_out || 0),
+        cost: l.unit_cost || 0,
+        reference: l.reference || '',
+        user: l.performed_by || '',
+        storeFrom: l.store_id || '',
+      }));
+    } catch { return []; }
+  },
+  upsertStockMovement: async (_movement: StockMovement): Promise<void> => {
+    // No-op: stock movements are now handled via unified ledger endpoints
   },
 
-  fetchInventoryGRNs: async (): Promise<GRN[]> => fetchTable('inventory_grns', mapGRNFromDb, 'received_date'),
+  fetchInventoryGRNs: async (): Promise<GRN[]> => {
+    try {
+      const response = await fetch('/api/uinv-portal/receipts', { credentials: 'include' });
+      if (!response.ok) return [];
+      const receipts = await response.json();
+      return (receipts || []).map((r: any) => ({
+        id: r.id,
+        grnNumber: r.grn_number || '',
+        supplier: r.supplier_name || '',
+        receivedDate: r.received_date || '',
+        status: r.status || 'pending',
+        items: (r.lines || []).map((l: any) => ({
+          itemId: l.item_id || '',
+          itemName: l.item_name || '',
+          quantity: l.quantity_received || 0,
+          unitCost: l.unit_cost || 0,
+        })),
+      }));
+    } catch { return []; }
+  },
   upsertInventoryGRN: async (grn: GRN): Promise<void> => {
-    const response = await fetch('/api/inventory/grns', {
+    const response = await fetch('/api/uinv-portal/receipts', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
-      body: JSON.stringify(mapGRNToDb(grn)),
+      body: JSON.stringify({
+        grn_number: grn.grnNumber,
+        supplier_name: grn.supplier,
+        received_date: grn.receivedDate,
+        lines: (grn.items || []).map(i => ({
+          item_id: i.itemId,
+          item_name: i.itemName,
+          quantity_received: i.quantity,
+          unit_cost: i.unitCost,
+        })),
+      }),
     });
     if (!response.ok) {
       const data = await response.json().catch(() => ({}));
@@ -659,7 +778,7 @@ export const supabaseService = {
     }
   },
   deleteInventoryGRN: async (id: string): Promise<void> => {
-    const response = await fetch(`/api/inventory/grns/${encodeURIComponent(id)}`, { method: 'DELETE', credentials: 'include' });
+    const response = await fetch(`/api/uinv-portal/receipts/${encodeURIComponent(id)}`, { method: 'DELETE', credentials: 'include' });
     if (!response.ok) {
       const data = await response.json().catch(() => ({}));
       throw new Error(data.error || `Delete GRN failed: ${response.status}`);
@@ -775,6 +894,14 @@ export const supabaseService = {
         creditLimitDefault: Number(data.credit_limit_default) || 0,
         vipSpendThreshold: Number(data.vip_spend_threshold) || 0,
         autoNightAuditTime: data.auto_night_audit_time || '',
+        nightAuditPostRoomCharges: data.night_audit_post_room_charges ?? true,
+        nightAuditGenerateSummary: data.night_audit_generate_summary ?? true,
+        nightAuditCheckinReminders: data.night_audit_checkin_reminders ?? true,
+        timezone: data.timezone || '',
+        defaultLanguage: data.default_language || '',
+        dateFormat: data.date_format || '',
+        baseCurrency: data.base_currency || '',
+        emailTemplates: data.email_templates || undefined,
         operatingHours: data.operating_hours || {},
         revenueMappings: data.revenue_mappings || {},
         roomTypes: data.room_types || [],
@@ -793,6 +920,7 @@ export const supabaseService = {
         maintenanceMode: data.maintenance_mode ?? false,
         maintenanceMessage: data.maintenance_message || '',
         publicBookingEnabled: data.public_booking_enabled ?? true,
+        guestPortalEnabled: data.guest_portal_enabled ?? true,
         moduleToggles: data.module_toggles || {},
         allowedIps: data.allowed_ips || [],
         backupFrequency: data.backup_frequency || 'daily',

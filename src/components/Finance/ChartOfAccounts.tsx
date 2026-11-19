@@ -1,448 +1,546 @@
-import React, { useState, useEffect } from 'react';
-import { supabase } from '../../lib/supabase';
+import { useState, useEffect, useCallback, useMemo } from 'react';
+import {
+  FileText,
+  Plus,
+  Search,
+  ArrowUpRight,
+  ArrowDownRight,
+  Loader2,
+  AlertCircle,
+  MoreVertical,
+  Eye,
+  Edit3,
+  Trash2,
+  Save,
+  X,
+} from 'lucide-react';
+import { useERP } from '../../context/ERPContext';
+import { ModalSystem } from '../Shared/ModalSystem';
+import { DataTable, Column } from '../Shared/DataTable';
+import { SectionCard, Badge } from '../FrontOffice/ui';
+import { button, layout, type StatusTone } from '../FrontOffice/brandTheme';
+import StatCard from '../FrontOffice/StatCard';
+import {
+  fetchChartOfAccounts,
+  createChartOfAccount,
+  updateChartOfAccount,
+  deleteChartOfAccount,
+  type ChartOfAccountFE,
+} from '../../services/financePortalService';
 
-interface Account {
-  id: string;
-  code: string;
-  name: string;
-  account_type: 'asset' | 'liability' | 'equity' | 'revenue' | 'expense' | 'cost_of_sales' | 'operating_expense' | 'other_income' | 'other_expense';
-  parent_id: string | null;
-  level: number;
-  is_active: boolean;
-  department_id?: string;
-  cost_center_id?: string;
-  profit_center_id?: string;
-  project_id?: string;
-  property_id?: string;
-  description?: string;
-  children?: Account[];
-}
+const CATEGORIES = [
+  'All', 'Asset', 'Liability', 'Equity', 'Revenue',
+  'Cost of Sales', 'Operating Expenses', 'Other Income', 'Other Expenses',
+];
 
-const ChartOfAccounts = () => {
-  const [accounts, setAccounts] = useState<Account[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [selectedAccount, setSelectedAccount] = useState<Account | null>(null);
-  const [showModal, setShowModal] = useState(false);
-  const [filter, setFilter] = useState('all');
-  const [searchTerm, setSearchTerm] = useState('');
-
-  useEffect(() => {
-    fetchAccounts();
-  }, []);
-
-  const fetchAccounts = async () => {
-    setLoading(true);
-    const { data, error } = await supabase
-      .from('chart_of_accounts')
-      .select('*')
-      .order('code');
-    
-    if (error) {
-      console.error('Error fetching accounts:', error);
-    } else {
-      const accountTree = buildAccountTree(data || []);
-      setAccounts(accountTree);
-    }
-    setLoading(false);
-  };
-
-  const buildAccountTree = (flatAccounts: Account[]): Account[] => {
-    const map = new Map<string, Account>();
-    const roots: Account[] = [];
-
-    flatAccounts.forEach(account => {
-      map.set(account.id, { ...account, children: [] });
-    });
-
-    flatAccounts.forEach(account => {
-      const node = map.get(account.id)!;
-      if (account.parent_id && map.has(account.parent_id)) {
-        map.get(account.parent_id)!.children!.push(node);
-      } else {
-        roots.push(node);
-      }
-    });
-
-    return roots;
-  };
-
-  const filteredAccounts = accounts.filter(account => {
-    const matchesFilter = filter === 'all' || account.account_type === filter;
-    const matchesSearch = account.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                         account.code.toLowerCase().includes(searchTerm.toLowerCase());
-    return matchesFilter && matchesSearch;
-  });
-
-  const accountTypes = [
-    { value: 'asset', label: 'Assets', color: 'bg-blue-100 text-blue-800' },
-    { value: 'liability', label: 'Liabilities', color: 'bg-red-100 text-red-800' },
-    { value: 'equity', label: 'Equity', color: 'bg-green-100 text-green-800' },
-    { value: 'revenue', label: 'Revenue', color: 'bg-purple-100 text-purple-800' },
-    { value: 'cost_of_sales', label: 'Cost of Sales', color: 'bg-pink-100 text-pink-800' },
-    { value: 'operating_expense', label: 'Operating Expenses', color: 'bg-orange-100 text-orange-800' },
-    { value: 'other_income', label: 'Other Income', color: 'bg-teal-100 text-teal-800' },
-    { value: 'other_expense', label: 'Other Expenses', color: 'bg-amber-100 text-amber-800' },
-    { value: 'expense', label: 'Expenses', color: 'bg-orange-100 text-orange-800' },
-  ];
-
-  const renderAccountRow = (account: Account, level: number = 0) => {
-    const typeConfig = accountTypes.find(t => t.value === account.account_type);
-    const paddingLeft = level * 24;
-
-    return (
-      <>
-        <tr className="hover:bg-slate-50 dark:hover:bg-slate-800 border-b border-slate-200 dark:border-slate-700">
-          <td className="px-4 py-3" style={{ paddingLeft: `${paddingLeft + 16}px` }}>
-            <span className="font-mono text-sm">{account.code}</span>
-          </td>
-          <td className="px-4 py-3">
-            <div className="font-medium">{account.name}</div>
-            {account.description && (
-              <div className="text-xs text-slate-500 dark:text-slate-400">{account.description}</div>
-            )}
-          </td>
-          <td className="px-4 py-3">
-            <span className={`px-2 py-1 rounded-full text-xs font-medium ${typeConfig?.color}`}>
-              {typeConfig?.label}
-            </span>
-          </td>
-          <td className="px-4 py-3 text-sm text-slate-600 dark:text-slate-400">
-            {account.department_id || '-'}
-          </td>
-          <td className="px-4 py-3 text-sm text-slate-600 dark:text-slate-400">
-            {account.cost_center_id || '-'}
-          </td>
-          <td className="px-4 py-3 text-sm text-slate-600 dark:text-slate-400">
-            {account.project_id || '-'}
-          </td>
-          <td className="px-4 py-3 text-sm text-slate-600 dark:text-slate-400">
-            {account.property_id || '-'}
-          </td>
-          <td className="px-4 py-3">
-            <span className={`px-2 py-1 rounded-full text-xs font-medium ${
-              account.is_active ? 'bg-green-100 text-green-800' : 'bg-slate-100 text-slate-800'
-            }`}>
-              {account.is_active ? 'Active' : 'Inactive'}
-            </span>
-          </td>
-          <td className="px-4 py-3">
-            <button
-              onClick={() => { setSelectedAccount(account); setShowModal(true); }}
-              className="text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300 text-sm font-medium"
-            >
-              Edit
-            </button>
-          </td>
-        </tr>
-        {account.children?.map(child => renderAccountRow(child, level + 1))}
-      </>
-    );
-  };
-
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="p-6">
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold text-slate-900 dark:text-slate-100 mb-2">
-          Chart of Accounts
-        </h1>
-        <p className="text-slate-600 dark:text-slate-400">
-          Manage the complete account structure for financial reporting
-        </p>
-      </div>
-
-      {/* Filters */}
-      <div className="bg-white dark:bg-slate-800 rounded-lg shadow-sm border border-slate-200 dark:border-slate-700 p-4 mb-6">
-        <div className="flex flex-wrap gap-4 items-center">
-          <div className="flex-1 min-w-64">
-            <input
-              type="text"
-              placeholder="Search accounts..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              className="w-full px-4 py-2 border border-slate-300 dark:border-slate-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent dark:bg-slate-700 dark:text-slate-100"
-            />
-          </div>
-          <div className="flex gap-2">
-            {accountTypes.map(type => (
-              <button
-                key={type.value}
-                onClick={() => setFilter(filter === type.value ? 'all' : type.value)}
-                className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
-                  filter === type.value
-                    ? type.color
-                    : 'bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600'
-                }`}
-              >
-                {type.label}
-              </button>
-            ))}
-          </div>
-          <button
-            onClick={() => { setSelectedAccount(null); setShowModal(true); }}
-            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium text-sm"
-          >
-            + New Account
-          </button>
-        </div>
-      </div>
-
-      {/* Account Table */}
-      <div className="bg-white dark:bg-slate-800 rounded-lg shadow-sm border border-slate-200 dark:border-slate-700 overflow-hidden">
-        <table className="w-full">
-          <thead className="bg-slate-50 dark:bg-slate-900 border-b border-slate-200 dark:border-slate-700">
-            <tr>
-              <th className="px-4 py-3 text-left text-xs font-semibold text-slate-600 dark:text-slate-400 uppercase tracking-wider">
-                Code
-              </th>
-              <th className="px-4 py-3 text-left text-xs font-semibold text-slate-600 dark:text-slate-400 uppercase tracking-wider">
-                Account Name
-              </th>
-              <th className="px-4 py-3 text-left text-xs font-semibold text-slate-600 dark:text-slate-400 uppercase tracking-wider">
-                Type
-              </th>
-              <th className="px-4 py-3 text-left text-xs font-semibold text-slate-600 dark:text-slate-400 uppercase tracking-wider">
-                Department
-              </th>
-              <th className="px-4 py-3 text-left text-xs font-semibold text-slate-600 dark:text-slate-400 uppercase tracking-wider">
-                Cost Center
-              </th>
-              <th className="px-4 py-3 text-left text-xs font-semibold text-slate-600 dark:text-slate-400 uppercase tracking-wider">
-                Project
-              </th>
-              <th className="px-4 py-3 text-left text-xs font-semibold text-slate-600 dark:text-slate-400 uppercase tracking-wider">
-                Property
-              </th>
-              <th className="px-4 py-3 text-left text-xs font-semibold text-slate-600 dark:text-slate-400 uppercase tracking-wider">
-                Status
-              </th>
-              <th className="px-4 py-3 text-left text-xs font-semibold text-slate-600 dark:text-slate-400 uppercase tracking-wider">
-                Actions
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {filteredAccounts.length === 0 ? (
-              <tr>
-                <td colSpan={9} className="px-4 py-8 text-center text-slate-500 dark:text-slate-400">
-                  No accounts found
-                </td>
-              </tr>
-            ) : (
-              filteredAccounts.map(account => renderAccountRow(account))
-            )}
-          </tbody>
-        </table>
-      </div>
-
-      {/* Account Modal */}
-      {showModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white dark:bg-slate-800 rounded-lg shadow-xl w-full max-w-2xl max-h-[90vh] overflow-y-auto">
-            <div className="p-6 border-b border-slate-200 dark:border-slate-700">
-              <h2 className="text-xl font-bold text-slate-900 dark:text-slate-100">
-                {selectedAccount ? 'Edit Account' : 'New Account'}
-              </h2>
-            </div>
-            <div className="p-6">
-              <AccountForm
-                account={selectedAccount}
-                onSave={() => { setShowModal(false); fetchAccounts(); }}
-                onCancel={() => setShowModal(false)}
-              />
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  );
+const CATEGORY_TONE: Record<string, StatusTone> = {
+  Asset: 'info',
+  Liability: 'warning',
+  Equity: 'accent',
+  Revenue: 'success',
+  'Cost of Sales': 'danger',
+  'Operating Expenses': 'danger',
+  'Other Income': 'success',
+  'Other Expenses': 'danger',
 };
 
-const AccountForm = ({ account, onSave, onCancel }: { account: Account | null; onSave: () => void; onCancel: () => void }) => {
-  const [formData, setFormData] = useState({
-    code: account?.code || '',
-    name: account?.name || '',
-    account_type: account?.account_type || 'asset',
-    parent_id: account?.parent_id || '',
-    is_active: account?.is_active ?? true,
-    department_id: account?.department_id || '',
-    cost_center_id: account?.cost_center_id || '',
-    profit_center_id: account?.profit_center_id || '',
-    project_id: account?.project_id || '',
-    property_id: account?.property_id || '',
-    description: account?.description || '',
-  });
+const DEPARTMENTS = [
+  'Front Office', 'Housekeeping', 'Engineering', 'Food & Beverage',
+  'Kitchen', 'Laundry', 'Spa', 'Sales & Marketing',
+  'Administration', 'Security', 'IT',
+];
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const { error } = await supabase
-      .from('chart_of_accounts')
-      .upsert({
-        ...formData,
-        id: account?.id,
-        level: account?.level || 1,
+const ChartOfAccounts = () => {
+  const { currentPropertyId, addNotification, properties } = useERP();
+  const [accounts, setAccounts] = useState<ChartOfAccountFE[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [categoryFilter, setCategoryFilter] = useState('All');
+  const [selectedAccount, setSelectedAccount] = useState<ChartOfAccountFE | null>(null);
+  const [showModal, setShowModal] = useState(false);
+  const [menuOpen, setMenuOpen] = useState<string | null>(null);
+  const [viewMode, setViewMode] = useState<'flat' | 'tree'>('flat');
+
+  const propertyName = useCallback((id?: string | null): string => {
+    if (!id) return '—';
+    return properties.find(p => p.id === id)?.property_name || '—';
+  }, [properties]);
+
+  const loadData = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const data = await fetchChartOfAccounts({
+        propertyId: currentPropertyId || undefined,
       });
-    
-    if (error) {
-      console.error('Error saving account:', error);
-    } else {
-      onSave();
+      setAccounts(data);
+    } catch (e: any) {
+      setError(e?.message || 'Failed to load Chart of Accounts');
+    } finally {
+      setLoading(false);
+    }
+  }, [currentPropertyId]);
+
+  useEffect(() => { loadData(); }, [loadData]);
+
+  const filteredAccounts = useMemo(() => {
+    return categoryFilter === 'All'
+      ? accounts
+      : accounts.filter(a => a.category === categoryFilter || a.account_type === categoryFilter);
+  }, [accounts, categoryFilter]);
+
+  const handleDelete = async (id: string, name: string) => {
+    if (!confirm(`Delete account "${name}"?`)) return;
+    try {
+      await deleteChartOfAccount(id);
+      addNotification(`Account ${name} deleted`, 'success', 'finance');
+      await loadData();
+    } catch (e: any) {
+      addNotification(e?.message || 'Failed to delete account', 'error', 'finance');
     }
   };
 
-  return (
-    <form onSubmit={handleSubmit} className="space-y-4">
-      <div className="grid grid-cols-2 gap-4">
+  const AccountForm = ({ account, onSaved }: { account: ChartOfAccountFE | null; onSaved: () => void }) => {
+    const [form, setForm] = useState({
+      code: account?.code || '',
+      name: account?.name || '',
+      category: account?.category || account?.account_type || 'Asset',
+      subcategory: account?.subcategory || '',
+      department: account?.department || '',
+      costCenter: account?.cost_center || '',
+      profitCenter: account?.profit_center || '',
+      project: account?.project || '',
+      parentCode: account?.parent_code || '',
+      description: account?.description || '',
+      normalBalance: account?.normal_balance || '',
+      currency: account?.currency || 'ETB',
+      isControlAccount: account?.is_control_account || false,
+      propertyId: account?.property_id || currentPropertyId || '',
+    });
+    const [saving, setSaving] = useState(false);
+
+    const handleSubmit = async (e: React.FormEvent) => {
+      e.preventDefault();
+      setSaving(true);
+      try {
+        if (account) {
+          await updateChartOfAccount(account.id, {
+            name: form.name,
+            subcategory: form.subcategory || null,
+            department: form.department || null,
+            description: form.description || null,
+            normalBalance: form.normalBalance || undefined,
+            currency: form.currency,
+            isControlAccount: form.isControlAccount,
+            propertyId: form.propertyId || null,
+            costCenter: form.costCenter || null,
+            profitCenter: form.profitCenter || null,
+            project: form.project || null,
+          });
+          addNotification('Account updated', 'success', 'finance');
+        } else {
+          await createChartOfAccount({
+            code: form.code,
+            name: form.name,
+            category: form.category,
+            subcategory: form.subcategory || undefined,
+            department: form.department || undefined,
+            accountType: form.category,
+            parentCode: form.parentCode || undefined,
+            description: form.description || undefined,
+            normalBalance: form.normalBalance || undefined,
+            currency: form.currency,
+            isControlAccount: form.isControlAccount,
+            propertyId: form.propertyId || undefined,
+            costCenter: form.costCenter || undefined,
+            profitCenter: form.profitCenter || undefined,
+            project: form.project || undefined,
+          });
+          addNotification('Account created', 'success', 'finance');
+        }
+        onSaved();
+      } catch (err: any) {
+        addNotification(err?.message || 'Failed to save account', 'error', 'finance');
+      } finally {
+        setSaving(false);
+      }
+    };
+
+    return (
+      <form onSubmit={handleSubmit} className="space-y-4">
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest block mb-1">Account Code *</label>
+            <input
+              type="text"
+              value={form.code}
+              disabled={!!account}
+              onChange={(e) => setForm({ ...form, code: e.target.value })}
+              className="w-full px-3 py-2 text-xs font-bold border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-950 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:bg-slate-100"
+              required
+            />
+          </div>
+          <div>
+            <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest block mb-1">Category *</label>
+            <select
+              value={form.category}
+              disabled={!!account}
+              onChange={(e) => setForm({ ...form, category: e.target.value })}
+              className="w-full px-3 py-2 text-xs font-bold border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-950 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:bg-slate-100"
+            >
+              {CATEGORIES.slice(1).map(c => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </div>
+        </div>
         <div>
-          <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
-            Account Code
-          </label>
+          <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest block mb-1">Account Name *</label>
           <input
             type="text"
-            value={formData.code}
-            onChange={(e) => setFormData({ ...formData, code: e.target.value })}
-            className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg focus:ring-2 focus:ring-blue-500 dark:bg-slate-700 dark:text-slate-100"
+            value={form.name}
+            onChange={(e) => setForm({ ...form, name: e.target.value })}
+            className="w-full px-3 py-2 text-xs font-bold border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-950 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
             required
           />
         </div>
         <div>
-          <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
-            Account Type
-          </label>
-          <select
-            value={formData.account_type}
-            onChange={(e) => setFormData({ ...formData, account_type: e.target.value as any })}
-            className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg focus:ring-2 focus:ring-blue-500 dark:bg-slate-700 dark:text-slate-100"
-          >
-            <option value="asset">Asset</option>
-            <option value="liability">Liability</option>
-            <option value="equity">Equity</option>
-            <option value="revenue">Revenue</option>
-            <option value="cost_of_sales">Cost of Sales</option>
-            <option value="operating_expense">Operating Expense</option>
-            <option value="other_income">Other Income</option>
-            <option value="other_expense">Other Expense</option>
-            <option value="expense">Expense</option>
-          </select>
-        </div>
-      </div>
-      <div>
-        <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
-          Account Name
-        </label>
-        <input
-          type="text"
-          value={formData.name}
-          onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-          className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg focus:ring-2 focus:ring-blue-500 dark:bg-slate-700 dark:text-slate-100"
-          required
-        />
-      </div>
-      <div>
-        <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
-          Description
-        </label>
-        <textarea
-          value={formData.description}
-          onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-          className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg focus:ring-2 focus:ring-blue-500 dark:bg-slate-700 dark:text-slate-100"
-          rows={3}
-        />
-      </div>
-      <div className="grid grid-cols-3 gap-4">
-        <div>
-          <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
-            Department
-          </label>
-          <input
-            type="text"
-            value={formData.department_id}
-            onChange={(e) => setFormData({ ...formData, department_id: e.target.value })}
-            className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg focus:ring-2 focus:ring-blue-500 dark:bg-slate-700 dark:text-slate-100"
+          <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest block mb-1">Description</label>
+          <textarea
+            value={form.description}
+            onChange={(e) => setForm({ ...form, description: e.target.value })}
+            className="w-full px-3 py-2 text-xs font-bold border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-950 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            rows={2}
           />
         </div>
-        <div>
-          <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
-            Cost Center
-          </label>
-          <input
-            type="text"
-            value={formData.cost_center_id}
-            onChange={(e) => setFormData({ ...formData, cost_center_id: e.target.value })}
-            className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg focus:ring-2 focus:ring-blue-500 dark:bg-slate-700 dark:text-slate-100"
-          />
+        <div className="grid grid-cols-3 gap-4">
+          <div>
+            <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest block mb-1">Subcategory</label>
+            <input
+              type="text"
+              value={form.subcategory}
+              onChange={(e) => setForm({ ...form, subcategory: e.target.value })}
+              className="w-full px-3 py-2 text-xs font-bold border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-950 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            />
+          </div>
+          <div>
+            <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest block mb-1">Department</label>
+            <select
+              value={form.department}
+              onChange={(e) => setForm({ ...form, department: e.target.value })}
+              className="w-full px-3 py-2 text-xs font-bold border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-950 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            >
+              <option value="">— None —</option>
+              {DEPARTMENTS.map(d => <option key={d} value={d}>{d}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest block mb-1">Parent Code</label>
+            <input
+              type="text"
+              value={form.parentCode}
+              onChange={(e) => setForm({ ...form, parentCode: e.target.value })}
+              className="w-full px-3 py-2 text-xs font-bold border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-950 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            />
+          </div>
         </div>
-        <div>
-          <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
-            Profit Center
-          </label>
+        <div className="grid grid-cols-3 gap-4">
+          <div>
+            <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest block mb-1">Cost Center</label>
+            <input
+              type="text"
+              value={form.costCenter}
+              onChange={(e) => setForm({ ...form, costCenter: e.target.value })}
+              className="w-full px-3 py-2 text-xs font-bold border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-950 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              placeholder="e.g. CC-001"
+            />
+          </div>
+          <div>
+            <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest block mb-1">Profit Center</label>
+            <input
+              type="text"
+              value={form.profitCenter}
+              onChange={(e) => setForm({ ...form, profitCenter: e.target.value })}
+              className="w-full px-3 py-2 text-xs font-bold border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-950 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              placeholder="e.g. PC-001"
+            />
+          </div>
+          <div>
+            <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest block mb-1">Project</label>
+            <input
+              type="text"
+              value={form.project}
+              onChange={(e) => setForm({ ...form, project: e.target.value })}
+              className="w-full px-3 py-2 text-xs font-bold border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-950 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              placeholder="e.g. PRJ-001"
+            />
+          </div>
+        </div>
+        <div className="grid grid-cols-3 gap-4">
+          <div>
+            <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest block mb-1">Normal Balance</label>
+            <select
+              value={form.normalBalance}
+              onChange={(e) => setForm({ ...form, normalBalance: e.target.value })}
+              className="w-full px-3 py-2 text-xs font-bold border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-950 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            >
+              <option value="">Auto</option>
+              <option value="Debit">Debit</option>
+              <option value="Credit">Credit</option>
+            </select>
+          </div>
+          <div>
+            <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest block mb-1">Currency</label>
+            <select
+              value={form.currency}
+              onChange={(e) => setForm({ ...form, currency: e.target.value })}
+              className="w-full px-3 py-2 text-xs font-bold border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-950 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            >
+              <option value="ETB">ETB</option>
+              <option value="USD">USD</option>
+              <option value="EUR">EUR</option>
+            </select>
+          </div>
+          <div>
+            <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest block mb-1">Property</label>
+            <select
+              value={form.propertyId}
+              onChange={(e) => setForm({ ...form, propertyId: e.target.value })}
+              className="w-full px-3 py-2 text-xs font-bold border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-950 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            >
+              <option value="">— No Property —</option>
+              {properties.map(p => <option key={p.id} value={p.id}>{p.property_name}</option>)}
+            </select>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
           <input
-            type="text"
-            value={formData.profit_center_id}
-            onChange={(e) => setFormData({ ...formData, profit_center_id: e.target.value })}
-            className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg focus:ring-2 focus:ring-blue-500 dark:bg-slate-700 dark:text-slate-100"
+            type="checkbox"
+            id="is_control_account"
+            checked={form.isControlAccount}
+            onChange={(e) => setForm({ ...form, isControlAccount: e.target.checked })}
+            className="w-4 h-4 text-indigo-600 rounded"
           />
+          <label htmlFor="is_control_account" className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Control Account</label>
+        </div>
+        <div className="flex justify-end gap-3 pt-4 border-t border-slate-100 dark:border-slate-800">
+          <button type="button" onClick={() => setShowModal(false)} className="px-4 py-2 border border-slate-200 dark:border-slate-700 rounded-2xl text-[10px] font-black uppercase tracking-widest text-slate-600 dark:text-slate-300 hover:bg-slate-50 transition">Cancel</button>
+          <button type="submit" disabled={saving} className="px-4 py-2 bg-indigo-600 text-white rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-indigo-700 transition flex items-center gap-2">
+            {saving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} Save
+          </button>
+        </div>
+      </form>
+    );
+  };
+
+  const toneForCategory = (cat?: string): StatusTone => {
+    return (cat && CATEGORY_TONE[cat]) || 'neutral';
+  };
+
+  return (
+    <div className={layout.sectionStack}>
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div>
+          <h1 className="text-sm font-black text-slate-900 dark:text-white uppercase tracking-tight">Chart of Accounts</h1>
+          <p className="text-[10px] text-slate-400 font-bold uppercase mt-1">Enterprise account structure and USALI mapping</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <div className="flex bg-slate-100 dark:bg-slate-800 rounded-2xl p-0.5">
+            <button
+              onClick={() => setViewMode('flat')}
+              className={`px-3 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition ${viewMode === 'flat' ? 'bg-white dark:bg-slate-700 text-indigo-600 shadow-sm' : 'text-slate-500'}`}
+            >
+              Flat
+            </button>
+            <button
+              onClick={() => setViewMode('tree')}
+              className={`px-3 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition ${viewMode === 'tree' ? 'bg-white dark:bg-slate-700 text-indigo-600 shadow-sm' : 'text-slate-500'}`}
+            >
+              Tree
+            </button>
+          </div>
+          <button onClick={() => loadData()} className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white font-bold py-2.5 px-4 rounded-2xl flex items-center gap-2 text-xs hover:bg-slate-50 transition shadow-sm">
+            {loading ? <Loader2 size={16} className="animate-spin" /> : <Search size={16} />}
+            Refresh
+          </button>
+          <button onClick={() => { setSelectedAccount(null); setShowModal(true); }} className="bg-indigo-600 text-white font-bold py-2.5 px-4 rounded-2xl flex items-center gap-2 text-xs hover:bg-indigo-700 transition shadow-sm">
+            <Plus size={16} /> New Account
+          </button>
         </div>
       </div>
-      <div className="grid grid-cols-2 gap-4">
-        <div>
-          <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
-            Project
-          </label>
-          <input
-            type="text"
-            value={formData.project_id}
-            onChange={(e) => setFormData({ ...formData, project_id: e.target.value })}
-            className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg focus:ring-2 focus:ring-blue-500 dark:bg-slate-700 dark:text-slate-100"
+
+      {error && (
+        <div className="bg-rose-50 dark:bg-rose-500/10 border border-rose-200 dark:border-rose-500/20 rounded-2xl p-6 text-center">
+          <AlertCircle size={20} className="mx-auto text-rose-500 mb-2" />
+          <p className="text-xs font-bold text-rose-600">{error}</p>
+          <button onClick={() => loadData()} className="text-[10px] font-black text-rose-600 uppercase hover:underline mt-2">Retry</button>
+        </div>
+      )}
+
+      <div className={layout.kpiGrid}>
+        <StatCard title="Total Accounts" value={accounts.length} icon={FileText} tone="accent" />
+        <StatCard title="Active" value={accounts.filter(a => a.is_active !== false).length} icon={ArrowUpRight} tone="success" />
+        <StatCard title="Assets" value={accounts.filter(a => a.category === 'Asset' || a.account_type === 'Asset').length} icon={ArrowUpRight} tone="info" />
+        <StatCard title="Liabilities" value={accounts.filter(a => a.category === 'Liability' || a.account_type === 'Liability').length} icon={ArrowDownRight} tone="warning" />
+        <StatCard title="Equity" value={accounts.filter(a => a.category === 'Equity' || a.account_type === 'Equity').length} icon={FileText} tone="accent" />
+        <StatCard title="Revenue" value={accounts.filter(a => a.category === 'Revenue' || a.account_type === 'Revenue').length} icon={ArrowUpRight} tone="success" />
+        <StatCard title="Cost of Sales" value={accounts.filter(a => a.category === 'Cost of Sales' || a.account_type === 'Cost of Sales').length} icon={ArrowDownRight} tone="danger" />
+        <StatCard title="Op. Expenses" value={accounts.filter(a => a.category === 'Operating Expenses' || a.account_type === 'Operating Expenses').length} icon={ArrowDownRight} tone="danger" />
+        <StatCard title="Other Income" value={accounts.filter(a => a.category === 'Other Income' || a.account_type === 'Other Income').length} icon={ArrowUpRight} tone="success" />
+        <StatCard title="Other Expenses" value={accounts.filter(a => a.category === 'Other Expenses' || a.account_type === 'Other Expenses').length} icon={ArrowDownRight} tone="danger" />
+      </div>
+
+      <SectionCard
+        title="Enterprise Chart of Accounts"
+        subtitle="USALI-compliant account structure with property scoping"
+        icon={FileText}
+        pad="none"
+        bodyClassName="divide-y divide-gray-100 dark:divide-slate-700"
+      >
+        {/* Category filter */}
+        <div className="px-4 py-3 border-b border-gray-100 dark:border-slate-700 flex items-center gap-2 overflow-x-auto">
+          {CATEGORIES.map(cat => (
+            <button
+              key={cat}
+              onClick={() => setCategoryFilter(cat)}
+              className={`px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest transition whitespace-nowrap ${
+                categoryFilter === cat
+                  ? 'bg-[var(--color-accent-operations)] text-white'
+                  : 'bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600'
+              }`}
+            >
+              {cat}
+            </button>
+          ))}
+        </div>
+
+        {loading && (
+          <div className="p-8 flex items-center justify-center gap-2 text-sm text-slate-500">
+            <Loader2 className="w-5 h-5 animate-spin" /> Loading chart of accounts…
+          </div>
+        )}
+        {!loading && filteredAccounts.length === 0 && (
+          <div className="p-8 text-center text-sm text-slate-500">No accounts found.</div>
+        )}
+        {!loading && viewMode === 'tree' && filteredAccounts.length > 0 && (() => {
+          const childMap = new Map<string | null, ChartOfAccountFE[]>();
+          filteredAccounts.forEach(a => {
+            const parent = a.parent_code || null;
+            if (!childMap.has(parent)) childMap.set(parent, []);
+            childMap.get(parent)!.push(a);
+          });
+          const roots = childMap.get(null) || filteredAccounts.filter(a => !a.parent_code);
+          const renderNode = (acc: ChartOfAccountFE, depth: number): React.ReactNode => {
+            const children = childMap.get(acc.code) || [];
+            return (
+              <div key={acc.id}>
+                <div
+                  className="flex items-center gap-3 px-4 py-2 hover:bg-slate-50 dark:hover:bg-slate-800 border-b border-gray-50 dark:border-slate-700"
+                  style={{ paddingLeft: `${16 + depth * 24}px` }}
+                >
+                  {children.length > 0 && <span className="text-slate-400 text-xs">▾</span>}
+                  {children.length === 0 && <span className="w-3" />}
+                  <span className="text-xs font-black text-indigo-600 font-mono italic w-24">{acc.code}</span>
+                  <span className="text-xs font-black text-slate-900 dark:text-white flex-1">{acc.name}</span>
+                  <Badge tone={toneForCategory(acc.category || acc.account_type)}>{acc.category || acc.account_type}</Badge>
+                  <span className="text-[10px] font-bold text-slate-500 w-20 text-right">{acc.currency || 'ETB'}</span>
+                  <span className="text-xs font-black text-slate-900 dark:text-white w-28 text-right">{Number(acc.balance || 0).toLocaleString()}</span>
+                  <div className={`flex items-center gap-1.5 w-16 ${acc.is_active === false ? 'text-slate-400' : 'text-emerald-500'}`}>
+                    <div className={`w-1.5 h-1.5 rounded-full ${acc.is_active === false ? 'bg-slate-400' : 'bg-emerald-500'}`} />
+                    <span className="text-[9px] font-black uppercase">{acc.is_active === false ? 'Inactive' : 'Active'}</span>
+                  </div>
+                </div>
+                {children.map(c => renderNode(c, depth + 1))}
+              </div>
+            );
+          };
+          return (
+            <div className="divide-y divide-gray-50 dark:divide-slate-700">
+              <div className="flex items-center gap-3 px-4 py-2 bg-slate-50 dark:bg-slate-800 border-b border-gray-100 dark:border-slate-700">
+                <span className="w-3" />
+                <span className="text-[9px] font-black uppercase tracking-widest text-slate-400 w-24">Code</span>
+                <span className="text-[9px] font-black uppercase tracking-widest text-slate-400 flex-1">Account Name</span>
+                <span className="text-[9px] font-black uppercase tracking-widest text-slate-400 w-24">Category</span>
+                <span className="text-[9px] font-black uppercase tracking-widest text-slate-400 w-20 text-right">Currency</span>
+                <span className="text-[9px] font-black uppercase tracking-widest text-slate-400 w-28 text-right">Balance</span>
+                <span className="text-[9px] font-black uppercase tracking-widest text-slate-400 w-16">Status</span>
+              </div>
+              {roots.map(r => renderNode(r, 0))}
+            </div>
+          );
+        })()}
+        {!loading && viewMode === 'flat' && filteredAccounts.length > 0 && (
+          <DataTable
+            columns={[
+              { key: 'code', label: 'Account Code', render: (acc: ChartOfAccountFE) => <span className="text-xs font-black text-indigo-600 font-mono italic">{acc.code}</span> },
+              { key: 'name', label: 'Account Name', render: (acc: ChartOfAccountFE) => (
+                <div className="flex flex-col">
+                  <span className="text-xs font-black text-slate-900 dark:text-white">{acc.name}</span>
+                  {acc.description && <span className="text-[9px] font-bold text-slate-400 truncate max-w-[200px]">{acc.description}</span>}
+                </div>
+              )},
+              { key: 'category', label: 'Category', render: (acc: ChartOfAccountFE) => <Badge tone={toneForCategory(acc.category || acc.account_type)}>{acc.category || acc.account_type}</Badge> },
+              { key: 'subcategory', label: 'Subcategory', render: (acc: ChartOfAccountFE) => <span className="text-[10px] font-bold text-slate-500">{acc.subcategory || '—'}</span> },
+              { key: 'department', label: 'Department', render: (acc: ChartOfAccountFE) => <span className="text-[10px] font-bold text-slate-500">{acc.department || '—'}</span> },
+              { key: 'cost_center', label: 'Cost Center', render: (acc: ChartOfAccountFE) => <span className="text-[10px] font-bold text-slate-500">{acc.cost_center || '—'}</span> },
+              { key: 'profit_center', label: 'Profit Center', render: (acc: ChartOfAccountFE) => <span className="text-[10px] font-bold text-slate-500">{acc.profit_center || '—'}</span> },
+              { key: 'normal_balance', label: 'Normal', align: 'center' as const, render: (acc: ChartOfAccountFE) => <span className="text-[10px] font-black uppercase text-slate-500">{acc.normal_balance}</span> },
+              { key: 'currency', label: 'Currency', align: 'center' as const, render: (acc: ChartOfAccountFE) => <span className="text-[10px] font-black uppercase text-slate-500">{acc.currency || 'ETB'}</span> },
+              { key: 'balance', label: 'Balance', align: 'right' as const, render: (acc: ChartOfAccountFE) => <span className="text-xs font-black text-slate-900 dark:text-white">{Number(acc.balance || 0).toLocaleString()}</span> },
+              { key: 'property_name', label: 'Property', render: (acc: ChartOfAccountFE) => <span className="text-[10px] font-bold text-slate-500">{acc.property_name || propertyName(acc.property_id)}</span> },
+              { key: 'is_active', label: 'Status', align: 'center' as const, sortable: false, render: (acc: ChartOfAccountFE) => (
+                <div className={`flex justify-center items-center gap-1.5 ${acc.is_active === false ? 'text-slate-400' : 'text-emerald-500'}`}>
+                  <div className={`w-1.5 h-1.5 rounded-full ${acc.is_active === false ? 'bg-slate-400' : 'bg-emerald-500'}`} />
+                  <span className="text-[9px] font-black uppercase">{acc.is_active === false ? 'Inactive' : 'Active'}</span>
+                </div>
+              )},
+              { key: 'actions', label: 'Actions', align: 'center' as const, sortable: false, render: (acc: ChartOfAccountFE) => {
+                const isOpen = menuOpen === acc.id;
+                return (
+                  <div className="flex justify-center gap-1 relative">
+                    <button onClick={() => setMenuOpen(isOpen ? null : acc.id)} className={button.ghost}>
+                      <MoreVertical className="w-4 h-4" />
+                    </button>
+                    {isOpen && (
+                      <div className="absolute right-0 top-full mt-2 w-40 bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl shadow-xl z-20 overflow-hidden">
+                        <button onClick={() => { setMenuOpen(null); setSelectedAccount(acc); setShowModal(true); }} className="w-full text-left px-3 py-2 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 transition flex items-center gap-2">
+                          <Edit3 className="w-3.5 h-3.5" /> Edit
+                        </button>
+                        <button onClick={() => { setMenuOpen(null); handleDelete(acc.id, acc.name); }} className="w-full text-left px-3 py-2 text-xs font-medium text-rose-600 hover:bg-rose-50 transition flex items-center gap-2">
+                          <Trash2 className="w-3.5 h-3.5" /> Delete
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                );
+              }},
+            ] as Column<ChartOfAccountFE>[]}
+            data={filteredAccounts}
+            rowKey={(acc) => acc.id}
+            sortable
+            filterable
+            filterPlaceholder="Search accounts..."
+            filterKeys={['code', 'name', 'category', 'subcategory', 'department', 'property_name']}
+            containerClassName="rounded-lg border-0"
+          />
+        )}
+      </SectionCard>
+
+      <ModalSystem
+        isOpen={showModal}
+        onClose={() => setShowModal(false)}
+        title={selectedAccount ? 'Edit Account' : 'New Account'}
+        subtitle={selectedAccount ? `Account ${selectedAccount.code}` : 'Create a new USALI account'}
+        variant="form"
+        size="lg"
+        showFooter={false}
+      >
+        <div className="p-6">
+          <AccountForm
+            account={selectedAccount}
+            onSaved={() => { setShowModal(false); setSelectedAccount(null); loadData(); }}
           />
         </div>
-        <div>
-          <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
-            Property
-          </label>
-          <input
-            type="text"
-            value={formData.property_id}
-            onChange={(e) => setFormData({ ...formData, property_id: e.target.value })}
-            className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg focus:ring-2 focus:ring-blue-500 dark:bg-slate-700 dark:text-slate-100"
-          />
-        </div>
-      </div>
-      <div className="flex items-center">
-        <input
-          type="checkbox"
-          id="is_active"
-          checked={formData.is_active}
-          onChange={(e) => setFormData({ ...formData, is_active: e.target.checked })}
-          className="w-4 h-4 text-blue-600 border-slate-300 rounded focus:ring-blue-500"
-        />
-        <label htmlFor="is_active" className="ml-2 text-sm text-slate-700 dark:text-slate-300">
-          Active
-        </label>
-      </div>
-      <div className="flex justify-end gap-3 pt-4">
-        <button
-          type="button"
-          onClick={onCancel}
-          className="px-4 py-2 border border-slate-300 dark:border-slate-600 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300"
-        >
-          Cancel
-        </button>
-        <button
-          type="submit"
-          className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
-        >
-          Save Account
-        </button>
-      </div>
-    </form>
+      </ModalSystem>
+    </div>
   );
 };
 

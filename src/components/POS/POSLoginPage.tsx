@@ -6,10 +6,29 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Store, Lock, User, ArrowRight } from 'lucide-react';
-import { supabase } from '../../lib/supabase';
+import { login, logout } from '../../lib/auth';
 
 interface POSLoginProps {
   onLoginSuccess: (user: any) => void;
+}
+
+export async function fetchPOSOutlets(): Promise<any[]> {
+  const res = await fetch('/api/pos/my-outlets', { credentials: 'include' });
+  if (!res.ok) return [];
+  const data = await res.json();
+  return data.outlets || [];
+}
+
+export function buildPOSUser(user: any, outlets: any[]) {
+  return {
+    id: user.id,
+    authUserId: user.authUserId,
+    email: user.email,
+    name: user.name || user.email?.split('@')[0] || 'POS User',
+    outlets,
+    primaryOutlet: outlets.find((o: any) => o.is_primary) || outlets[0],
+    erpUser: user,
+  };
 }
 
 export default function POSLoginPage({ onLoginSuccess }: POSLoginProps) {
@@ -25,38 +44,23 @@ export default function POSLoginPage({ onLoginSuccess }: POSLoginProps) {
     setLoading(true);
 
     try {
-      const { data, error } = await supabase.auth.signInWithPassword({
-        email,
-        password,
-      });
-
-      if (error) throw error;
-
-      if (data.user) {
-        // Check if user has POS access
-        const { data: outlets, error: outletsError } = await supabase
-          .rpc('get_user_pos_outlets', { p_user_id: data.user.id });
-
-        if (outletsError) throw outletsError;
-
-        if (!outlets || outlets.length === 0) {
-          setError('You do not have access to any POS outlets. Please contact your administrator.');
-          await supabase.auth.signOut();
-          return;
-        }
-
-        // Store user data for POS session
-        const posUser = {
-          id: data.user.id,
-          email: data.user.email,
-          name: data.user.user_metadata?.name || data.user.email?.split('@')[0] || 'POS User',
-          outlets: outlets,
-          primaryOutlet: outlets.find((o: any) => o.is_primary) || outlets[0],
-        };
-
-        onLoginSuccess(posUser);
-        navigate('/pos');
+      // ERP session login — /api/pos/* endpoints authenticate via the
+      // hotel_erp_session cookie, so the POS must mint an ERP session.
+      const result = await login(email, password);
+      if (!result.success || !result.user) {
+        throw new Error(result.error || 'Login failed. Please check your credentials.');
       }
+
+      // Check if user has POS outlet access (bridges auth_user_id -> pos_outlet_roles)
+      const outlets = await fetchPOSOutlets();
+      if (outlets.length === 0) {
+        setError('You do not have access to any POS outlets. Please contact your administrator.');
+        await logout();
+        return;
+      }
+
+      onLoginSuccess(buildPOSUser(result.user, outlets));
+      navigate('/pos');
     } catch (err: any) {
       console.error('POS login error:', err);
       setError(err.message || 'Login failed. Please check your credentials.');

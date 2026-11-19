@@ -55,6 +55,12 @@ interface GroupProfile {
   totalRevenue?: number;
   totalRoomNights?: number;
   totalStays?: number;
+  parent_group_id?: string | null;
+  parent_name?: string | null;
+  parent_type?: string | null;
+  taxId?: string;
+  vatNumber?: string;
+  vatRegistrationDate?: string;
 }
 
 const GroupProfilesManagement = () => {
@@ -79,7 +85,13 @@ const GroupProfilesManagement = () => {
   // Filter and sort groups based on search query, filters, and sorting
   const filteredGroups = useMemo(() => {
     let result = [...groups];
-    
+
+    // ── Hide child profiles from the top-level list ──
+    // Group reservations that belong to a TravelAgent / CorporateAccount
+    // parent should only be accessible via their parent's detail view, not
+    // as standalone entries in the main list.
+    result = result.filter(group => !group.parent_group_id);
+
     // Apply search filter
     if (searchQuery) {
       const query = searchQuery.toLowerCase();
@@ -128,20 +140,21 @@ const GroupProfilesManagement = () => {
     return result;
   }, [groups, searchQuery, filterType, filterStatus, sortBy, sortOrder]);
   
-  // Calculate analytics
+  // Calculate analytics — only top-level profiles (exclude children)
   const analytics = useMemo(() => {
-    const activeGroups = groups.filter(g => g.status === 'Active').length;
-    const totalMembers = groups.reduce((sum, g) => sum + (g.totalStays || 0), 0);
-    const totalRevenue = groups.reduce((sum, g) => sum + (g.totalRevenue || 0), 0);
-    const totalRoomNights = groups.reduce((sum, g) => sum + (g.totalRoomNights || 0), 0);
+    const topLevel = groups.filter(g => !g.parent_group_id);
+    const activeGroups = topLevel.filter(g => g.status === 'Active').length;
+    const totalMembers = topLevel.reduce((sum, g) => sum + (g.totalStays || 0), 0);
+    const totalRevenue = topLevel.reduce((sum, g) => sum + (g.totalRevenue || 0), 0);
+    const totalRoomNights = topLevel.reduce((sum, g) => sum + (g.totalRoomNights || 0), 0);
     
     return {
-      totalGroups: groups.length,
+      totalGroups: topLevel.length,
       activeGroups,
       totalMembers,
       totalRevenue,
       totalRoomNights,
-      averageRevenue: groups.length > 0 ? totalRevenue / groups.length : 0,
+      averageRevenue: topLevel.length > 0 ? totalRevenue / topLevel.length : 0,
     };
   }, [groups]);
 
@@ -184,8 +197,21 @@ const GroupProfilesManagement = () => {
     setSearchParams({ groupId });
   };
 
-  const handleEditGroup = (group: GroupProfile) => {
-    setEditingGroup(group);
+  const handleEditGroup = (group: any) => {
+    // Normalize snake_case API fields → camelCase for the GroupForm
+    const normalized: GroupProfile = {
+      ...group,
+      contactEmail: group.contactEmail ?? group.contact_email,
+      contactPhone: group.contactPhone ?? group.contact_phone,
+      organizationName: group.organizationName ?? group.organization_name,
+      organizationAddress: group.organizationAddress ?? group.organization_address,
+      organizationCity: group.organizationCity ?? group.organization_city,
+      organizationCountry: group.organizationCountry ?? group.organization_country,
+      taxId: group.taxId ?? group.tax_id,
+      vatNumber: group.vatNumber ?? group.vat_number,
+      vatRegistrationDate: group.vatRegistrationDate ?? group.vat_registration_date,
+    };
+    setEditingGroup(normalized);
     setSearchParams({ edit: group.id });
   };
 
@@ -508,6 +534,12 @@ const GroupProfilesManagement = () => {
                                 {group.type}
                               </span>
                             )}
+                            {group.parent_name && (
+                              <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300" title={`Parent: ${group.parent_name}`}>
+                                <ChevronRight size={10} />
+                                {group.parent_name}
+                              </span>
+                            )}
                             {group.updated_at && (
                               <span className="text-xs text-gray-500 dark:text-gray-500">
                                 {new Date(group.updated_at).toLocaleDateString()}
@@ -627,7 +659,7 @@ const GroupProfilesManagement = () => {
 
   // Detail View
   if (viewMode === 'detail' && currentGroupId) {
-    return <GroupDetail groupId={currentGroupId} onBack={handleBack} />;
+    return <GroupDetail groupId={currentGroupId} onBack={handleBack} onEdit={(g) => handleEditGroup(g)} />;
   }
 
   // Create/Edit View
@@ -662,7 +694,7 @@ const GroupProfilesManagement = () => {
 };
 
 // Group Detail Component
-const GroupDetail = ({ groupId, onBack }: { groupId: string; onBack: () => void }) => {
+const GroupDetail = ({ groupId, onBack, onEdit }: { groupId: string; onBack: () => void; onEdit: (group: any) => void }) => {
   const navigate = useNavigate();
   const [group, setGroup] = useState<any>(null);
   const [members, setMembers] = useState<any[]>([]);
@@ -686,6 +718,8 @@ const GroupDetail = ({ groupId, onBack }: { groupId: string; onBack: () => void 
   const [loadingGuestProfile, setLoadingGuestProfile] = useState(false);
   const [showEditGuestModal, setShowEditGuestModal] = useState(false);
   const [editingGuestData, setEditingGuestData] = useState<any>(null);
+  const [childGroups, setChildGroups] = useState<any[]>([]);
+  const [parentGroup, setParentGroup] = useState<any>(null);
 
   const roleTone: Record<string, StatusTone> = {
     'Primary Contact': 'warning',
@@ -746,6 +780,28 @@ const GroupDetail = ({ groupId, onBack }: { groupId: string; onBack: () => void 
           setMembers(membersData.members || []);
         } else {
           setMembers([]);
+        }
+
+        // Fetch child group profiles (for TravelAgent/CorporateAccount parents)
+        const childrenResponse = await fetch(`/api/group-profiles/${groupId}/children`, { credentials: 'include' });
+        if (childrenResponse.ok) {
+          const childrenData = await childrenResponse.json();
+          setChildGroups(childrenData.children || []);
+        } else {
+          setChildGroups([]);
+        }
+
+        // Fetch parent group profile (for GroupReservations with a parent)
+        if (groupData.groupProfile?.parent_group_id) {
+          const parentResponse = await fetch(`/api/group-profiles/${groupData.groupProfile.parent_group_id}`, { credentials: 'include' });
+          if (parentResponse.ok) {
+            const parentData = await parentResponse.json();
+            setParentGroup(parentData.groupProfile || null);
+          } else {
+            setParentGroup(null);
+          }
+        } else {
+          setParentGroup(null);
         }
       } catch (error: any) {
         console.error('Error fetching group details:', error);
@@ -901,11 +957,44 @@ const GroupDetail = ({ groupId, onBack }: { groupId: string; onBack: () => void 
       <div className={`${FO_STAT_GRADIENTS.primary} rounded-2xl p-6 text-white mb-6`}>
         <div className="flex items-start justify-between">
           <div>
+            {parentGroup && (
+              <div className="flex items-center gap-2 mb-2 text-white/80 text-sm">
+                <span>Part of</span>
+                <button
+                  onClick={() => onBack()}
+                  className="inline-flex items-center gap-1 px-2 py-0.5 bg-white/20 rounded-md hover:bg-white/30 transition"
+                >
+                  {parentGroup.type === 'TravelAgent' ? <Briefcase size={12} /> : <Building2 size={12} />}
+                  <span>{parentGroup.name}</span>
+                </button>
+                <ChevronRight size={14} />
+                <span className="text-white/60">{group.type}</span>
+              </div>
+            )}
+            <div className="flex items-center gap-3 mb-2">
+              {group.type && (
+                <span className="inline-flex items-center gap-1 text-xs px-2 py-1 bg-white/20 rounded-full">
+                  {group.type === 'TravelAgent' ? <Briefcase size={12} /> :
+                   group.type === 'CorporateAccount' ? <Building2 size={12} /> :
+                   <Users size={12} />}
+                  {group.type}
+                </span>
+              )}
+              {group.status && (
+                <span className={`text-xs px-2 py-1 rounded-full ${
+                  group.status === 'Active' ? 'bg-green-400/30' :
+                  group.status === 'Inactive' ? 'bg-gray-400/30' :
+                  'bg-yellow-400/30'
+                }`}>
+                  {group.status}
+                </span>
+              )}
+            </div>
             <h1 className="text-3xl font-bold mb-2">{group.name}</h1>
             <p className="text-white/80">{group.code}</p>
           </div>
           <div className="flex items-center gap-2">
-            <motion.button whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }} onClick={() => { alert('Edit functionality coming soon'); }} className="px-4 py-2 bg-white/20 backdrop-blur-sm rounded-lg hover:bg-white/30 transition flex items-center gap-2">
+            <motion.button whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }} onClick={() => onEdit(group)} className="px-4 py-2 bg-white/20 backdrop-blur-sm rounded-lg hover:bg-white/30 transition flex items-center gap-2">
               <Edit size={18} />
               <span>Edit</span>
             </motion.button>
@@ -918,18 +1007,19 @@ const GroupDetail = ({ groupId, onBack }: { groupId: string; onBack: () => void 
           <div className="space-y-3">
             <h3 className="font-semibold text-gray-900 dark:text-white flex items-center gap-2"><Mail size={18} className={statusTone.accent.text} />Contact Information</h3>
             <div className="space-y-2 pl-7">
-              {group.contactEmail && <div className="flex items-center gap-2 text-gray-600 dark:text-gray-400"><span className="text-sm font-medium">Email:</span><a href={`mailto:${group.contactEmail}`} className="{statusTone.accent.text} hover:underline">{group.contactEmail}</a></div>}
-              {group.contactPhone && <div className="flex items-center gap-2 text-gray-600 dark:text-gray-400"><span className="text-sm font-medium">Phone:</span><a href={`tel:${group.contactPhone}`} className="{statusTone.accent.text} hover:underline">{group.contactPhone}</a></div>}
-              {group.address && <div className="flex items-center gap-2 text-gray-600 dark:text-gray-400"><span className="text-sm font-medium">Address:</span><span>{group.address}</span></div>}
+              {(group.contact_email || group.contactEmail) && <div className="flex items-center gap-2 text-gray-600 dark:text-gray-400"><span className="text-sm font-medium">Email:</span><a href={`mailto:${group.contact_email || group.contactEmail}`} className="text-blue-600 dark:text-blue-400 hover:underline">{group.contact_email || group.contactEmail}</a></div>}
+              {(group.contact_phone || group.contactPhone) && <div className="flex items-center gap-2 text-gray-600 dark:text-gray-400"><span className="text-sm font-medium">Phone:</span><a href={`tel:${group.contact_phone || group.contactPhone}`} className="text-blue-600 dark:text-blue-400 hover:underline">{group.contact_phone || group.contactPhone}</a></div>}
+              {group.contact_name && <div className="flex items-center gap-2 text-gray-600 dark:text-gray-400"><span className="text-sm font-medium">Contact:</span><span>{group.contact_name}</span></div>}
             </div>
           </div>
           <div className="space-y-3">
             <h3 className="font-semibold text-gray-900 dark:text-white flex items-center gap-2"><Building2 size={18} className={statusTone.accent.text} />Organization Details</h3>
             <div className="space-y-2 pl-7">
-              {group.organizationName && <div className="flex items-center gap-2 text-gray-600 dark:text-gray-400"><span className="text-sm font-medium">Organization:</span><span>{group.organizationName}</span></div>}
-              {group.taxId && <div className="flex items-center gap-2 text-gray-600 dark:text-gray-400"><span className="text-sm font-medium">Tax ID:</span><span>{group.taxId}</span></div>}
-              {group.vatId && <div className="flex items-center gap-2 text-gray-600 dark:text-gray-400"><span className="text-sm font-medium">VAT ID:</span><span>{group.vatId}</span></div>}
-              {group.organizationCity && <div className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-400"><MapPin size={14} /><span>{[group.organizationCity, group.organizationCountry].filter(Boolean).join(', ')}</span></div>}
+              {group.organization_name && <div className="flex items-center gap-2 text-gray-600 dark:text-gray-400"><span className="text-sm font-medium">Organization:</span><span>{group.organization_name}</span></div>}
+              {(group.tax_id || group.taxId) && <div className="flex items-center gap-2 text-gray-600 dark:text-gray-400"><span className="text-sm font-medium">TIN:</span><span>{group.tax_id || group.taxId}</span></div>}
+              {(group.vat_number || group.vatNumber) && <div className="flex items-center gap-2 text-gray-600 dark:text-gray-400"><span className="text-sm font-medium">VAT No:</span><span>{group.vat_number || group.vatNumber}</span></div>}
+              {(group.vat_registration_date || group.vatRegistrationDate) && <div className="flex items-center gap-2 text-gray-600 dark:text-gray-400"><span className="text-sm font-medium">VAT Reg. Date:</span><span>{new Date(group.vat_registration_date || group.vatRegistrationDate).toLocaleDateString()}</span></div>}
+              {(group.organization_city || group.organization_country) && <div className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-400"><MapPin size={14} /><span>{[group.organization_city, group.organization_country].filter(Boolean).join(', ')}</span></div>}
             </div>
           </div>
         </div>
@@ -938,6 +1028,79 @@ const GroupDetail = ({ groupId, onBack }: { groupId: string; onBack: () => void 
           <div className="bg-gray-50 dark:bg-gray-900/50 rounded-lg p-4">
             <h3 className="font-semibold text-gray-900 dark:text-white flex items-center gap-2 mb-2"><FileText size={18} className={statusTone.accent.text} />Notes</h3>
             <p className="text-gray-600 dark:text-gray-400">{group.notes}</p>
+          </div>
+        )}
+
+        {/* ── Child Group Reservations (for TravelAgent / CorporateAccount parents) ── */}
+        {(group.type === 'TravelAgent' || group.type === 'CorporateAccount' || group.type === 'TourOperator') && (
+          <div>
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="font-semibold text-gray-900 dark:text-white flex items-center gap-2">
+                <Users size={18} className={statusTone.accent.text} />
+                Group Reservations ({childGroups.length})
+              </h3>
+            </div>
+
+            {childGroups.length === 0 ? (
+              <div className="bg-gray-50 dark:bg-gray-900/50 rounded-lg p-6 text-center">
+                <Users size={24} className="mx-auto text-gray-400 mb-2" />
+                <p className="text-sm text-gray-600 dark:text-gray-400">
+                  No group reservations booked through this {group.type === 'TravelAgent' ? 'travel agent' : group.type === 'CorporateAccount' ? 'corporation' : 'tour operator'} yet.
+                </p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {childGroups.map((child) => (
+                  <motion.div
+                    key={child.id}
+                    whileHover={{ y: -2 }}
+                    className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-4 cursor-pointer hover:shadow-md transition"
+                    onClick={() => {
+                      // Navigate to the child group's detail view
+                      const url = new URL(window.location.href);
+                      url.searchParams.set('groupId', child.id);
+                      window.history.pushState({}, '', url);
+                      window.dispatchEvent(new PopStateEvent('popstate'));
+                    }}
+                  >
+                    <div className="flex items-start justify-between mb-3">
+                      <div className="flex items-center gap-3">
+                        <div className={`w-9 h-9 ${FO_AVATAR_GRADIENT} rounded-lg flex items-center justify-center text-white font-semibold text-sm`}>
+                          {child.name?.charAt(0).toUpperCase() || '?'}
+                        </div>
+                        <div className="min-w-0">
+                          <p className="font-medium text-gray-900 dark:text-white truncate">{child.name}</p>
+                          <p className="text-xs text-gray-500 dark:text-gray-400">{child.code}</p>
+                        </div>
+                      </div>
+                      <span className={`text-xs px-2 py-0.5 rounded-full ${child.status === 'Active' ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' : 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300'}`}>
+                        {child.status || 'Active'}
+                      </span>
+                    </div>
+                    <div className="space-y-1 text-xs text-gray-600 dark:text-gray-400">
+                      {child.contact_name && (
+                        <div className="flex items-center gap-1.5">
+                          <Users size={12} />
+                          <span className="truncate">{child.contact_name}</span>
+                        </div>
+                      )}
+                      {child.contact_email && (
+                        <div className="flex items-center gap-1.5">
+                          <Mail size={12} />
+                          <span className="truncate">{child.contact_email}</span>
+                        </div>
+                      )}
+                      {child.created_at && (
+                        <div className="flex items-center gap-1.5">
+                          <Calendar size={12} />
+                          <span>{new Date(child.created_at).toLocaleDateString()}</span>
+                        </div>
+                      )}
+                    </div>
+                  </motion.div>
+                ))}
+              </div>
+            )}
           </div>
         )}
 
@@ -973,7 +1136,7 @@ const GroupDetail = ({ groupId, onBack }: { groupId: string; onBack: () => void 
                 <div className="flex items-start justify-between mb-3">
                   <div className="flex items-center gap-3">
                     {bulkSelectMode && <input type="checkbox" checked={selectedMembers.has(member.id)} onChange={() => toggleMemberSelection(member.id)} className="w-4 h-4 rounded border-gray-300 {statusTone.accent.text} focus:ring-blue-500" />}
-                    <div className="w-10 h-10 {FO_AVATAR_GRADIENT} rounded-full flex items-center justify-center text-white font-bold">{member.name?.charAt(0).toUpperCase() || '?'}</div>
+                    <div className={`w-10 h-10 ${FO_AVATAR_GRADIENT} rounded-full flex items-center justify-center text-white font-bold`}>{member.name?.charAt(0).toUpperCase() || '?'}</div>
                     <div><p className="font-medium text-gray-900 dark:text-white">{member.name}</p><p className="text-xs text-gray-500 dark:text-gray-400">{member.email || 'No email'}</p></div>
                   </div>
                   <span className={`text-xs px-2 py-1 rounded-full ${statusTone[roleTone[member.relationshipType] || 'neutral'].soft}`}>{member.relationshipType || 'Member'}</span>
@@ -1020,7 +1183,7 @@ const GroupDetail = ({ groupId, onBack }: { groupId: string; onBack: () => void 
               {searchResults.map((guest) => (
                 <div key={guest.id} className="flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-900/50 rounded-lg">
                   <div className="flex items-center gap-3">
-                    <div className="w-8 h-8 {FO_AVATAR_GRADIENT} rounded-full flex items-center justify-center text-white font-bold">{guest.name?.charAt(0).toUpperCase() || '?'}</div>
+                    <div className={`w-8 h-8 ${FO_AVATAR_GRADIENT} rounded-full flex items-center justify-center text-white font-bold`}>{guest.name?.charAt(0).toUpperCase() || '?'}</div>
                     <div><p className="font-medium text-gray-900 dark:text-white">{guest.name}</p><p className="text-xs text-gray-500 dark:text-gray-400">{guest.email || 'No email'}</p></div>
                   </div>
                   <motion.button whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }} onClick={() => handleLinkGuest(guest.id)} disabled={linking} className="px-3 py-1 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 transition disabled:opacity-50">{linking ? 'Adding...' : 'Add'}</motion.button>
@@ -1036,7 +1199,7 @@ const GroupDetail = ({ groupId, onBack }: { groupId: string; onBack: () => void 
         {selectedMemberForRole && (
           <div className="space-y-4">
             <div className="flex items-center gap-3 p-4 bg-gray-50 dark:bg-gray-900/50 rounded-lg">
-              <div className="w-12 h-12 {FO_AVATAR_GRADIENT} rounded-full flex items-center justify-center text-white font-bold text-xl">{selectedMemberForRole.name?.charAt(0).toUpperCase() || '?'}</div>
+              <div className={`w-12 h-12 ${FO_AVATAR_GRADIENT} rounded-full flex items-center justify-center text-white font-bold text-xl`}>{selectedMemberForRole.name?.charAt(0).toUpperCase() || '?'}</div>
               <div><p className="font-semibold text-gray-900 dark:text-white">{selectedMemberForRole.name}</p><p className="text-sm text-gray-500 dark:text-gray-400">Current: {selectedMemberForRole.relationshipType || 'Member'}</p></div>
             </div>
             <div className="space-y-2">
@@ -1056,7 +1219,7 @@ const GroupDetail = ({ groupId, onBack }: { groupId: string; onBack: () => void 
             <motion.div initial={{ opacity: 0, scale: 0.95, y: 20 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: 0.95, y: 20 }} className="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl max-w-2xl w-full max-h-[90vh] overflow-hidden" onClick={(e) => e.stopPropagation()}>
               {loadingGuestProfile ? <div className="p-12 flex items-center justify-center"><Loader2 size={32} className="animate-spin {statusTone.accent.text}" /></div> : (
                 <>
-                  <div className="{FO_STAT_GRADIENTS.primary} p-6 text-white">
+                  <div className={`${FO_STAT_GRADIENTS.primary} p-6 text-white`}>
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-4">
                         <div className="w-16 h-16 bg-white/20 backdrop-blur-sm rounded-xl flex items-center justify-center text-2xl font-bold">{selectedGuestProfile.name?.charAt(0).toUpperCase() || '?'}</div>
@@ -1521,6 +1684,9 @@ const GroupForm = ({ group, onSave, onCancel }: {
     organizationAddress: group?.organizationAddress || '',
     organizationCity: group?.organizationCity || '',
     organizationCountry: group?.organizationCountry || '',
+    taxId: group?.taxId || '',
+    vatNumber: group?.vatNumber || '',
+    vatRegistrationDate: group?.vatRegistrationDate || '',
     notes: group?.notes || ''
   });
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -1595,7 +1761,7 @@ const GroupForm = ({ group, onSave, onCancel }: {
         className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl shadow-lg overflow-hidden"
       >
         {/* Header */}
-        <div className="{FO_STAT_GRADIENTS.primary} p-6 text-white">
+        <div className={`${FO_STAT_GRADIENTS.primary} p-6 text-white`}>
           <h2 className="text-2xl font-bold">
             {group ? 'Edit Group' : 'Create New Group'}
           </h2>
@@ -1789,6 +1955,54 @@ const GroupForm = ({ group, onSave, onCancel }: {
                   placeholder="Country"
                 />
               </div>
+            </div>
+          </div>
+
+          {/* Tax Information */}
+          <div className="space-y-4">
+            <h3 className="text-lg font-semibold text-gray-900 dark:text-white flex items-center gap-2">
+              <FileText size={20} className={statusTone.accent.text} />
+              Tax Information
+            </h3>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  TIN (Tax Identification Number)
+                </label>
+                <input
+                  type="text"
+                  value={formData.taxId}
+                  onChange={(e) => handleChange('taxId', e.target.value)}
+                  className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent dark:bg-gray-700 dark:text-white transition"
+                  placeholder="e.g. 0000000000"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  VAT Number
+                </label>
+                <input
+                  type="text"
+                  value={formData.vatNumber}
+                  onChange={(e) => handleChange('vatNumber', e.target.value)}
+                  className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent dark:bg-gray-700 dark:text-white transition"
+                  placeholder="e.g. VAT0000000000"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                VAT Registration Date
+              </label>
+              <input
+                type="date"
+                value={formData.vatRegistrationDate}
+                onChange={(e) => handleChange('vatRegistrationDate', e.target.value)}
+                className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent dark:bg-gray-700 dark:text-white transition"
+              />
             </div>
           </div>
 

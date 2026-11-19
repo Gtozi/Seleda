@@ -1,291 +1,456 @@
 /**
  * @license
  * SPDX-License-Identifier: Apache-2.0
+ *
+ * Housekeeping Dashboard — docs/Housekeeping Portal new.md §4.
+ * DB-integrated: fetches KPIs, alerts, and productivity from
+ * /api/hk-portal/dashboard/* routes. Alerts can be acknowledged
+ * and snoozed, persisted back to the hk_dashboard_alerts table.
  */
 
-import React, { useMemo } from 'react';
-import { useERP } from '../../context/ERPContext';
-import { 
-  Layers, 
-  Clock, 
-  CheckCheck, 
-  Wrench, 
-  User, 
+import { useState, useEffect, useCallback } from 'react';
+import {
+  CheckCheck,
+  Clock,
   Sparkles,
-  AlertTriangle,
-  ShoppingBag,
-  Info,
   Activity,
-  Package
+  User,
+  Layers,
+  Wrench,
+  AlertTriangle,
+  Info,
+  Bell,
+  Crown,
+  Sun,
+  ClipboardCheck,
+  Droplets,
+  Wine,
+  Brush,
+  Hammer,
+  RefreshCw,
+  Loader2,
+  type LucideIcon,
 } from 'lucide-react';
-import { 
-  ResponsiveContainer, 
-  PieChart, 
-  Pie, 
-  Cell, 
-  Tooltip, 
-  BarChart, 
-  Bar, 
-  XAxis, 
-  YAxis, 
-  Legend, 
-  CartesianGrid 
+import {
+  ResponsiveContainer,
+  PieChart,
+  Pie,
+  Cell,
+  Tooltip,
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Legend,
 } from 'recharts';
-import { DashboardTemplate, ChartCard, KpiGrid, type KpiTile } from '../Shared/DashboardTemplate';
+import StatCard from '../FrontOffice/StatCard';
+import { PageHeader, SectionCard, Badge } from '../FrontOffice/ui';
+import { layout, statusTone, type StatusTone } from '../FrontOffice/brandTheme';
+import { useERP } from '../../context/ERPContext';
+
+type AlertPriority = 'Critical' | 'High' | 'Medium' | 'Low';
+type AlertStatus = 'Active' | 'Acknowledged' | 'Snoozed' | 'Resolved';
+
+interface DashboardAlert {
+  id: string;
+  type: string;
+  message: string;
+  priority: AlertPriority;
+  status: AlertStatus;
+  room: string | null;
+  snoozed_until: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+interface RoomStats {
+  dirty: number;
+  clean: number;
+  ready: number;
+  inspected: number;
+  occupied: number;
+  vacant: number;
+  ooo: number;
+  oos: number;
+  totalRooms: number;
+}
+
+interface TaskStats {
+  pending: number;
+  inProgress: number;
+  completed: number;
+  verified: number;
+  total: number;
+  cleaningProgress: number;
+}
+
+interface MaintenanceStats {
+  openIssues: number;
+  total: number;
+}
+
+interface GuestRequestStats {
+  outstanding: number;
+}
+
+interface KpiData {
+  roomStats: RoomStats;
+  taskStats: TaskStats;
+  maintenanceStats: MaintenanceStats;
+  guestRequestStats?: GuestRequestStats;
+  roomStatusDist: { name: string; value: number; color: string }[];
+}
+
+interface ProductivityData {
+  days: { name: string; completed: number; inspected: number }[];
+  avgCleaningTime: number;
+}
+
+const API = '/api/hk-portal/dashboard';
+
+const ALERT_ICON: Record<string, LucideIcon> = {
+  'VIP Arrival': Crown,
+  'Early Arrival': Sun,
+  'Late Check-out': Clock,
+  'Failed Inspection': ClipboardCheck,
+  'Linen Shortage': Droplets,
+  'Minibar Pending': Wine,
+  'Deep Cleaning Due': Brush,
+  'Maintenance Awaiting': Hammer,
+};
+
+const PRIORITY_TONE: Record<AlertPriority, StatusTone> = {
+  Critical: 'danger',
+  High: 'warning',
+  Medium: 'info',
+  Low: 'neutral',
+};
+
+const STATUS_TONE: Record<AlertStatus, StatusTone> = {
+  Active: 'danger',
+  Acknowledged: 'info',
+  Snoozed: 'neutral',
+  Resolved: 'success',
+};
+
+const PRIORITY_ORDER: Record<AlertPriority, number> = {
+  Critical: 0,
+  High: 1,
+  Medium: 2,
+  Low: 3,
+};
 
 export default function HKDashboard() {
-  const { 
-    rooms, 
-    notifications
-  } = useERP();
+  const { currentPropertyId } = useERP();
+  const [kpis, setKpis] = useState<KpiData | null>(null);
+  const [alerts, setAlerts] = useState<DashboardAlert[]>([]);
+  const [productivity, setProductivity] = useState<ProductivityData | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const [actionLoading, setActionLoading] = useState<string | null>(null);
 
-  // Metrics Data
-  const hkStats = useMemo(() => {
-    const total = rooms.length;
-    const dirty = rooms.filter(r => r.status?.includes('Dirty')).length;
-    const clean = rooms.filter(r => r.status === 'Vacant Clean' || r.status === 'Occupied Clean').length;
-    const inspected = rooms.filter(r => r.status === 'Inspected').length; 
-    const ooo = rooms.filter(r => r.status === 'Out of Order').length;
-    const vacant = rooms.filter(r => r.status.startsWith('Vacant')).length;
-    const occupied = rooms.filter(r => r.status.startsWith('Occupied')).length;
-    const maintenance = rooms.filter(r => r.status === 'Maintenance Required').length;
+  const apiGet = async (path: string) => {
+    const r = await fetch(`${API}${path}`, { headers: { 'Content-Type': 'application/json' } });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      throw new Error(err.error || `Request failed (${r.status})`);
+    }
+    return r.json();
+  };
 
-    return { 
-      total, 
-      dirty, 
-      clean, 
-      inspected, 
-      ooo, 
-      vacant, 
-      occupied,
-      maintenance,
-      laundryInProgress: 24, // Mock
-      laundryReady: 12, // Mock
-      linenStockLevel: 82, // Mock %
-      tasksDue: 15, // Mock
-      lostFoundPending: 4 // Mock
-    };
-  }, [rooms]);
+  const apiPost = async (path: string, body?: any) => {
+    const r = await fetch(`${API}${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      throw new Error(err.error || `Request failed (${r.status})`);
+    }
+    return r.json();
+  };
 
-  const cleaningChartData = useMemo(() => {
-    return [
-      { name: 'Vacant Clean', value: rooms.filter(r => r.status === 'Vacant Clean').length, color: '#10b981' },
-      { name: 'Vacant Dirty', value: rooms.filter(r => r.status === 'Vacant Dirty').length, color: '#f59e0b' },
-      { name: 'Occupied Clean', value: rooms.filter(r => r.status === 'Occupied Clean').length, color: '#6366f1' },
-      { name: 'Occupied Dirty', value: rooms.filter(r => r.status === 'Occupied Dirty').length, color: '#f43f5e' },
-      { name: 'Out of Order', value: rooms.filter(r => r.status === 'Out of Order').length, color: '#dc2626' },
-      { name: 'Inspected', value: hkStats.inspected, color: '#8b5cf6' },
-    ];
-  }, [rooms, hkStats.inspected]);
+  const fetchAll = useCallback(async () => {
+    setLoading(true);
+    try {
+      const qs = currentPropertyId ? `?propertyId=${encodeURIComponent(currentPropertyId)}` : '';
+      const [k, a, p] = await Promise.all([
+        apiGet(`/kpis${qs}`),
+        apiGet(`/alerts${qs}`),
+        apiGet(`/productivity${qs}`),
+      ]);
+      setKpis(k);
+      setAlerts(a);
+      setProductivity(p);
+      setLastUpdated(new Date());
+    } catch (e) {
+      console.error('Failed to fetch HK dashboard data:', e);
+    } finally {
+      setLoading(false);
+    }
+  }, [currentPropertyId]);
 
-  const laundryWorkloadData = [
-    { name: 'Wash', value: 12, color: '#6366f1' },
-    { name: 'Dry', value: 8, color: '#10b981' },
-    { name: 'Iron', value: 15, color: '#f59e0b' },
-    { name: 'Ready', value: 20, color: '#8b5cf6' },
-  ];
+  useEffect(() => {
+    fetchAll();
+    const interval = setInterval(fetchAll, 5 * 60 * 1000);
+    return () => clearInterval(interval);
+  }, [fetchAll]);
 
-  const linenConsumptionData = [
-    { name: 'Sheets', used: 45, laundry: 30 },
-    { name: 'Towels', used: 60, laundry: 45 },
-    { name: 'Pillows', used: 25, laundry: 15 },
-    { name: 'Mats', used: 20, laundry: 12 },
-  ];
+  const acknowledgeAlert = async (id: string) => {
+    setActionLoading(id);
+    try {
+      const updated: DashboardAlert = await apiPost(`/alerts/${encodeURIComponent(id)}/acknowledge`);
+      setAlerts(prev => prev.map(a => (a.id === id ? updated : a)));
+    } catch (e) {
+      console.error('Failed to acknowledge alert:', e);
+    } finally {
+      setActionLoading(null);
+    }
+  };
 
-  const housekeepingAlerts = useMemo(() => {
-    return notifications.filter(n => n.department === 'Housekeeping');
-  }, [notifications]);
+  const snoozeAlert = async (id: string) => {
+    setActionLoading(id);
+    try {
+      const updated: DashboardAlert = await apiPost(`/alerts/${encodeURIComponent(id)}/snooze`, { hours: 1 });
+      setAlerts(prev => prev.map(a => (a.id === id ? updated : a)));
+    } catch (e) {
+      console.error('Failed to snooze alert:', e);
+    } finally {
+      setActionLoading(null);
+    }
+  };
 
-  const roomKpis: KpiTile[] = [
-    { label: 'Rooms Ready', value: String(hkStats.clean), icon: CheckCheck, colorClass: 'text-emerald-500', bgClass: 'bg-emerald-50 dark:bg-emerald-500/10' },
-    { label: 'Dirty Rooms', value: String(hkStats.dirty), icon: Clock, colorClass: 'text-rose-500', bgClass: 'bg-rose-50 dark:bg-rose-500/10' },
-    { label: 'Clean Rooms', value: String(hkStats.clean), icon: Sparkles, colorClass: 'text-emerald-500', bgClass: 'bg-emerald-50 dark:bg-emerald-500/10' },
-    { label: 'Inspected', value: String(hkStats.inspected), icon: Activity, colorClass: 'text-purple-500', bgClass: 'bg-purple-50 dark:bg-purple-500/10' },
-    { label: 'Occupied', value: String(hkStats.occupied), icon: User, colorClass: 'text-indigo-500', bgClass: 'bg-indigo-50 dark:bg-indigo-500/10' },
-    { label: 'Vacant', value: String(hkStats.vacant), icon: Layers, colorClass: 'text-slate-500', bgClass: 'bg-slate-50 dark:bg-slate-800' },
-    { label: 'Out of Order', value: String(hkStats.ooo), icon: Wrench, colorClass: 'text-slate-500', bgClass: 'bg-slate-50 dark:bg-slate-800' },
-    { label: 'Out of Service', value: String(hkStats.maintenance), icon: AlertTriangle, colorClass: 'text-amber-500', bgClass: 'bg-amber-50 dark:bg-amber-500/10' },
-  ];
+  // Derived display data
+  const roomStats = kpis?.roomStats;
+  const taskStats = kpis?.taskStats;
+  const maintStats = kpis?.maintenanceStats;
+  const guestReqStats = kpis?.guestRequestStats;
+  const roomStatusDist = kpis?.roomStatusDist || [];
 
-  const operationalKpis: KpiTile[] = [
-    { label: 'Cleaning Progress', value: '78%', sub: 'Daily completion', icon: Activity, colorClass: 'text-emerald-500', bgClass: 'bg-emerald-50 dark:bg-emerald-500/10' },
-    { label: 'Avg Clean Time', value: '24m', sub: 'Per room', icon: Clock, colorClass: 'text-blue-500', bgClass: 'bg-blue-50 dark:bg-blue-500/10' },
-    { label: 'Guest Requests', value: String(hkStats.tasksDue), sub: 'Outstanding', icon: Info, colorClass: 'text-amber-500', bgClass: 'bg-amber-50 dark:bg-amber-500/10' },
-    { label: 'Open Maintenance', value: String(hkStats.maintenance), sub: 'Awaiting access', icon: Wrench, colorClass: 'text-rose-500', bgClass: 'bg-rose-50 dark:bg-rose-500/10' },
-    { label: 'Linen Stock', value: `${hkStats.linenStockLevel}%`, sub: 'Average levels', icon: ShoppingBag, colorClass: 'text-indigo-500', bgClass: 'bg-indigo-50 dark:bg-indigo-500/10' },
-    { label: 'Minibar Pending', value: '8', sub: 'Restock needed', icon: Package, colorClass: 'text-purple-500', bgClass: 'bg-purple-50 dark:bg-purple-500/10' },
-  ];
+  const sortedAlerts = [...alerts].sort((a, b) => {
+    const po = PRIORITY_ORDER[a.priority] - PRIORITY_ORDER[b.priority];
+    if (po !== 0) return po;
+    return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
+  });
+
+  const activeAlerts = sortedAlerts.filter(a => a.status === 'Active');
+  const productivityDays = productivity?.days || [];
+  const avgCleaningTime = productivity?.avgCleaningTime || 0;
 
   return (
-    <DashboardTemplate id="dashboard-tab">
-      <KpiGrid tiles={roomKpis} columns={7} />
-      <KpiGrid tiles={operationalKpis} columns={6} />
+    <div className={layout.sectionStack}>
+      <PageHeader
+        title="Housekeeping Dashboard"
+        subtitle="Operational KPIs & Smart Alert Engine · Real-time room status"
+        icon={Activity}
+        actions={
+          <div className="flex items-center gap-3">
+            {lastUpdated && (
+              <div className="text-xs text-gray-500 dark:text-gray-400 hidden sm:block">
+                Last updated: {lastUpdated.toLocaleTimeString()}
+              </div>
+            )}
+            <button
+              onClick={fetchAll}
+              disabled={loading}
+              className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-xl bg-white dark:bg-slate-800 text-gray-700 dark:text-gray-200 border border-gray-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 font-medium text-sm smooth-transition focus-ring disabled:opacity-50"
+            >
+              {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+              Refresh
+            </button>
+          </div>
+        }
+      />
 
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        {/* Charts Section */}
-        <ChartCard title="Cleaning Distribution & Occupancy Analytics" subtitle="Operations Metrics Graph" className="lg:col-span-8">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 flex-1 items-center">
-            {/* Pie Chart */}
-            <div className="flex flex-col items-center justify-center border-r border-slate-100 dark:border-slate-800/80 pr-2 h-full">
-              <span className="text-[10px] font-mono font-bold text-slate-450 uppercase mb-2 text-center">Room Cleaning Status Share</span>
-              <div className="h-44 w-full flex justify-center items-center">
+      {loading && !kpis ? (
+        <SectionCard title="Loading Dashboard…" icon={Activity} tone="accent">
+          <div className="px-6 py-10 text-center text-slate-500">
+            <Loader2 size={20} className="animate-spin inline-block mr-2" />
+            Loading dashboard data…
+          </div>
+        </SectionCard>
+      ) : (
+        <>
+          {/* §4 Operational KPIs — Room Status (8 tiles) */}
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-8 gap-4">
+            <StatCard title="Rooms Ready" value={roomStats?.ready ?? 0} icon={CheckCheck} tone="success" />
+            <StatCard title="Dirty Rooms" value={roomStats?.dirty ?? 0} icon={Clock} tone="danger" />
+            <StatCard title="Clean Rooms" value={roomStats?.clean ?? 0} icon={Sparkles} tone="success" />
+            <StatCard title="Inspected" value={roomStats?.inspected ?? 0} icon={Activity} tone="info" />
+            <StatCard title="Occupied" value={roomStats?.occupied ?? 0} icon={User} tone="accent" />
+            <StatCard title="Vacant" value={roomStats?.vacant ?? 0} icon={Layers} tone="neutral" />
+            <StatCard title="Out of Order" value={roomStats?.ooo ?? 0} icon={Wrench} tone="neutral" />
+            <StatCard title="Out of Service" value={roomStats?.oos ?? 0} icon={AlertTriangle} tone="warning" />
+          </div>
+
+          {/* §4 Operational KPIs — Performance (4 tiles) */}
+          <div className={layout.kpiGrid}>
+            <StatCard
+              title="Cleaning Progress"
+              value={`${taskStats?.cleaningProgress ?? 0}%`}
+              icon={Activity}
+              tone="success"
+              caption={`${taskStats?.completed ?? 0} of ${taskStats?.total ?? 0} tasks`}
+            />
+            <StatCard
+              title="Avg Cleaning Time"
+              value={avgCleaningTime > 0 ? `${avgCleaningTime}m` : '—'}
+              icon={Clock}
+              tone="info"
+              caption="Per room"
+            />
+            <StatCard
+              title="Pending Tasks"
+              value={taskStats?.pending ?? 0}
+              icon={Info}
+              tone="warning"
+              caption="Awaiting action"
+            />
+            <StatCard
+              title="Open Maintenance Issues"
+              value={maintStats?.openIssues ?? 0}
+              icon={Wrench}
+              tone="danger"
+              caption={`of ${maintStats?.total ?? 0} total`}
+            />
+            <StatCard
+              title="Outstanding Guest Requests"
+              value={guestReqStats?.outstanding ?? 0}
+              icon={Bell}
+              tone="warning"
+              caption="Awaiting HK action"
+            />
+          </div>
+
+          {/* Charts + Alerts */}
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+            <SectionCard
+              title="Room Status Distribution"
+              subtitle="Operations Metrics"
+              icon={Activity}
+              tone="accent"
+              pad="md"
+              className="lg:col-span-7"
+            >
+              <div className="h-72 w-full">
                 <ResponsiveContainer width="100%" height="100%">
                   <PieChart>
                     <Pie
-                      data={cleaningChartData.filter(d => d.value > 0)}
+                      data={roomStatusDist.filter(d => d.value > 0)}
                       cx="50%"
                       cy="50%"
-                      innerRadius={48}
-                      outerRadius={65}
+                      innerRadius={60}
+                      outerRadius={95}
                       paddingAngle={3}
                       dataKey="value"
                     >
-                      {cleaningChartData.map((d, index) => (
-                        <Cell key={`cell-${index}`} fill={d.color} />
+                      {roomStatusDist.map((d, i) => (
+                        <Cell key={`cell-${i}`} fill={d.color} />
                       ))}
                     </Pie>
-                    <Tooltip contentStyle={{ fontSize: 10, borderRadius: '8px' }} />
+                    <Tooltip contentStyle={{ fontSize: 12, borderRadius: '8px', border: '1px solid #e2e8f0' }} />
                   </PieChart>
                 </ResponsiveContainer>
               </div>
-              <div className="flex flex-wrap gap-x-3 gap-y-1 mt-1 justify-center text-[8px] font-mono">
-                {cleaningChartData.map(d => (
-                  <span key={d.name} className="flex items-center gap-1">
-                    <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: d.color }} />
-                    <span className="text-slate-500">{d.name}: {d.value}</span>
+              <div className="flex flex-wrap gap-x-4 gap-y-2 mt-4 justify-center">
+                {roomStatusDist.map(d => (
+                  <span key={d.name} className="flex items-center gap-1.5 text-xs">
+                    <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: d.color }} />
+                    <span className="text-gray-600 dark:text-gray-400 font-medium">{d.name}: {d.value}</span>
                   </span>
                 ))}
               </div>
-            </div>
+            </SectionCard>
 
-            {/* Bar Chart - Workload */}
-            <div className="flex flex-col items-center justify-center pl-2 h-full">
-              <span className="text-[10px] font-mono font-bold text-slate-450 uppercase mb-2 text-center">Laundry Workload distribution</span>
-              <div className="h-44 w-full">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={laundryWorkloadData}>
-                    <CartesianGrid strokeDasharray="2 2" stroke="#e2e8f0" opacity={0.3} />
-                    <XAxis dataKey="name" stroke="#a0aec0" fontSize={8} />
-                    <YAxis stroke="#a0aec0" fontSize={8} />
-                    <Tooltip contentStyle={{ fontSize: 10, borderRadius: '8px' }} />
-                    <Bar dataKey="value" name="Items" radius={[4, 4, 0, 0]}>
-                      {laundryWorkloadData.map((d, i) => (
-                        <Cell key={i} fill={d.color} />
-                      ))}
-                    </Bar>
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-            </div>
-          </div>
-        </ChartCard>
-
-        {/* Priority Alerts Side Board */}
-        <div className="lg:col-span-4 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-5 rounded-3xl space-y-4 flex flex-col justify-between">
-          <div className="space-y-1">
-            <span className="text-[10px] font-mono tracking-widest text-rose-500 font-extrabold uppercase">SMART ALERT ENGINE</span>
-            <h3 className="text-sm font-sans font-extrabold text-slate-900 dark:text-white flex items-center gap-1.5 mt-0.5">
-              <AlertTriangle size={14} className="text-rose-500 animate-bounce" />
-              OPERATIONAL CRITICALS ({housekeepingAlerts.length})
-            </h3>
-            <p className="text-[10px] text-slate-400 leading-tight">Live detection of SLA violations, supply shortages, and guest escalations.</p>
-          </div>
-
-          <div className="divide-y divide-slate-150 dark:divide-slate-800/80 max-h-48 overflow-y-auto pr-1 flex-1 mt-2">
-            {[
-              { id: 'ALT-01', type: 'VIP', msg: 'VIP Arrival Rooms Pending - Room 502 due in 30min', priority: 'Critical' },
-              { id: 'ALT-02', type: 'Early', msg: 'Early Arrival Priority - Room 305 checking in early', priority: 'High' },
-              { id: 'ALT-03', type: 'Delay', msg: 'Late Check-out Delay - Room 204 checkout delayed 2 hours', priority: 'Medium' },
-              { id: 'ALT-04', type: 'Inspection', msg: 'Failed Inspection - Room 102 failed bathroom inspection', priority: 'High' },
-              { id: 'ALT-05', type: 'Shortage', msg: 'Linen Shortage - Bath towels low on Floor 3', priority: 'Medium' },
-              { id: 'ALT-06', type: 'Minibar', msg: 'Minibar Pending - 8 rooms need minibar restock', priority: 'Low' },
-              { id: 'ALT-07', type: 'Deep Clean', msg: 'Deep Cleaning Due - Room 401 quarterly cleaning overdue', priority: 'Medium' },
-              { id: 'ALT-08', type: 'Maintenance', msg: 'Maintenance Awaiting Access - Room 306 ready for engineering', priority: 'High' },
-              ...housekeepingAlerts.map(n => ({ id: n.id, type: 'Guest', msg: n.message, priority: 'High' }))
-            ].map(alert => (
-              <div key={alert.id} className="py-2.5 space-y-1.5">
-                <div className="flex justify-between items-center text-[8px] font-mono">
-                  <span className={`px-1.5 py-0.5 rounded font-extrabold uppercase ${
-                    alert.priority === 'Critical' ? 'bg-red-500 text-white' : 
-                    alert.priority === 'High' ? 'bg-orange-500 text-white' : 
-                    'bg-amber-500/10 text-amber-700'
-                  }`}>{alert.type} ALERT</span>
-                  <span className="text-slate-400 font-bold">LIVE</span>
+            {/* §4 Smart Alert Engine */}
+            <SectionCard
+              title={`Alerts (${activeAlerts.length} active)`}
+              subtitle="Smart Alert Engine"
+              icon={AlertTriangle}
+              tone="danger"
+              className="lg:col-span-5"
+              bodyClassName="max-h-[28rem] overflow-y-auto"
+            >
+              {sortedAlerts.length === 0 ? (
+                <div className="px-6 py-10 text-center text-slate-500">
+                  <Bell className="w-8 h-8 mx-auto mb-2 text-slate-300" />
+                  No alerts.
                 </div>
-                <p className="text-[10px] text-slate-700 dark:text-slate-300 font-sans font-semibold leading-relaxed">
-                  {alert.msg}
-                </p>
-                <div className="flex gap-2">
-                  <button className="py-1 px-2.5 bg-slate-900 dark:bg-white text-white dark:text-slate-900 rounded font-bold font-mono text-[8px] transition cursor-pointer">
-                    Acknowledge
-                  </button>
-                  <button className="py-1 px-2.5 border border-slate-200 dark:border-slate-800 rounded font-bold font-mono text-[8px] text-slate-500">
-                    Snooze
-                  </button>
+              ) : (
+                <div className="divide-y divide-gray-200 dark:divide-slate-700">
+                  {sortedAlerts.map(alert => {
+                    const AlertIcon = ALERT_ICON[alert.type] ?? Bell;
+                    const tone = statusTone[PRIORITY_TONE[alert.priority]];
+                    const isActive = alert.status === 'Active';
+                    return (
+                      <div key={alert.id} className="py-4 px-6 space-y-2">
+                        <div className="flex justify-between items-center">
+                          <div className="flex items-center gap-2">
+                            <Badge tone={PRIORITY_TONE[alert.priority]} variant="soft">{alert.type}</Badge>
+                            <Badge tone={STATUS_TONE[alert.status]} variant="soft">{alert.status}</Badge>
+                          </div>
+                          <span className="text-xs text-gray-500 dark:text-gray-500 font-medium">
+                            {isActive ? 'LIVE' : alert.snoozed_until ? `Snoozed` : ''}
+                          </span>
+                        </div>
+                        <p className="text-sm text-gray-700 dark:text-gray-300 flex items-start gap-2">
+                          <AlertIcon className="w-4 h-4 text-gray-400 mt-0.5 shrink-0" />
+                          {alert.message}
+                        </p>
+                        {isActive && (
+                          <div className="flex gap-2">
+                            <button
+                              onClick={() => acknowledgeAlert(alert.id)}
+                              disabled={actionLoading === alert.id}
+                              className="px-3 py-1.5 bg-[var(--color-accent-operations)] text-white rounded-lg text-xs font-medium hover:bg-[var(--color-accent-operations-hover)] transition disabled:opacity-50 flex items-center gap-1"
+                            >
+                              {actionLoading === alert.id && <Loader2 size={12} className="animate-spin" />}
+                              Acknowledge
+                            </button>
+                            <button
+                              onClick={() => snoozeAlert(alert.id)}
+                              disabled={actionLoading === alert.id}
+                              className="px-3 py-1.5 border border-gray-200 dark:border-slate-700 text-gray-600 dark:text-gray-300 rounded-lg text-xs font-medium hover:bg-slate-50 dark:hover:bg-slate-700 transition disabled:opacity-50 flex items-center gap-1"
+                            >
+                              {actionLoading === alert.id && <Loader2 size={12} className="animate-spin" />}
+                              Snooze
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
-              </div>
-            ))}
+              )}
+            </SectionCard>
           </div>
 
-          <div className="border-t dark:border-slate-800 pt-3 flex items-center gap-2 bg-indigo-50 dark:bg-indigo-950/20 p-2.5 rounded-xl text-3xs text-indigo-700 dark:text-indigo-400 font-sans leading-tight">
-            <Info size={14} className="shrink-0" />
-            <p>Priority rooms register directly with housekeeper tablet systems to optimize daily runtimes.</p>
-          </div>
-        </div>
-      </div>
-
-      {/* Linen Consumption Trends */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 pb-2">
-        <ChartCard title="Linen Consumption & Laundry Turnaround Trends" subtitle="Linen Logistics" className="lg:col-span-8">
-          <div className="h-64 w-full">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={linenConsumptionData}>
-                <CartesianGrid strokeDasharray="2 2" stroke="#e2e8f0" opacity={0.3} />
-                <XAxis dataKey="name" stroke="#a0aec0" fontSize={10} />
-                <YAxis stroke="#a0aec0" fontSize={10} />
-                <Tooltip contentStyle={{ fontSize: 10, borderRadius: '12px' }} />
-                <Legend iconType="circle" />
-                <Bar dataKey="used" name="Used in Rooms" fill="#6366f1" radius={[4, 4, 0, 0]} />
-                <Bar dataKey="laundry" name="Cleaned in Laundry" fill="#10b981" radius={[4, 4, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        </ChartCard>
-
-        <div className="lg:col-span-4 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-5 rounded-3xl flex flex-col justify-between">
-          <div className="space-y-4">
-            <div className="border-b dark:border-slate-800 pb-2">
-              <span className="text-[10px] font-mono tracking-widest text-slate-400 font-extrabold uppercase block font-semibold leading-tight">STOCK ALERTS</span>
-              <h3 className="text-xs font-sans font-bold text-slate-800 dark:text-slate-100 mt-0.5">Linen Stock Criticals</h3>
+          {/* Productivity chart */}
+          <SectionCard
+            title="Cleaning Productivity — Rooms Completed vs. Inspected"
+            subtitle="7-Day Trend"
+            icon={Activity}
+            tone="info"
+            pad="md"
+          >
+            <div className="h-64 w-full">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={productivityDays}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" strokeOpacity={0.3} />
+                  <XAxis dataKey="name" tick={{ fontSize: 12, fill: '#64748b' }} />
+                  <YAxis tick={{ fontSize: 12, fill: '#64748b' }} allowDecimals={false} />
+                  <Tooltip contentStyle={{ borderRadius: '8px', border: '1px solid #e2e8f0', fontSize: '13px' }} />
+                  <Legend wrapperStyle={{ fontSize: '12px' }} iconType="circle" />
+                  <Bar dataKey="completed" name="Rooms Completed" fill="#6366f1" radius={[4, 4, 0, 0]} />
+                  <Bar dataKey="inspected" name="Rooms Inspected" fill="#10b981" radius={[4, 4, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
             </div>
-            
-            <div className="space-y-3">
-              {[
-                { label: 'Bath Towels', stock: 12, target: 100, color: 'text-rose-500' },
-                { label: 'King Sheets', stock: 45, target: 150, color: 'text-amber-500' },
-                { label: 'Pillow Cases', stock: 210, target: 300, color: 'text-emerald-500' },
-              ].map((alert, i) => (
-                <div key={i} className="flex items-center justify-between font-mono text-[10px]">
-                  <span className="font-bold text-slate-600 dark:text-slate-300">{alert.label}</span>
-                  <div className="flex items-center gap-2">
-                    <span className={`font-black ${alert.color}`}>{alert.stock}</span>
-                    <span className="text-slate-350">/ {alert.target}</span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          <div className="p-3 bg-indigo-50 dark:bg-indigo-950/20 border border-indigo-100 dark:border-indigo-900/30 rounded-2xl mt-4">
-            <div className="flex items-start gap-2.5">
-              <Info size={14} className="text-indigo-600 mt-0.5 shrink-0" />
-              <div className="text-[10px] text-indigo-700 dark:text-indigo-400 font-sans leading-snug">
-                <strong>Insight:</strong> Linen loss has dropped by 4% since the new laundry audit process was initiated last month.
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </DashboardTemplate>
+          </SectionCard>
+        </>
+      )}
+    </div>
   );
 }

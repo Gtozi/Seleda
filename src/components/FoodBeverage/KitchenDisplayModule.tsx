@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.5
  */
 
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   ChefHat,
   Clock,
@@ -72,8 +72,44 @@ interface KDSInstance {
   external_pos_systems?: any[];
 }
 
-export default function KitchenDisplayModule() {
+// Cookie session is the primary credential; a bearer token is only attached when one exists.
+const kdsFetch = (url: string, init: RequestInit = {}) => {
+  const token = localStorage.getItem('auth_token');
+  const headers = new Headers(init.headers);
+  if (token && token !== 'null' && !headers.has('Authorization')) headers.set('Authorization', `Bearer ${token}`);
+  return fetch(url, { ...init, headers, credentials: 'include' });
+};
+
+const playBeep = () => {
+  try {
+    const Ctx = window.AudioContext || (window as any).webkitAudioContext;
+    const ctx = new Ctx();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.value = 880;
+    gain.gain.value = 0.15;
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start();
+    osc.stop(ctx.currentTime + 0.25);
+    osc.onended = () => ctx.close();
+  } catch { /* audio unavailable */ }
+};
+
+interface KitchenDisplayModuleProps {
+  /** Full-screen kitchen mode (used by the standalone /kds route). */
+  standalone?: boolean;
+  userName?: string;
+  onExit?: () => void;
+}
+
+export default function KitchenDisplayModule({ standalone = false, userName, onExit }: KitchenDisplayModuleProps = {}) {
   const { addNotification } = useERP();
+  const [connection, setConnection] = useState<{ ok: boolean; failures: number; authError: boolean; lastUpdated: number | null }>({ ok: true, failures: 0, authError: false, lastUpdated: null });
+  const [soundOn, setSoundOn] = useState(() => localStorage.getItem('kds_sound') !== 'off');
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const knownTicketIds = React.useRef<Set<string> | null>(null);
 
   const [tickets, setTickets] = useState<KDSTicket[]>([]);
   const [stations, setStations] = useState<PrepStation[]>([]);
@@ -90,10 +126,7 @@ export default function KitchenDisplayModule() {
   useEffect(() => {
     const fetchInstances = async () => {
       try {
-        const token = localStorage.getItem('auth_token');
-        const res = await fetch('/api/kds?is_active=true', {
-          headers: { Authorization: `Bearer ${token}` },
-        });
+        const res = await kdsFetch('/api/kds?is_active=true');
         if (res.ok) {
           const data = await res.json();
           setKdsInstances(data.instances || []);
@@ -111,10 +144,7 @@ export default function KitchenDisplayModule() {
   useEffect(() => {
     const fetchStations = async () => {
       try {
-        const token = localStorage.getItem('auth_token');
-        const res = await fetch('/api/pos/prep-stations?is_active=true', {
-          headers: { Authorization: `Bearer ${token}` },
-        });
+        const res = await kdsFetch('/api/pos/prep-stations?is_active=true');
         if (res.ok) {
           const data = await res.json();
           setStations(data.stations || []);
@@ -127,44 +157,72 @@ export default function KitchenDisplayModule() {
   }, []);
 
   // Fetch KDS tickets — uses standalone KDS API if an instance is selected, falls back to POS API
-  const fetchTickets = useCallback(async () => {
+  const fetchTickets = useCallback(async (): Promise<boolean> => {
     try {
-      const token = localStorage.getItem('auth_token');
-      if (selectedInstanceId !== 'all') {
-        // Standalone KDS API — instance-scoped
-        const params = new URLSearchParams();
-        if (selectedStationId !== 'all') params.set('station_id', selectedStationId);
-        const res = await fetch(`/api/kds/${selectedInstanceId}/tickets?${params.toString()}`, {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        if (res.ok) {
-          const data = await res.json();
-          setTickets(data.tickets || []);
-        }
-      } else {
-        // Legacy POS API — all tickets across instances
-        const params = new URLSearchParams();
-        if (selectedStationId !== 'all') params.set('station_id', selectedStationId);
-        const res = await fetch(`/api/pos/kds/tickets?${params.toString()}`, {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        if (res.ok) {
-          const data = await res.json();
-          setTickets(data.tickets || []);
-        }
+      const params = new URLSearchParams();
+      if (selectedStationId !== 'all') params.set('station_id', selectedStationId);
+      const url = selectedInstanceId !== 'all'
+        ? `/api/kds/${selectedInstanceId}/tickets?${params.toString()}`
+        : `/api/pos/kds/tickets?${params.toString()}`;
+      const res = await kdsFetch(url);
+      if (!res.ok) {
+        setConnection(c => ({ ok: false, failures: c.failures + 1, authError: res.status === 401 || res.status === 403, lastUpdated: c.lastUpdated }));
+        return false;
       }
+      const data = await res.json();
+      const list: KDSTicket[] = data.tickets || [];
+      const ids = new Set(list.map(t => t.id));
+      if (knownTicketIds.current && soundOnRef.current && list.some(t => t.status === 'fired' && !knownTicketIds.current!.has(t.id))) playBeep();
+      knownTicketIds.current = ids;
+      setTickets(list);
+      setConnection({ ok: true, failures: 0, authError: false, lastUpdated: Date.now() });
+      return true;
     } catch (err) {
       console.error('Failed to fetch KDS tickets:', err);
+      setConnection(c => ({ ok: false, failures: c.failures + 1, authError: false, lastUpdated: c.lastUpdated }));
+      return false;
     } finally {
       setLoading(false);
     }
   }, [selectedStationId, selectedInstanceId]);
 
+  const soundOnRef = React.useRef(soundOn);
+  useEffect(() => { soundOnRef.current = soundOn; localStorage.setItem('kds_sound', soundOn ? 'on' : 'off'); }, [soundOn]);
+
+  // Poll every 15s; back off (up to 60s) while the server is unreachable.
   useEffect(() => {
-    fetchTickets();
-    const interval = setInterval(fetchTickets, 15000);
-    return () => clearInterval(interval);
+    knownTicketIds.current = null;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout>;
+    let failures = 0;
+    const loop = async () => {
+      const ok = await fetchTickets();
+      failures = ok ? 0 : failures + 1;
+      if (!cancelled) timer = setTimeout(loop, Math.min(15000 * 2 ** failures, 60000));
+    };
+    loop();
+    return () => { cancelled = true; clearTimeout(timer); };
   }, [fetchTickets]);
+
+  // Heartbeat so the instance shows as online in KDS management
+  useEffect(() => {
+    if (selectedInstanceId === 'all') return;
+    const beat = () => { kdsFetch(`/api/kds/${selectedInstanceId}/heartbeat`, { method: 'POST' }).catch(() => {}); };
+    beat();
+    const t = setInterval(beat, 30000);
+    return () => clearInterval(t);
+  }, [selectedInstanceId]);
+
+  useEffect(() => {
+    const onFs = () => setIsFullscreen(!!document.fullscreenElement);
+    document.addEventListener('fullscreenchange', onFs);
+    return () => document.removeEventListener('fullscreenchange', onFs);
+  }, []);
+
+  const toggleFullscreen = () => {
+    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+    else document.documentElement.requestFullscreen().catch(() => {});
+  };
 
   // Tick every second for timer updates
   useEffect(() => {
@@ -175,12 +233,10 @@ export default function KitchenDisplayModule() {
   const updateTicketStatus = async (ticketId: string, status: string) => {
     setUpdatingId(ticketId);
     try {
-      const token = localStorage.getItem('auth_token');
       const baseUrl = selectedInstanceId !== 'all' ? '/api/kds' : '/api/pos/kds';
-      const res = await fetch(`${baseUrl}/tickets/${ticketId}/status`, {
+      const res = await kdsFetch(`${baseUrl}/tickets/${ticketId}/status`, {
         method: 'PUT',
         headers: {
-          Authorization: `Bearer ${token}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({ status }),
@@ -206,12 +262,10 @@ export default function KitchenDisplayModule() {
   const recallTicket = async (ticketId: string) => {
     setUpdatingId(ticketId);
     try {
-      const token = localStorage.getItem('auth_token');
       const baseUrl = selectedInstanceId !== 'all' ? '/api/kds' : '/api/pos/kds';
-      const res = await fetch(`${baseUrl}/tickets/${ticketId}/recall`, {
+      const res = await kdsFetch(`${baseUrl}/tickets/${ticketId}/recall`, {
         method: 'POST',
         headers: {
-          Authorization: `Bearer ${token}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({ recalled_reason: 'Sent back from KDS' }),
@@ -230,12 +284,10 @@ export default function KitchenDisplayModule() {
   const voidTicket = async (ticketId: string) => {
     setUpdatingId(ticketId);
     try {
-      const token = localStorage.getItem('auth_token');
       const baseUrl = selectedInstanceId !== 'all' ? '/api/kds' : '/api/pos/kds';
-      const res = await fetch(`${baseUrl}/tickets/${ticketId}/status`, {
+      const res = await kdsFetch(`${baseUrl}/tickets/${ticketId}/status`, {
         method: 'PUT',
         headers: {
-          Authorization: `Bearer ${token}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({ status: 'voided' }),
@@ -253,12 +305,10 @@ export default function KitchenDisplayModule() {
 
   const fireCourse = async (orderId: string, courseGroup: string) => {
     try {
-      const token = localStorage.getItem('auth_token');
       const baseUrl = selectedInstanceId !== 'all' ? '/api/kds' : '/api/pos/kds';
-      const res = await fetch(`${baseUrl}/orders/${orderId}/fire-course`, {
+      const res = await kdsFetch(`${baseUrl}/orders/${orderId}/fire-course`, {
         method: 'POST',
         headers: {
-          Authorization: `Bearer ${token}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({ course_group: courseGroup }),
@@ -276,13 +326,10 @@ export default function KitchenDisplayModule() {
 
   const fetchExpoData = useCallback(async () => {
     try {
-      const token = localStorage.getItem('auth_token');
       const url = selectedInstanceId !== 'all'
         ? `/api/kds/${selectedInstanceId}/expo`
         : '/api/pos/kds/expo';
-      const res = await fetch(url, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
+      const res = await kdsFetch(url);
       if (res.ok) {
         const data = await res.json();
         setExpoData(data.expo || []);
@@ -290,17 +337,14 @@ export default function KitchenDisplayModule() {
     } catch (err) {
       console.error('Failed to fetch expo data:', err);
     }
-  }, []);
+  }, [selectedInstanceId]);
 
   const fetchPerfData = useCallback(async () => {
     try {
-      const token = localStorage.getItem('auth_token');
       const url = selectedInstanceId !== 'all'
         ? `/api/kds/${selectedInstanceId}/performance?lookback=24`
         : '/api/pos/kds/station-performance?hours=24';
-      const res = await fetch(url, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
+      const res = await kdsFetch(url);
       if (res.ok) {
         const data = await res.json();
         setPerfData(data.performance || []);
@@ -308,7 +352,7 @@ export default function KitchenDisplayModule() {
     } catch (err) {
       console.error('Failed to fetch performance data:', err);
     }
-  }, []);
+  }, [selectedInstanceId]);
 
   useEffect(() => {
     if (viewMode === 'expo') fetchExpoData();
@@ -406,7 +450,44 @@ export default function KitchenDisplayModule() {
   };
 
   return (
-    <div className="space-y-6 font-sans">
+    <div className={'space-y-6 font-sans ' + (standalone ? 'p-4 sm:p-6 min-h-screen dark' : '')}>
+      {standalone && (
+        <div className="flex items-center justify-between gap-3 bg-slate-900 border border-slate-800 rounded-2xl px-4 py-3 text-white">
+          <div className="flex items-center gap-3">
+            <ChefHat size={20} className="text-amber-500" />
+            <span className="font-black text-sm tracking-tight">SELEDA Kitchen Display</span>
+            {userName && <span className="text-xs text-slate-400 hidden sm:inline">· {userName}</span>}
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-lg font-black tabular-nums mr-2">{new Date(now).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+            <button onClick={() => setSoundOn(v => !v)} className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 rounded-xl text-xs font-bold" title="New-ticket sound">
+              {soundOn ? 'Sound on' : 'Sound off'}
+            </button>
+            <button onClick={toggleFullscreen} className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 rounded-xl text-xs font-bold">
+              {isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
+            </button>
+            {onExit && (
+              <button onClick={onExit} className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 rounded-xl text-xs font-bold">Back to ERP</button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {!connection.ok && (
+        <div className="flex items-center gap-2 bg-rose-600 text-white rounded-2xl px-4 py-2 text-xs font-bold">
+          <WifiOff size={14} />
+          {connection.authError
+            ? 'Session expired or not permitted — please log in again.'
+            : `Connection lost — retrying (${connection.failures} failed). Tickets shown may be out of date.`}
+          {connection.authError && (
+            <a href="/login?redirect=/kds" className="ml-auto underline">Log in</a>
+          )}
+        </div>
+      )}
+      {connection.ok && connection.lastUpdated && (
+        <p className="text-[10px] text-slate-400 text-right -mt-4">Updated {new Date(connection.lastUpdated).toLocaleTimeString()}</p>
+      )}
+
       {/* Stats Bar */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         {[
@@ -758,11 +839,19 @@ export default function KitchenDisplayModule() {
                     </div>
                   </div>
 
-                  {ticket.customer_name && (
-                    <div className="text-[10px] text-slate-500 font-medium">
-                      Guest: {ticket.customer_name}
-                    </div>
-                  )}
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <span className="px-2 py-0.5 rounded-full text-[9px] font-black uppercase bg-slate-200 text-slate-700 dark:bg-slate-800 dark:text-slate-300">
+                      {(ticket.order_type || 'dine_in').replace(/_/g, ' ')}
+                    </span>
+                    {ticket.room_number && (
+                      <span className="px-2 py-0.5 rounded-full text-[9px] font-black uppercase bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300">
+                        Room {ticket.room_number}
+                      </span>
+                    )}
+                    {ticket.customer_name && (
+                      <span className="text-[11px] text-slate-600 dark:text-slate-300 font-bold">{ticket.customer_name}</span>
+                    )}
+                  </div>
 
                   <div className="space-y-3 pt-2">
                     {(ticket.items || []).map((item, idx) => (

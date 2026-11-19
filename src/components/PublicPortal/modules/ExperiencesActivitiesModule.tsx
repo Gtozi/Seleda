@@ -1,48 +1,52 @@
 /**
  * Experiences & Activities Module
- * Browse and book tours, local experiences, and activities
+ * Bookable activity-style guest services configured by the hotel.
  */
 
-import { MapPin, Calendar, Users, Star } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { Compass, ArrowRight } from 'lucide-react';
+import { EmptyState, ErrorState, LoadingGrid, ModuleHeader, Reveal, SectionHead, formatMoney, usePublicData, HERO } from '../shared';
+
+interface Experience {
+  id: string;
+  name: string;
+  duration: string;
+  price: number;
+  type: string;
+  description: string;
+}
 
 const ExperiencesActivitiesModule: React.FC = () => {
-  const experiences = [
-    { id: '1', name: 'City Tour', duration: '4 hours', price: 50, rating: 4.8, type: 'tour' },
-    { id: '2', name: 'Hiking Adventure', duration: 'Full day', price: 80, rating: 4.7, type: 'adventure' },
-    { id: '3', name: 'Cultural Experience', duration: '3 hours', price: 40, rating: 4.9, type: 'cultural' },
-    { id: '4', name: 'Food Tour', duration: '5 hours', price: 60, rating: 4.6, type: 'food' }
-  ];
+  const { data: experiences, loading, error, retry } = usePublicData<Experience[]>('/api/public/experiences', j => j.experiences || [], []);
 
   return (
-    <div className="space-y-6">
-      <div className="bg-gradient-to-r from-emerald-600 to-teal-600 rounded-xl p-8 text-white">
-        <h1 className="text-3xl font-bold mb-2">Experiences & Activities</h1>
-        <p className="text-lg opacity-90">Discover local experiences and adventures</p>
-      </div>
+    <div>
+      <ModuleHeader image={HERO.experiences} title="Experiences & Activities" subtitle="Discover local experiences and adventures — add them when you book your stay" gradient="from-emerald-700 to-teal-900" eyebrow="Beyond the stay" />
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-        {experiences.map((exp) => (
-          <div key={exp.id} className="bg-white dark:bg-slate-800 rounded-xl p-6 shadow-lg">
-            <h3 className="text-lg font-bold text-slate-900 dark:text-white mb-2">{exp.name}</h3>
-            <div className="space-y-2 text-sm text-slate-600 dark:text-slate-400 mb-4">
-              <div className="flex items-center gap-2">
-                <Calendar size={16} />
-                <span>{exp.duration}</span>
+      <SectionHead eyebrow="Experiences" title="Things to do" />
+      {error && <ErrorState message={error} onRetry={retry} />}
+      {loading ? (
+        <LoadingGrid count={4} />
+      ) : experiences.length === 0 && !error ? (
+        <EmptyState title="No experiences are listed right now." hint="Ask our concierge about tours and activities during your stay." />
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          {experiences.map((exp, i) => (
+            <Reveal key={exp.id} delay={Math.min(i, 6) * 0.06}>
+              <div className="group bg-white rounded-3xl border border-stone-200/70 p-7 h-full flex flex-col hover:shadow-xl hover:-translate-y-1 hover:border-emerald-200 transition-all duration-300">
+                <div className="w-12 h-12 rounded-2xl bg-emerald-100 text-emerald-600 flex items-center justify-center mb-4 group-hover:scale-110 transition-transform"><Compass size={22} /></div>
+                <p className="text-xs font-bold uppercase tracking-[0.18em] text-emerald-600 mb-1">{exp.type}</p>
+                <h3 className="font-serif text-2xl font-bold text-stone-900">{exp.name}</h3>
+                {exp.description && <p className="text-sm text-stone-600 mt-2 leading-relaxed">{exp.description}</p>}
+                <div className="mt-auto pt-6 flex items-center justify-between">
+                  <span className="font-serif text-2xl font-bold text-emerald-700">{formatMoney(exp.price)}</span>
+                  <Link to="/public-portal?section=booking" className="inline-flex items-center gap-1.5 bg-stone-900 hover:bg-stone-800 text-white px-5 py-2.5 rounded-full font-semibold text-sm transition-colors">Add to stay <ArrowRight size={14} /></Link>
+                </div>
               </div>
-              <div className="flex items-center gap-2">
-                <Star size={16} className="text-amber-500" />
-                <span>{exp.rating}</span>
-              </div>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="text-xl font-bold text-emerald-600">${exp.price}</span>
-              <button className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-lg font-semibold transition-colors">
-                Book
-              </button>
-            </div>
-          </div>
-        ))}
-      </div>
+            </Reveal>
+          ))}
+        </div>
+      )}
     </div>
   );
 };

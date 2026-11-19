@@ -149,10 +149,68 @@ router.get('/chart-of-accounts', authenticate, async (_req, res) => {
   return res.json(data || []);
 });
 
-// ── Journals ──────────────────────────────────────────────────────────────
+// ── Journals (Unified GL — reads from journal_entries + gl_journal_entries + fb_journal_entries) ─
+// The canonical GL lives in journal_entries, but HR Payroll posts to
+// gl_journal_entries and F&B posts to fb_journal_entries.  To give the
+// Finance Portal a single, complete GL view we fetch from all three and
+// normalise the rows into a common shape before returning them.
+
+/** Normalise a gl_journal_entries row (HR Payroll) into the journal_entries shape. */
+function normaliseGlJournalRow(r: any) {
+  return {
+    id: r.id,
+    entry_date: r.entry_date,
+    period: r.entry_date ? String(r.entry_date).slice(0, 7) : null,
+    source: 'Payroll',
+    reference: r.entry_type || null,
+    description: r.description || '',
+    status: typeof r.status === 'string' ? r.status.charAt(0).toUpperCase() + r.status.slice(1) : 'Posted',
+    total_debit: Number(r.total_debit) || 0,
+    total_credit: Number(r.total_credit) || 0,
+    amount: Number(r.total_debit) || 0,
+    department: r.department_name || 'HR',
+    lines: [],
+    attachments: [],
+    created_by: r.created_by || null,
+    property_id: r.property_id || null,
+    created_at: r.created_at || null,
+    updated_at: r.created_at || null,
+    _origin: 'gl_journal_entries',
+  };
+}
+
+/** Normalise an fb_journal_entries row (F&B Financial Control) into the journal_entries shape. */
+function normaliseFbJournalRow(r: any) {
+  return {
+    id: r.id,
+    entry_date: r.entry_date,
+    period: r.entry_date ? String(r.entry_date).slice(0, 7) : null,
+    source: 'POS',
+    reference: r.reference || null,
+    description: r.description || '',
+    status: typeof r.status === 'string' ? r.status.charAt(0).toUpperCase() + r.status.slice(1) : 'Posted',
+    total_debit: Number(r.amount) || 0,
+    total_credit: Number(r.amount) || 0,
+    amount: Number(r.amount) || 0,
+    department: 'F&B',
+    lines: [
+      { accountId: r.debit_account, accountName: r.debit_account, debit: Number(r.amount) || 0, credit: 0 },
+      { accountId: r.credit_account, accountName: r.credit_account, debit: 0, credit: Number(r.amount) || 0 },
+    ],
+    attachments: [],
+    created_by: r.posted_by || null,
+    property_id: r.property_id || null,
+    created_at: r.created_at || null,
+    updated_at: r.updated_at || null,
+    _origin: 'fb_journal_entries',
+  };
+}
+
 router.get('/journals', authenticate, async (req, res) => {
   if (!ensureDb(res)) return;
   const { status, propertyId } = req.query as Record<string, string>;
+
+  // 1. Canonical journal_entries
   let q = supabaseAdmin!
     .from('journal_entries')
     .select('*')
@@ -160,10 +218,52 @@ router.get('/journals', authenticate, async (req, res) => {
     .order('created_at', { ascending: false });
   if (status) q = q.eq('status', status);
   q = withProperty(q, propertyId);
-  const { data, error } = await q.limit(200);
-  if (error) return res.status(500).json({ error: error.message });
+  const { data: jeData, error: jeError } = await q.limit(200);
+  if (jeError) return res.status(500).json({ error: jeError.message });
+
+  // 2. gl_journal_entries (HR Payroll) — best-effort, table may not exist on all deployments
+  let glRows: any[] = [];
+  try {
+    let glq = supabaseAdmin!
+      .from('gl_journal_entries')
+      .select('*')
+      .order('entry_date', { ascending: false })
+      .limit(100);
+    if (status) {
+      // gl_journal_entries uses lowercase status ('posted'); match case-insensitively
+      glq = glq.ilike('status', status);
+    }
+    glq = withProperty(glq, propertyId);
+    const { data: glData } = await glq;
+    glRows = (glData || []).map(normaliseGlJournalRow);
+  } catch { /* table may not exist — skip */ }
+
+  // 3. fb_journal_entries (F&B Financial Control) — best-effort
+  let fbRows: any[] = [];
+  try {
+    let fbq = supabaseAdmin!
+      .from('fb_journal_entries')
+      .select('*')
+      .order('entry_date', { ascending: false })
+      .limit(100);
+    if (status) {
+      fbq = fbq.ilike('status', status);
+    }
+    fbq = withProperty(fbq, propertyId);
+    const { data: fbData } = await fbq;
+    fbRows = (fbData || []).map(normaliseFbJournalRow);
+  } catch { /* table may not exist — skip */ }
+
+  // Merge, sort by date descending, and attach property names
+  const merged = [...(jeData || []), ...glRows, ...fbRows];
+  merged.sort((a: any, b: any) => {
+    const da = a.entry_date || a.date || a.created_at || '';
+    const db = b.entry_date || b.date || b.created_at || '';
+    return db.localeCompare(da);
+  });
+
   const names = await buildPropertyNameMap();
-  return res.json(withPropertyNames(data || [], names));
+  return res.json(withPropertyNames(merged, names));
 });
 
 router.post('/journals', authenticate, async (req, res) => {
@@ -1872,6 +1972,34 @@ router.get('/documents', authenticate, async (req, res) => {
   const { data, error } = await q;
   if (error) return res.status(500).json({ error: error.message });
   return res.json(data || []);
+});
+
+// ── Document file upload to Supabase Storage ───────────────────────────────
+router.post('/documents/upload', authenticate, async (req, res) => {
+  if (!ensureDb(res)) return;
+  const { fileBase64, fileName, mimeType, propertyId } = req.body || {};
+  if (!fileBase64 || !fileName) return res.status(400).json({ error: 'fileBase64 and fileName are required' });
+  try {
+    const buffer = Buffer.from(fileBase64, 'base64');
+    const safeName = fileName.replace(/[^a-zA-Z0-9._-]/g, '_');
+    const filePath = `finance-documents/${Date.now()}-${safeName}`;
+    const { error: uploadError } = await supabaseAdmin!
+      .storage
+      .from('documents')
+      .upload(filePath, buffer, { contentType: mimeType || 'application/octet-stream' });
+    if (uploadError) {
+      console.error('Error uploading finance document:', uploadError);
+      return res.status(500).json({ error: 'Failed to upload file to storage' });
+    }
+    const { data: { publicUrl } } = supabaseAdmin!
+      .storage
+      .from('documents')
+      .getPublicUrl(filePath);
+    return res.json({ fileUrl: publicUrl, filePath, fileName: safeName });
+  } catch (err: any) {
+    console.error('Document upload error:', err);
+    return res.status(500).json({ error: err?.message || 'Upload failed' });
+  }
 });
 
 router.post('/documents', authenticate, async (req, res) => {

@@ -14,9 +14,10 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ChevronDown, Building2 } from 'lucide-react';
-import { DEPARTMENTS, type DepartmentConfig } from '../../config/departments';
+import { DEPARTMENTS, type DepartmentConfig, type DepartmentKey, getDeptAccentColorVar } from '../../config/departments';
 import { getTabsForDepartment } from '../../config/departmentTabs';
-import { CORE_ADMIN_MODULES } from '../Admin/adminModules';
+import { getVisibleAdminModules } from '../Admin/adminModules';
+import { canViewExecutivePortal } from '../../lib/permissions';
 import type { User } from '../../types/erp';
 
 export interface DepartmentSwitcherProps {
@@ -50,9 +51,14 @@ export function getSwitchableDepartments(
     // User must have access to at least one tab in the department
     if (!currentUser) return false;
 
+    // The Executive portal is gated by exec:view — moduleAccess alone is not a
+    // reliable signal (an empty moduleAccess map means "unrestricted" for
+    // legacy reasons, which would expose the dept to every role).
+    if (d.key === 'executive' && !canViewExecutivePortal(currentUser)) return false;
+
     // For admin: check if any CORE_ADMIN_MODULE is visible
     if (d.key === 'admin') {
-      const visibleAdmin = CORE_ADMIN_MODULES.filter(m => moduleToggles[m.toggleKey] !== false);
+      const visibleAdmin = getVisibleAdminModules(moduleToggles);
       return visibleAdmin.length > 0;
     }
 
@@ -88,6 +94,7 @@ export function DepartmentSwitcher({
   const switchable = getSwitchableDepartments(currentUser, moduleToggles, hasModuleAccess);
   const activeDept = switchable.find(d => d.urlSegment === activeSegment);
   const activeLabel = activeDept?.label ?? 'Departments';
+  const activeColorVar = activeDept ? getDeptAccentColorVar(activeDept.key as DepartmentKey) : 'var(--color-accent-operations)';
 
   const handleSelect = (dept: DepartmentConfig) => {
     navigate(`/erp/${dept.urlSegment}`);
@@ -100,30 +107,51 @@ export function DepartmentSwitcher({
     <div ref={ref} className="relative">
       <button
         onClick={() => setOpen(!open)}
-        className="flex items-center gap-1.5 px-2.5 py-1.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-[11px] font-sans font-semibold text-slate-700 dark:text-slate-200 cursor-pointer hover:border-indigo-400 transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
+        className="flex items-center gap-1.5 px-2.5 py-1.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-[11px] font-sans font-semibold text-slate-700 dark:text-slate-200 cursor-pointer hover:border-slate-400 transition-colors focus:outline-none focus:ring-2 focus:ring-slate-400/30"
         title="Switch department"
+        style={activeDept ? { borderColor: activeColorVar } : undefined}
       >
-        <Building2 size={12} className="text-indigo-500" />
+        <span
+          className="w-2.5 h-2.5 rounded-full shrink-0"
+          style={{ backgroundColor: activeColorVar }}
+          aria-hidden
+        />
         <span className="max-w-[100px] truncate">{activeLabel}</span>
         <ChevronDown size={12} className={`text-slate-400 transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
 
       {open && (
-        <div className="absolute right-0 top-full mt-1 min-w-[180px] max-h-[300px] overflow-y-auto bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-xl z-[60] py-1">
-          {switchable.map((dept) => (
-            <button
-              key={dept.key}
-              onClick={() => handleSelect(dept)}
-              className={`w-full text-left px-3 py-2 text-[11px] font-sans font-medium transition-colors flex items-center gap-2 ${
-                dept.urlSegment === activeSegment
-                  ? 'bg-indigo-50 dark:bg-indigo-950/30 text-indigo-600 dark:text-indigo-400'
-                  : 'text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700/50'
-              }`}
-            >
-              <Building2 size={12} className="shrink-0 opacity-60" />
-              <span className="truncate">{dept.label}</span>
-            </button>
-          ))}
+        <div className="absolute right-0 top-full mt-1 min-w-[200px] max-h-[300px] overflow-y-auto bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-xl z-[60] py-1">
+          {switchable.map((dept) => {
+            const isActive = dept.urlSegment === activeSegment;
+            const colorVar = getDeptAccentColorVar(dept.key as DepartmentKey);
+            return (
+              <button
+                key={dept.key}
+                onClick={() => handleSelect(dept)}
+                className={`w-full text-left px-3 py-2 text-[11px] font-sans font-medium transition-colors flex items-center gap-2 ${
+                  isActive
+                    ? 'text-slate-900 dark:text-white'
+                    : 'text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700/50'
+                }`}
+                style={isActive ? { backgroundColor: `color-mix(in srgb, ${colorVar} 12%, transparent)` } : undefined}
+              >
+                <span
+                  className="w-2.5 h-2.5 rounded-full shrink-0"
+                  style={{ backgroundColor: colorVar }}
+                  aria-hidden
+                />
+                <span className="truncate flex-1">{dept.label}</span>
+                {isActive && (
+                  <span
+                    className="w-1.5 h-1.5 rounded-full shrink-0"
+                    style={{ backgroundColor: colorVar }}
+                    aria-hidden
+                  />
+                )}
+              </button>
+            );
+          })}
         </div>
       )}
     </div>

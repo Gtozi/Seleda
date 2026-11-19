@@ -3,14 +3,13 @@
  * SPDX-License-Identifier: Apache-2.5
  */
 
-import { useState } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import {
   Printer,
   CreditCard,
   DollarSign,
   Plus,
   Trash2,
-  Edit,
   Save,
   ToggleLeft,
   ToggleRight,
@@ -33,26 +32,26 @@ interface Printer {
   id: string;
   name: string;
   type: 'kitchen' | 'receipt' | 'bar';
-  ipAddress: string;
-  isActive: boolean;
+  station?: string;
+  ip_address?: string;
+  is_active: boolean;
 }
 
 interface PaymentTerminal {
   id: string;
   type: string;
   model: string;
-  serialNumber: string;
-  isActive: boolean;
+  serial_number?: string;
+  is_active: boolean;
 }
 
-interface TaxRate {
-  id: string;
-  name: string;
-  rate: number;
-  isDefault: boolean;
+interface EffectiveTaxRates {
+  vat: number | null;
+  serviceCharge: number | null;
+  additional: { code: string; name: string; taxType: string; rate: number; calcBase?: string }[];
 }
 
-export default function POSSettings({ outletName }: POSSettingsProps) {
+export default function POSSettings({ outletId, outletName }: POSSettingsProps) {
   const { addNotification } = useERP();
   const [activeTab, setActiveTab] = useState<'general' | 'hardware' | 'payment' | 'tax' | 'display'>('general');
   const [saving, setSaving] = useState(false);
@@ -78,6 +77,11 @@ export default function POSSettings({ outletName }: POSSettingsProps) {
   // Hardware Settings
   const [printers, setPrinters] = useState<Printer[]>([]);
   const [paymentTerminals, setPaymentTerminals] = useState<PaymentTerminal[]>([]);
+  const [effectiveTax, setEffectiveTax] = useState<EffectiveTaxRates | null>(null);
+  const [showPrinterForm, setShowPrinterForm] = useState(false);
+  const [newPrinter, setNewPrinter] = useState({ name: '', type: 'receipt' as Printer['type'], station: '', ipAddress: '' });
+  const [showTerminalForm, setShowTerminalForm] = useState(false);
+  const [newTerminal, setNewTerminal] = useState({ type: 'card', model: '', serialNumber: '' });
 
   // Payment Settings
   const [enabledPaymentMethods, setEnabledPaymentMethods] = useState({
@@ -86,12 +90,6 @@ export default function POSSettings({ outletName }: POSSettingsProps) {
     mobile: true,
     roomCharge: true
   });
-
-  // Tax Settings
-  const [taxRates] = useState<TaxRate[]>([
-    { id: '1', name: 'VAT', rate: 15, isDefault: true },
-    { id: '2', name: 'Service Tax', rate: 10, isDefault: false }
-  ]);
 
   // Display Settings
   const [displaySettings, setDisplaySettings] = useState({
@@ -102,28 +100,173 @@ export default function POSSettings({ outletName }: POSSettingsProps) {
     showQuickActions: true
   });
 
+  // Fetch registered hardware + tax profiles from the backend
+  const fetchConfig = useCallback(async () => {
+    try {
+      const opts = { credentials: 'include' as const };
+      const [printersRes, terminalsRes, taxRes] = await Promise.all([
+        fetch('/api/pos/hardware/printers', opts),
+        fetch('/api/pos/hardware/payment-terminals', opts),
+        fetch('/api/admin/control/runtime/tax-rates?appliesTo=f%26b', opts),
+      ]);
+      if (printersRes.ok) setPrinters(await printersRes.json());
+      if (terminalsRes.ok) setPaymentTerminals(await terminalsRes.json());
+      if (taxRes.ok) setEffectiveTax(await taxRes.json());
+
+      // Load the outlet record — general fields + persisted settings jsonb
+      if (outletId) {
+        const outletRes = await fetch(`/api/pos/outlets/${outletId}`, opts);
+        if (outletRes.ok) {
+          const outlet = await outletRes.json();
+          setGeneralSettings(prev => ({
+            ...prev,
+            outletName: outlet.name || prev.outletName,
+            serviceChargePercent: outlet.default_service_charge ?? prev.serviceChargePercent,
+            operatingHours: {
+              open: outlet.operating_hours?.open || prev.operatingHours.open,
+              close: outlet.operating_hours?.close || prev.operatingHours.close,
+            },
+            ...(outlet.settings?.general || {}),
+          }));
+          if (outlet.settings?.display) setDisplaySettings(prev => ({ ...prev, ...outlet.settings.display }));
+          if (outlet.settings?.paymentMethods) setEnabledPaymentMethods(prev => ({ ...prev, ...outlet.settings.paymentMethods }));
+        }
+      }
+    } catch (error) {
+      console.error('Failed to load POS settings:', error);
+    }
+  }, [outletId]);
+
+  useEffect(() => {
+    fetchConfig();
+    // Restore locally persisted UI preferences
+    try {
+      const g = localStorage.getItem('pos_general_settings');
+      if (g) setGeneralSettings(prev => ({ ...prev, ...JSON.parse(g) }));
+      const d = localStorage.getItem('pos_display_settings');
+      if (d) setDisplaySettings(prev => ({ ...prev, ...JSON.parse(d) }));
+      const p = localStorage.getItem('pos_payment_methods');
+      if (p) setEnabledPaymentMethods(prev => ({ ...prev, ...JSON.parse(p) }));
+    } catch { /* ignore corrupt stored prefs */ }
+  }, [fetchConfig]);
+
+  const apiPost = async (url: string, body: any) => {
+    const res = await fetch(url, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || `Request failed (${res.status})`);
+    }
+    return res.json();
+  };
+
+  const handleAddPrinter = async () => {
+    if (!newPrinter.name.trim()) return;
+    try {
+      await apiPost('/api/pos/hardware/printers', {
+        name: newPrinter.name.trim(),
+        type: newPrinter.type,
+        station: newPrinter.station || undefined,
+        ipAddress: newPrinter.ipAddress || undefined,
+      });
+      setNewPrinter({ name: '', type: 'receipt', station: '', ipAddress: '' });
+      setShowPrinterForm(false);
+      addNotification('Printer registered', 'success', 'F&B');
+      fetchConfig();
+    } catch (error: any) {
+      addNotification(error.message || 'Failed to register printer', 'warning', 'F&B');
+    }
+  };
+
+  const handleAddTerminal = async () => {
+    if (!newTerminal.model.trim()) return;
+    try {
+      await apiPost('/api/pos/hardware/payment-terminals', {
+        type: newTerminal.type,
+        model: newTerminal.model.trim(),
+        serialNumber: newTerminal.serialNumber || undefined,
+      });
+      setNewTerminal({ type: 'card', model: '', serialNumber: '' });
+      setShowTerminalForm(false);
+      addNotification('Payment terminal registered', 'success', 'F&B');
+      fetchConfig();
+    } catch (error: any) {
+      addNotification(error.message || 'Failed to register terminal', 'warning', 'F&B');
+    }
+  };
+
   const handleSaveSettings = async () => {
     setSaving(true);
     try {
-      // In production, this would save to the database
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      // Persist outlet-level config + freeform settings jsonb to the database
+      if (outletId) {
+        const res = await fetch(`/api/pos/outlets/${outletId}`, {
+          method: 'PATCH',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: generalSettings.outletName,
+            default_service_charge: generalSettings.serviceChargePercent,
+            operating_hours: generalSettings.operatingHours,
+            settings: {
+              general: {
+                currency: generalSettings.currency,
+                language: generalSettings.language,
+                autoPrintReceipt: generalSettings.autoPrintReceipt,
+                requireManagerForVoid: generalSettings.requireManagerForVoid,
+                requireManagerForDiscount: generalSettings.requireManagerForDiscount,
+                allowSplitPayments: generalSettings.allowSplitPayments,
+                enableTips: generalSettings.enableTips,
+                defaultTipPercent: generalSettings.defaultTipPercent,
+              },
+              display: displaySettings,
+              paymentMethods: enabledPaymentMethods,
+            },
+          }),
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.error || `Save failed (${res.status})`);
+        }
+      }
+
+      // Also persist locally so preferences survive without outlet access
+      localStorage.setItem('pos_general_settings', JSON.stringify(generalSettings));
+      localStorage.setItem('pos_display_settings', JSON.stringify(displaySettings));
+      localStorage.setItem('pos_payment_methods', JSON.stringify(enabledPaymentMethods));
       addNotification('Settings saved successfully', 'success', 'F&B');
-    } catch (error) {
+    } catch (error: any) {
       console.error('Failed to save settings:', error);
-      addNotification('Failed to save settings', 'warning', 'F&B');
+      addNotification(error.message || 'Failed to save settings', 'warning', 'F&B');
     } finally {
       setSaving(false);
     }
   };
 
-  const handleDeletePrinter = (id: string) => {
-    setPrinters(printers.filter(p => p.id !== id));
-    addNotification('Printer removed', 'success', 'F&B');
+  const handleDeletePrinter = async (id: string) => {
+    try {
+      const res = await fetch(`/api/pos/hardware/printers/${id}`, { method: 'DELETE', credentials: 'include' });
+      if (!res.ok) throw new Error(`Delete failed (${res.status})`);
+      setPrinters(printers.filter(p => p.id !== id));
+      addNotification('Printer removed', 'success', 'F&B');
+    } catch (error: any) {
+      addNotification(error.message || 'Failed to remove printer', 'warning', 'F&B');
+    }
   };
 
-  const handleDeleteTerminal = (id: string) => {
-    setPaymentTerminals(paymentTerminals.filter(t => t.id !== id));
-    addNotification('Payment terminal removed', 'success', 'F&B');
+  const handleDeleteTerminal = async (id: string) => {
+    try {
+      const res = await fetch(`/api/pos/hardware/payment-terminals/${id}`, { method: 'DELETE', credentials: 'include' });
+      if (!res.ok) throw new Error(`Delete failed (${res.status})`);
+      setPaymentTerminals(paymentTerminals.filter(t => t.id !== id));
+      addNotification('Payment terminal removed', 'success', 'F&B');
+    } catch (error: any) {
+      addNotification(error.message || 'Failed to remove terminal', 'warning', 'F&B');
+    }
   };
 
   const tabs = [
@@ -329,12 +472,58 @@ export default function POSSettings({ outletName }: POSSettingsProps) {
                   Printers
                 </h4>
                 <button
+                  onClick={() => setShowPrinterForm(!showPrinterForm)}
                   className="flex items-center gap-2 px-3 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-bold transition-all"
                 >
                   <Plus size={14} />
                   Add Printer
                 </button>
               </div>
+
+              {showPrinterForm && (
+                <div className="mb-4 p-4 bg-indigo-50 dark:bg-indigo-900/20 rounded-xl space-y-3">
+                  <div className="grid grid-cols-2 gap-3">
+                    <input
+                      type="text"
+                      placeholder="Printer name"
+                      value={newPrinter.name}
+                      onChange={(e) => setNewPrinter({ ...newPrinter, name: e.target.value })}
+                      className="px-3 py-2 bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded-lg text-sm text-slate-900 dark:text-white"
+                    />
+                    <select
+                      value={newPrinter.type}
+                      onChange={(e) => setNewPrinter({ ...newPrinter, type: e.target.value as Printer['type'] })}
+                      className="px-3 py-2 bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded-lg text-sm text-slate-900 dark:text-white"
+                    >
+                      <option value="receipt">Receipt</option>
+                      <option value="kitchen">Kitchen</option>
+                      <option value="bar">Bar</option>
+                    </select>
+                    <input
+                      type="text"
+                      placeholder="Station (optional)"
+                      value={newPrinter.station}
+                      onChange={(e) => setNewPrinter({ ...newPrinter, station: e.target.value })}
+                      className="px-3 py-2 bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded-lg text-sm text-slate-900 dark:text-white"
+                    />
+                    <input
+                      type="text"
+                      placeholder="IP address (optional)"
+                      value={newPrinter.ipAddress}
+                      onChange={(e) => setNewPrinter({ ...newPrinter, ipAddress: e.target.value })}
+                      className="px-3 py-2 bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded-lg text-sm text-slate-900 dark:text-white"
+                    />
+                  </div>
+                  <div className="flex gap-2">
+                    <button onClick={handleAddPrinter} className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-bold">
+                      Register Printer
+                    </button>
+                    <button onClick={() => setShowPrinterForm(false)} className="px-4 py-2 bg-slate-200 dark:bg-slate-600 text-slate-700 dark:text-slate-300 rounded-lg text-xs font-bold">
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
 
               <div className="space-y-3">
                 {printers.map((printer) => (
@@ -349,14 +538,14 @@ export default function POSSettings({ outletName }: POSSettingsProps) {
                       </div>
                       <div>
                         <h5 className="text-sm font-bold text-slate-900 dark:text-white">{printer.name}</h5>
-                        <p className="text-xs text-slate-500">{printer.type} • {printer.ipAddress}</p>
+                        <p className="text-xs text-slate-500">{printer.type}{printer.station ? ` • ${printer.station}` : ''}{printer.ip_address ? ` • ${printer.ip_address}` : ''}</p>
                       </div>
                     </div>
                     <div className="flex items-center gap-2">
                       <span className={`text-[10px] px-2 py-1 rounded-full font-bold ${
-                        printer.isActive ? 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-600' : 'bg-slate-200 dark:bg-slate-600 text-slate-500'
+                        printer.is_active ? 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-600' : 'bg-slate-200 dark:bg-slate-600 text-slate-500'
                       }`}>
-                        {printer.isActive ? 'Active' : 'Inactive'}
+                        {printer.is_active ? 'Active' : 'Inactive'}
                       </span>
                       <button
                         onClick={() => handleDeletePrinter(printer.id)}
@@ -385,12 +574,51 @@ export default function POSSettings({ outletName }: POSSettingsProps) {
                   Payment Terminals
                 </h4>
                 <button
+                  onClick={() => setShowTerminalForm(!showTerminalForm)}
                   className="flex items-center gap-2 px-3 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-bold transition-all"
                 >
                   <Plus size={14} />
                   Add Terminal
                 </button>
               </div>
+
+              {showTerminalForm && (
+                <div className="mb-4 p-4 bg-indigo-50 dark:bg-indigo-900/20 rounded-xl space-y-3">
+                  <div className="grid grid-cols-3 gap-3">
+                    <select
+                      value={newTerminal.type}
+                      onChange={(e) => setNewTerminal({ ...newTerminal, type: e.target.value })}
+                      className="px-3 py-2 bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded-lg text-sm text-slate-900 dark:text-white"
+                    >
+                      <option value="card">Card</option>
+                      <option value="mobile">Mobile</option>
+                      <option value="contactless">Contactless</option>
+                    </select>
+                    <input
+                      type="text"
+                      placeholder="Model (e.g. PAX A920)"
+                      value={newTerminal.model}
+                      onChange={(e) => setNewTerminal({ ...newTerminal, model: e.target.value })}
+                      className="px-3 py-2 bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded-lg text-sm text-slate-900 dark:text-white"
+                    />
+                    <input
+                      type="text"
+                      placeholder="Serial number (optional)"
+                      value={newTerminal.serialNumber}
+                      onChange={(e) => setNewTerminal({ ...newTerminal, serialNumber: e.target.value })}
+                      className="px-3 py-2 bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded-lg text-sm text-slate-900 dark:text-white"
+                    />
+                  </div>
+                  <div className="flex gap-2">
+                    <button onClick={handleAddTerminal} className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-bold">
+                      Register Terminal
+                    </button>
+                    <button onClick={() => setShowTerminalForm(false)} className="px-4 py-2 bg-slate-200 dark:bg-slate-600 text-slate-700 dark:text-slate-300 rounded-lg text-xs font-bold">
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
 
               <div className="space-y-3">
                 {paymentTerminals.map((terminal) => (
@@ -401,14 +629,14 @@ export default function POSSettings({ outletName }: POSSettingsProps) {
                       </div>
                       <div>
                         <h5 className="text-sm font-bold text-slate-900 dark:text-white">{terminal.model}</h5>
-                        <p className="text-xs text-slate-500">{terminal.type} • {terminal.serialNumber}</p>
+                        <p className="text-xs text-slate-500">{terminal.type}{terminal.serial_number ? ` • ${terminal.serial_number}` : ''}</p>
                       </div>
                     </div>
                     <div className="flex items-center gap-2">
                       <span className={`text-[10px] px-2 py-1 rounded-full font-bold ${
-                        terminal.isActive ? 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-600' : 'bg-slate-200 dark:bg-slate-600 text-slate-500'
+                        terminal.is_active ? 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-600' : 'bg-slate-200 dark:bg-slate-600 text-slate-500'
                       }`}>
-                        {terminal.isActive ? 'Active' : 'Inactive'}
+                        {terminal.is_active ? 'Active' : 'Inactive'}
                       </span>
                       <button
                         onClick={() => handleDeleteTerminal(terminal.id)}
@@ -487,39 +715,71 @@ export default function POSSettings({ outletName }: POSSettingsProps) {
           <div className="space-y-6">
             <h3 className="text-lg font-bold text-slate-900 dark:text-white flex items-center gap-2">
               <DollarSign size={20} className="text-indigo-600" />
-              Tax & Fees Configuration
+              Tax & Fees
             </h3>
 
-            <div className="space-y-3">
-              {taxRates.map((tax) => (
-                <div key={tax.id} className="flex items-center justify-between p-4 bg-slate-50 dark:bg-slate-700/50 rounded-xl">
+            <div className="p-4 bg-indigo-50 dark:bg-indigo-900/20 rounded-xl border border-indigo-100 dark:border-indigo-900/40">
+              <p className="text-xs text-indigo-700 dark:text-indigo-300">
+                Tax rates are managed centrally in Admin → Rate & Tax. The rates below are the effective
+                values applied to this outlet&apos;s POS transactions (outlet-scoped rules take precedence).
+              </p>
+            </div>
+
+            {!effectiveTax ? (
+              <div className="text-center py-8 text-slate-500 dark:text-slate-400">
+                <Percent className="w-12 h-12 mx-auto mb-2 opacity-50" />
+                <p className="text-sm">Loading effective tax rates…</p>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <div className="flex items-center justify-between p-4 bg-slate-50 dark:bg-slate-700/50 rounded-xl">
                   <div className="flex items-center gap-3">
                     <div className="w-10 h-10 bg-green-100 dark:bg-green-900/30 rounded-lg flex items-center justify-center text-green-600">
                       <Percent size={18} />
                     </div>
                     <div>
-                      <h5 className="text-sm font-bold text-slate-900 dark:text-white">{tax.name}</h5>
-                      <p className="text-xs text-slate-500">{tax.rate}%</p>
+                      <h5 className="text-sm font-bold text-slate-900 dark:text-white">VAT</h5>
+                      <p className="text-xs text-slate-500">Value-added tax on subtotal after discount</p>
                     </div>
                   </div>
-                  <div className="flex items-center gap-2">
-                    {tax.isDefault && (
-                      <span className="text-[10px] px-2 py-1 bg-indigo-100 dark:bg-indigo-900/30 text-indigo-600 rounded-full font-bold">
-                        Default
-                      </span>
-                    )}
-                    <button className="p-2 hover:bg-slate-200 dark:hover:bg-slate-600 rounded-lg text-slate-600 dark:text-slate-400 transition-all">
-                      <Edit size={16} />
-                    </button>
-                  </div>
+                  <span className="text-lg font-black text-slate-900 dark:text-white">
+                    {effectiveTax.vat === null ? '—' : `${effectiveTax.vat}%`}
+                  </span>
                 </div>
-              ))}
-            </div>
 
-            <button className="flex items-center gap-2 px-4 py-3 border-2 border-dashed border-slate-300 dark:border-slate-600 rounded-xl text-slate-500 dark:text-slate-400 hover:border-indigo-500 hover:text-indigo-600 transition-all w-full justify-center">
-              <Plus size={16} />
-              Add Tax Rate
-            </button>
+                <div className="flex items-center justify-between p-4 bg-slate-50 dark:bg-slate-700/50 rounded-xl">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 bg-blue-100 dark:bg-blue-900/30 rounded-lg flex items-center justify-center text-blue-600">
+                      <Percent size={18} />
+                    </div>
+                    <div>
+                      <h5 className="text-sm font-bold text-slate-900 dark:text-white">Service Charge</h5>
+                      <p className="text-xs text-slate-500">Hospitality service charge</p>
+                    </div>
+                  </div>
+                  <span className="text-lg font-black text-slate-900 dark:text-white">
+                    {effectiveTax.serviceCharge === null ? '—' : `${effectiveTax.serviceCharge}%`}
+                  </span>
+                </div>
+
+                {(effectiveTax.additional || []).map((tax) => (
+                  <div key={tax.code} className="flex items-center justify-between p-4 bg-slate-50 dark:bg-slate-700/50 rounded-xl">
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 bg-amber-100 dark:bg-amber-900/30 rounded-lg flex items-center justify-center text-amber-600">
+                        <Percent size={18} />
+                      </div>
+                      <div>
+                        <h5 className="text-sm font-bold text-slate-900 dark:text-white">{tax.name}</h5>
+                        <p className="text-xs text-slate-500">
+                          {tax.taxType}{tax.calcBase === 'total' ? ' • on total incl. VAT' : ' • on subtotal'}
+                        </p>
+                      </div>
+                    </div>
+                    <span className="text-lg font-black text-slate-900 dark:text-white">{tax.rate}%</span>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
 

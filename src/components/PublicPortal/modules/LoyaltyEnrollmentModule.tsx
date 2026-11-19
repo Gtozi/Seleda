@@ -4,6 +4,7 @@
  */
 
 import { Award, Star, Crown, Diamond } from 'lucide-react';
+import { ModuleHeader } from '../shared';
 
 const LoyaltyEnrollmentModule: React.FC = () => {
   const tiers = [
@@ -15,25 +16,22 @@ const LoyaltyEnrollmentModule: React.FC = () => {
 
   return (
     <div className="space-y-6">
-      <div className="bg-gradient-to-r from-indigo-600 to-purple-600 rounded-xl p-8 text-white">
-        <h1 className="text-3xl font-bold mb-2">Loyalty Program</h1>
-        <p className="text-lg opacity-90">Join our loyalty program and earn exclusive rewards</p>
-      </div>
+      <ModuleHeader title="Loyalty Program" subtitle="Join our loyalty program and earn exclusive rewards" gradient="from-indigo-600 to-purple-600" />
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
         {tiers.map((tier, idx) => (
-          <div key={idx} className="bg-white dark:bg-slate-800 rounded-xl p-6 shadow-lg">
+          <div key={idx} className="bg-white dark:bg-stone-800 rounded-3xl p-6 shadow-sm border border-stone-200/70 hover:shadow-xl hover:-translate-y-1 transition-all duration-300">
             <div className="flex items-center gap-3 mb-4 text-indigo-600">
               {tier.icon}
-              <h3 className="text-xl font-bold text-slate-900 dark:text-white">{tier.name}</h3>
+              <h3 className="text-xl font-bold text-stone-900 dark:text-white">{tier.name}</h3>
             </div>
-            <p className="text-sm text-slate-600 dark:text-slate-400 mb-4">{tier.points} points required</p>
+            <p className="text-sm text-stone-600 dark:text-stone-400 mb-4">{tier.points} points required</p>
             <ul className="space-y-2 mb-4">
               {tier.benefits.map((benefit, bIdx) => (
-                <li key={bIdx} className="text-sm text-slate-700 dark:text-slate-300">✓ {benefit}</li>
+                <li key={bIdx} className="text-sm text-stone-700 dark:text-stone-300">✓ {benefit}</li>
               ))}
             </ul>
-            <button className="w-full bg-indigo-600 hover:bg-indigo-700 text-white py-2 rounded-lg font-semibold transition-colors">
+            <button className="w-full bg-indigo-600 hover:bg-indigo-700 text-white py-2 rounded-full font-semibold transition-colors">
               Join Now
             </button>
           </div>

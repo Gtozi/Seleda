@@ -4,6 +4,56 @@ import { hasSupabaseAdminConfig, supabaseAdmin } from '../supabaseAdmin';
 
 const router = Router();
 
+// Void an invoice document
+router.patch('/:invoiceId/void', authenticate, async (req, res) => {
+  const { invoiceId } = req.params;
+  const { reason } = req.body;
+
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) {
+    return res.status(503).json({ error: 'Database not configured' });
+  }
+
+  try {
+    const { data: invoice, error: fetchErr } = await supabaseAdmin
+      .from('invoice_documents')
+      .select('id, is_voided, status')
+      .eq('id', invoiceId)
+      .maybeSingle();
+
+    if (fetchErr || !invoice) {
+      return res.status(404).json({ error: 'Invoice not found' });
+    }
+    if (invoice.is_voided) {
+      return res.status(400).json({ error: 'Invoice is already voided' });
+    }
+
+    // Void the invoice
+    const { error: voidErr } = await supabaseAdmin
+      .from('invoice_documents')
+      .update({
+        is_voided: true,
+        status: 'Void',
+        voided_at: new Date().toISOString(),
+        void_reason: reason || 'Manually voided',
+      })
+      .eq('id', invoiceId);
+
+    if (voidErr) {
+      return res.status(500).json({ error: 'Failed to void invoice', details: voidErr.message });
+    }
+
+    // Unlink folio lines from this invoice so they can be re-invoiced
+    await supabaseAdmin
+      .from('folio_lines')
+      .update({ invoice_id: null })
+      .eq('invoice_id', invoiceId);
+
+    return res.json({ success: true, message: 'Invoice voided successfully' });
+  } catch (err: any) {
+    return res.status(500).json({ error: 'Failed to void invoice', details: err.message });
+  }
+});
+
 // List all invoice documents with their folio, reservation and payments
 // Used by the Folio & Billing "Invoice & Payment History" sub-tab.
 router.get('/', authenticate, async (req, res) => {

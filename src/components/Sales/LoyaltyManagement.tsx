@@ -1,92 +1,231 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   Plus, RefreshCw, Crown, Star, Gift,
-  BedDouble, Utensils, Sparkles,
+  BedDouble, Utensils, Sparkles, Calendar,
 } from 'lucide-react';
+import { PageHeader, SectionCard, Badge } from '../FrontOffice/ui';
+import StatCard from '../FrontOffice/StatCard';
+import { button, layout } from '../FrontOffice/brandTheme';
+import { useERP } from '../../context/ERPContext';
 import { ModalSystem } from '../Shared/ModalSystem';
 import { DataTable, Column } from '../Shared/DataTable';
+import { fetchLoyaltyMembers, createLoyaltyMember, type LoyaltyMember } from '../../services/salesService';
 
 const TIERS = ['Bronze', 'Silver', 'Gold', 'Platinum'];
-interface LoyaltyMember {
-  id: string;
-  name: string;
-  tier: string;
-  points: number;
-  totalStays: number;
-  totalSpend: number;
-  rewardsRedeemed: number;
-  enrollmentDate: string;
-  status: string;
-}
+
+const TIER_TONE: Record<string, string> = {
+  Bronze: 'warning',
+  Silver: 'neutral',
+  Gold: 'warning',
+  Platinum: 'accent',
+};
+
+const STATUS_TONE: Record<string, string> = {
+  Active: 'success',
+  Inactive: 'neutral',
+  Suspended: 'danger',
+};
+
+const REWARDS = [
+  { name: 'Free Nights', icon: BedDouble, points: 5000, color: 'bg-indigo-50 text-indigo-600' },
+  { name: 'Room Upgrades', icon: Star, points: 3000, color: 'bg-purple-50 text-purple-600' },
+  { name: 'Dining Rewards', icon: Utensils, points: 1500, color: 'bg-amber-50 text-amber-600' },
+  { name: 'Spa Rewards', icon: Sparkles, points: 2500, color: 'bg-emerald-50 text-emerald-600' },
+  { name: 'Exclusive Offers', icon: Gift, points: 1000, color: 'bg-rose-50 text-rose-600' },
+];
+
+const EMPTY_FORM = {
+  memberName: '',
+  tier: 'Bronze',
+  points: 0,
+  totalStays: 0,
+  totalSpend: 0,
+  rewardsRedeemed: 0,
+  enrollmentDate: '',
+  status: 'Active',
+};
 
 const LoyaltyManagement: React.FC = () => {
-  const [members] = useState<LoyaltyMember[]>([]);
+  const { addNotification, formatAmount } = useERP();
+
+  const [members, setMembers] = useState<LoyaltyMember[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [showAddModal, setShowAddModal] = useState(false);
-  const [form, setForm] = useState({ name: '', tier: 'Bronze', points: 0 });
+  const [form, setForm] = useState(EMPTY_FORM);
+
+  const loadData = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      setMembers(await fetchLoyaltyMembers());
+    } catch (err: any) {
+      setError(err.message || 'Failed to load loyalty members');
+      addNotification('Failed to load loyalty members', 'error', 'Sales');
+    } finally {
+      setLoading(false);
+    }
+  }, [addNotification]);
+
+  useEffect(() => { loadData(); }, [loadData]);
+
+  const handleCreate = async () => {
+    if (!form.memberName.trim()) {
+      setError('Member name is required');
+      return;
+    }
+
+    setSaving(true);
+    setError(null);
+    try {
+      await createLoyaltyMember(form);
+      addNotification('Loyalty member enrolled', 'success', 'Sales');
+      setShowAddModal(false);
+      setForm(EMPTY_FORM);
+      loadData();
+    } catch (err: any) {
+      setError(err.message || 'Failed to enroll member');
+      addNotification('Failed to enroll member', 'error', 'Sales');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const tierCounts = useMemo(() => {
+    const map: Record<string, number> = {};
+    members.forEach((m) => { map[m.tier] = (map[m.tier] || 0) + 1; });
+    return map;
+  }, [members]);
+
+  const totalPoints = useMemo(() => members.reduce((s, m) => s + Number(m.points || 0), 0), [members]);
+  const totalSpend = useMemo(() => members.reduce((s, m) => s + Number(m.total_spend || 0), 0), [members]);
+  const totalRewards = useMemo(() => members.reduce((s, m) => s + Number(m.rewards_redeemed || 0), 0), [members]);
 
   const columns: Column<LoyaltyMember>[] = [
-    { key: 'name', label: 'Member', render: (m) => (
-      <div className="flex items-center gap-2">
-        <div className="p-1.5 rounded-lg bg-amber-50 text-amber-600"><Crown size={12} /></div>
-        <span className="text-xs font-black text-slate-900 dark:text-white">{m.name}</span>
-      </div>
-    ) },
-    { key: 'tier', label: 'Tier', align: 'center', render: (m) => {
-      const colors: Record<string, string> = { Bronze: 'bg-orange-50 text-orange-600', Silver: 'bg-slate-50 text-slate-500', Gold: 'bg-amber-50 text-amber-600', Platinum: 'bg-slate-100 text-slate-700' };
-      return <span className={`px-2 py-0.5 rounded text-[8px] font-black uppercase tracking-widest ${colors[m.tier] || colors['Bronze']}`}>{m.tier}</span>;
-    } },
-    { key: 'points', label: 'Points', align: 'right', render: (m) => <span className="text-xs font-black text-amber-600">{m.points.toLocaleString()}</span> },
-    { key: 'totalStays', label: 'Stays', align: 'center', render: (m) => <span className="text-[10px] font-black text-slate-600">{m.totalStays}</span> },
-    { key: 'totalSpend', label: 'Spend', align: 'right', render: (m) => <span className="text-xs font-black text-emerald-600">${m.totalSpend.toLocaleString()}</span> },
-    { key: 'rewardsRedeemed', label: 'Rewards', align: 'center', render: (m) => <span className="text-[10px] font-black text-purple-600">{m.rewardsRedeemed}</span> },
-    { key: 'status', label: 'Status', align: 'center', render: (m) => {
-      const colors: Record<string, string> = { Active: 'bg-emerald-50 text-emerald-600', Inactive: 'bg-slate-100 text-slate-500', Suspended: 'bg-rose-50 text-rose-600' };
-      return <span className={`px-2 py-0.5 rounded text-[8px] font-black uppercase tracking-widest ${colors[m.status] || colors['Active']}`}>{m.status}</span>;
-    } },
+    {
+      key: 'member_name',
+      label: 'Member',
+      sortable: true,
+      sortAccessor: (m) => m.member_name,
+      render: (m) => (
+        <div className="flex items-center gap-2">
+          <div className="p-1.5 rounded-lg bg-[var(--color-warning)]/10 text-[var(--color-warning)]"><Crown size={12} /></div>
+          <span className="text-sm font-semibold text-gray-900 dark:text-white">{m.member_name}</span>
+        </div>
+      ),
+    },
+    {
+      key: 'tier',
+      label: 'Tier',
+      align: 'center',
+      sortable: true,
+      sortAccessor: (m) => m.tier,
+      render: (m) => <Badge tone={(TIER_TONE[m.tier] || 'neutral') as any}>{m.tier}</Badge>,
+    },
+    {
+      key: 'points',
+      label: 'Points',
+      align: 'right',
+      sortable: true,
+      sortAccessor: (m) => m.points,
+      render: (m) => <span className="text-sm font-semibold text-amber-600 dark:text-amber-400">{Number(m.points).toLocaleString()}</span>,
+    },
+    {
+      key: 'total_stays',
+      label: 'Stays',
+      align: 'center',
+      sortable: true,
+      sortAccessor: (m) => m.total_stays,
+      render: (m) => <span className="text-sm font-semibold text-slate-600 dark:text-slate-400">{m.total_stays}</span>,
+    },
+    {
+      key: 'total_spend',
+      label: 'Spend',
+      align: 'right',
+      sortable: true,
+      sortAccessor: (m) => m.total_spend,
+      render: (m) => <span className="text-sm font-semibold text-emerald-600 dark:text-emerald-400">{formatAmount(m.total_spend)}</span>,
+    },
+    {
+      key: 'rewards_redeemed',
+      label: 'Rewards',
+      align: 'center',
+      sortable: true,
+      sortAccessor: (m) => m.rewards_redeemed,
+      render: (m) => <span className="text-sm font-semibold text-purple-600 dark:text-purple-400">{m.rewards_redeemed}</span>,
+    },
+    {
+      key: 'status',
+      label: 'Status',
+      align: 'center',
+      sortable: true,
+      sortAccessor: (m) => m.status,
+      render: (m) => <Badge tone={(STATUS_TONE[m.status] || 'neutral') as any}>{m.status}</Badge>,
+    },
+    {
+      key: 'enrollment_date',
+      label: 'Enrolled',
+      align: 'center',
+      sortable: true,
+      sortAccessor: (m) => m.enrollment_date || '',
+      render: (m) => (
+        <span className="text-xs font-medium text-slate-500 dark:text-slate-400 flex items-center justify-center gap-1">
+          <Calendar size={12} /> {m.enrollment_date || '—'}
+        </span>
+      ),
+    },
   ];
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-xl font-black text-slate-900 dark:text-white leading-tight">Loyalty Management</h2>
-          <p className="text-xs text-slate-400 font-medium">Membership enrollment, tier management, points, rewards, and redemption</p>
-        </div>
-        <div className="flex items-center gap-2">
-          <button className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white font-bold py-2.5 px-4 rounded-2xl flex items-center gap-2 text-xs hover:bg-slate-50 transition shadow-sm">
-            <RefreshCw size={16} /> Refresh
+    <div className={layout.sectionStack}>
+      <PageHeader
+        title="Loyalty Management"
+        subtitle="Membership enrollment, tier management, points, rewards, and redemption · DB-synced"
+        icon={Crown}
+        actions={
+          <>
+            <button onClick={loadData} disabled={loading} className={button.secondary}>
+              <RefreshCw size={16} className={loading ? 'animate-spin' : ''} /> Refresh
+            </button>
+            <button onClick={() => { setForm(EMPTY_FORM); setShowAddModal(true); setError(null); }} className={button.primary}>
+              <Plus size={16} /> Enroll Member
+            </button>
+          </>
+        }
+      />
+
+      {error && !showAddModal && (
+        <div className="p-4 bg-rose-50 dark:bg-rose-900/20 border border-rose-200 dark:border-rose-800 rounded-2xl flex items-center justify-between">
+          <p className="text-sm font-semibold text-rose-700 dark:text-rose-400">{error}</p>
+          <button onClick={loadData} disabled={loading} className={[button.secondary, 'flex items-center gap-2'].join(' ')}>
+            <RefreshCw size={14} className={loading ? 'animate-spin' : ''} /> Retry
           </button>
-          <button onClick={() => setShowAddModal(true)} className="bg-amber-600 hover:bg-amber-700 text-white font-bold py-2.5 px-4 rounded-2xl flex items-center gap-2 text-xs transition shadow-md shadow-amber-200">
-            <Plus size={16} /> Enroll Member
-          </button>
         </div>
-      </div>
+      )}
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        {TIERS.map(tier => {
-          const count = members.filter(m => m.tier === tier).length;
-          const colors: Record<string, string> = { Bronze: 'bg-orange-50 text-orange-600', Silver: 'bg-slate-50 text-slate-500', Gold: 'bg-amber-50 text-amber-600', Platinum: 'bg-slate-100 text-slate-700' };
-          return (
-            <div key={tier} className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 p-5 rounded-[28px] shadow-3xs">
-              <div className={`p-2 w-fit rounded-xl ${colors[tier]} mb-3`}><Crown size={16} /></div>
-              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest leading-none mb-1">{tier} Members</p>
-              <h3 className="text-xl font-black text-slate-900 dark:text-white">{count}</h3>
-            </div>
-          );
-        })}
+        {TIERS.map((tier) => (
+          <StatCard
+            key={tier}
+            title={`${tier} Members`}
+            value={(tierCounts[tier] || 0).toString()}
+            icon={Crown}
+            tone={(TIER_TONE[tier] || 'neutral') as any}
+          />
+        ))}
       </div>
 
-      {/* Rewards Catalog */}
-      <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 p-6 rounded-[28px] shadow-3xs">
-        <h3 className="text-sm font-black text-slate-900 dark:text-white mb-4">Reward Catalog</h3>
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-          {[
-            { name: 'Free Nights', icon: BedDouble, points: 5000, color: 'bg-indigo-50 text-indigo-600' },
-            { name: 'Room Upgrades', icon: Star, points: 3000, color: 'bg-purple-50 text-purple-600' },
-            { name: 'Dining Rewards', icon: Utensils, points: 1500, color: 'bg-amber-50 text-amber-600' },
-            { name: 'Spa Rewards', icon: Sparkles, points: 2500, color: 'bg-emerald-50 text-emerald-600' },
-            { name: 'Exclusive Offers', icon: Gift, points: 1000, color: 'bg-rose-50 text-rose-600' },
-          ].map(reward => {
+      <div className={layout.kpiGrid}>
+        <StatCard title="Total Members" value={members.length.toLocaleString()} icon={Crown} tone="info" />
+        <StatCard title="Total Points" value={totalPoints.toLocaleString()} icon={Star} tone="warning" />
+        <StatCard title="Total Spend" value={formatAmount(totalSpend)} icon={Gift} tone="success" />
+        <StatCard title="Rewards Redeemed" value={totalRewards.toLocaleString()} icon={Gift} tone="accent" />
+      </div>
+
+      <SectionCard title="Reward Catalog" subtitle="Available loyalty redemptions">
+        <div className="p-6 grid grid-cols-2 md:grid-cols-5 gap-4">
+          {REWARDS.map((reward) => {
             const Icon = reward.icon;
             return (
               <div key={reward.name} className="p-4 bg-slate-50 dark:bg-slate-950 rounded-2xl border border-slate-100 dark:border-slate-800">
@@ -97,32 +236,83 @@ const LoyaltyManagement: React.FC = () => {
             );
           })}
         </div>
-      </div>
+      </SectionCard>
 
-      <DataTable columns={columns} data={members} rowKey={(row) => row.id} sortable filterable filterPlaceholder="Search members..." filterKeys={['name', 'tier', 'status']} emptyMessage="No loyalty members enrolled yet." />
+      <SectionCard title="Loyalty Members" subtitle="All enrolled members with tier and points">
+        <div className="p-6">
+          <DataTable
+            columns={columns}
+            data={members}
+            rowKey={(row) => row.id}
+            sortable
+            filterable
+            filterPlaceholder="Search members..."
+            filterKeys={['member_name', 'tier', 'status']}
+            emptyMessage="No loyalty members enrolled yet."
+            containerClassName="!rounded-2xl !shadow-none border-slate-200 dark:border-slate-700"
+          />
+        </div>
+      </SectionCard>
 
-      <ModalSystem isOpen={showAddModal} onClose={() => setShowAddModal(false)} title="Enroll Loyalty Member" subtitle="Register a new loyalty program member" variant="form" size="md" showFooter={false}>
+      <ModalSystem
+        isOpen={showAddModal}
+        onClose={() => { setShowAddModal(false); setError(null); }}
+        onConfirm={handleCreate}
+        title="Enroll Loyalty Member"
+        subtitle="Register a new loyalty program member"
+        confirmLabel="Enroll"
+        cancelLabel="Cancel"
+        confirmColor="amber"
+        showFooter
+        loading={saving}
+        size="lg"
+      >
         <div className="p-6 space-y-4">
+          {error && (
+            <div className="p-3 bg-rose-50 dark:bg-rose-900/20 border border-rose-200 dark:border-rose-800 rounded-xl text-sm text-rose-700 dark:text-rose-400">
+              {error}
+            </div>
+          )}
+
           <div>
             <label className="text-[10px] uppercase font-black tracking-widest text-slate-400 block mb-2">Member Name</label>
-            <input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2 text-xs font-bold outline-none focus:ring-2 focus:ring-amber-500" />
+            <input value={form.memberName} onChange={(e) => setForm({ ...form, memberName: e.target.value })} className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2 text-sm font-medium outline-none focus:ring-1 focus:ring-[var(--color-accent-operations)]" />
           </div>
+
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="text-[10px] uppercase font-black tracking-widest text-slate-400 block mb-2">Tier</label>
-              <select value={form.tier} onChange={e => setForm({ ...form, tier: e.target.value })} className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2 text-xs font-bold outline-none focus:ring-2 focus:ring-amber-500">
-                {TIERS.map(t => <option key={t}>{t}</option>)}
+              <select value={form.tier} onChange={(e) => setForm({ ...form, tier: e.target.value })} className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2 text-sm font-medium outline-none focus:ring-1 focus:ring-[var(--color-accent-operations)]">
+                {TIERS.map((t) => <option key={t} value={t}>{t}</option>)}
               </select>
             </div>
             <div>
               <label className="text-[10px] uppercase font-black tracking-widest text-slate-400 block mb-2">Starting Points</label>
-              <input type="number" value={form.points} onChange={e => setForm({ ...form, points: Number(e.target.value) })} className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2 text-xs font-bold outline-none focus:ring-2 focus:ring-amber-500" />
+              <input type="number" value={form.points} onChange={(e) => setForm({ ...form, points: Number(e.target.value) })} className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2 text-sm font-medium outline-none focus:ring-1 focus:ring-[var(--color-accent-operations)]" />
             </div>
           </div>
-        </div>
-        <div className="p-6 border-t border-slate-100 dark:border-slate-800 flex justify-end gap-3 bg-slate-50 dark:bg-slate-950">
-          <button onClick={() => setShowAddModal(false)} className="px-6 py-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-slate-50 transition">Cancel</button>
-          <button onClick={() => setShowAddModal(false)} className="px-6 py-2.5 bg-amber-600 text-white rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-amber-700 transition">Enroll</button>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="text-[10px] uppercase font-black tracking-widest text-slate-400 block mb-2">Total Stays</label>
+              <input type="number" value={form.totalStays} onChange={(e) => setForm({ ...form, totalStays: Number(e.target.value) })} className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2 text-sm font-medium outline-none focus:ring-1 focus:ring-[var(--color-accent-operations)]" />
+            </div>
+            <div>
+              <label className="text-[10px] uppercase font-black tracking-widest text-slate-400 block mb-2">Total Spend ($)</label>
+              <input type="number" value={form.totalSpend} onChange={(e) => setForm({ ...form, totalSpend: Number(e.target.value) })} className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2 text-sm font-medium outline-none focus:ring-1 focus:ring-[var(--color-accent-operations)]" />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="text-[10px] uppercase font-black tracking-widest text-slate-400 block mb-2">Rewards Redeemed</label>
+              <input type="number" value={form.rewardsRedeemed} onChange={(e) => setForm({ ...form, rewardsRedeemed: Number(e.target.value) })} className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2 text-sm font-medium outline-none focus:ring-1 focus:ring-[var(--color-accent-operations)]" />
+            </div>
+            <div>
+              <label className="text-[10px] uppercase font-black tracking-widest text-slate-400 block mb-2">Enrollment Date</label>
+              <input type="date" value={form.enrollmentDate} onChange={(e) => setForm({ ...form, enrollmentDate: e.target.value })} className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2 text-sm font-medium outline-none focus:ring-1 focus:ring-[var(--color-accent-operations)]" />
+            </div>
+          </div>
         </div>
       </ModalSystem>
     </div>

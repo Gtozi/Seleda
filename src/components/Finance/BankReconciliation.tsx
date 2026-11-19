@@ -22,6 +22,10 @@ import {
   Pencil,
   Trash2,
   AlertTriangle,
+  Send,
+  Building2,
+  Receipt,
+  Percent,
 } from 'lucide-react';
 import { ModalSystem } from '../Shared/ModalSystem';
 import { DataTable, Column } from '../Shared/DataTable';
@@ -36,7 +40,9 @@ import {
   fetchReconciliationBatches,
   importStatementLines,
   matchStatementLine,
+  importStatementLines,
   createReconciliationBatch,
+  finalizeReconciliationBatch,
   fetchPettyCashFloats,
   createPettyCashFloat,
   fetchCashTransactions,
@@ -48,6 +54,7 @@ import {
   type ReconciliationBatch,
   type PettyCashFloat,
   type CashTransaction,
+  type CashTransactionType,
 } from '../../services/bankReconciliationService';
 
 const fmt = (n: number) => Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -68,6 +75,11 @@ const BankReconciliation = () => {
   // Filter states
   const [statementStatusFilter, setStatementStatusFilter] = useState('All');
   const [cashTxTypeFilter, setCashTxTypeFilter] = useState('All');
+
+  // Import state
+  const [importBankAccountId, setImportBankAccountId] = useState<string>('');
+  const [importFile, setImportFile] = useState<File | null>(null);
+  const [importing, setImporting] = useState(false);
 
   const [showNewAccount, setShowNewAccount] = useState(false);
   const [newAccountForm, setNewAccountForm] = useState({
@@ -163,8 +175,129 @@ const BankReconciliation = () => {
     }
   };
 
+  const handleFinalizeReconciliation = async () => {
+    const openBatch = reconciliationBatches.find(b => b.status === 'Open' || b.status === 'In Progress');
+    if (!openBatch) {
+      addNotification('No open reconciliation batch to finalize.', 'warning', 'finance');
+      return;
+    }
+    try {
+      await finalizeReconciliationBatch(openBatch.id);
+      addNotification('Reconciliation finalized successfully.', 'success', 'finance');
+      await loadData();
+    } catch (err: any) {
+      addNotification(err.message || 'Failed to finalize reconciliation', 'warning', 'finance');
+    }
+  };
+
+  const parseCsvFile = (text: string): Array<{ statement_date: string; transaction_date: string; description?: string; reference?: string; debit?: number; credit?: number; balance?: number }> => {
+    const lines = text.split(/\r?\n/).filter(l => l.trim());
+    if (lines.length < 2) return [];
+    // Detect delimiter and header
+    const delim = lines[0].includes(';') ? ';' : ',';
+    const header = lines[0].split(delim).map(h => h.trim().replace(/^"|"$/g, '').toLowerCase());
+    const dateIdx = header.findIndex(h => h.includes('date'));
+    const descIdx = header.findIndex(h => h.includes('desc') || h.includes('narr'));
+    const refIdx = header.findIndex(h => h.includes('ref'));
+    const debitIdx = header.findIndex(h => h.includes('debit') || h.includes('withdraw') || h.includes('dr'));
+    const creditIdx = header.findIndex(h => h.includes('credit') || h.includes('deposit') || h.includes('cr'));
+    const amountIdx = header.findIndex(h => h.includes('amount'));
+    const balanceIdx = header.findIndex(h => h.includes('balance'));
+    const out: any[] = [];
+    for (let i = 1; i < lines.length; i++) {
+      const cols = lines[i].split(delim).map(c => c.trim().replace(/^"|"$/g, ''));
+      const date = dateIdx >= 0 ? cols[dateIdx] : '';
+      const amount = amountIdx >= 0 ? Number(cols[amountIdx].replace(/[^0-9.-]/g, '')) || 0 : 0;
+      const debit = debitIdx >= 0 ? Number(cols[debitIdx].replace(/[^0-9.-]/g, '')) || 0 : (amount < 0 ? Math.abs(amount) : 0);
+      const credit = creditIdx >= 0 ? Number(cols[creditIdx].replace(/[^0-9.-]/g, '')) || 0 : (amount > 0 ? amount : 0);
+      out.push({
+        statement_date: date,
+        transaction_date: date,
+        description: descIdx >= 0 ? cols[descIdx] : '',
+        reference: refIdx >= 0 ? cols[refIdx] : '',
+        debit,
+        credit,
+        balance: balanceIdx >= 0 ? Number(cols[balanceIdx].replace(/[^0-9.-]/g, '')) || 0 : undefined,
+      });
+    }
+    return out;
+  };
+
+  const handleImportStatement = async () => {
+    if (!importBankAccountId) {
+      addNotification('Select a bank account first.', 'warning', 'finance');
+      return;
+    }
+    if (!importFile) {
+      addNotification('Choose a CSV file to import.', 'warning', 'finance');
+      return;
+    }
+    setImporting(true);
+    try {
+      const text = await importFile.text();
+      const lines = parseCsvFile(text);
+      if (lines.length === 0) {
+        addNotification('No statement lines found in the file. Ensure the CSV has a header row with Date, Description, Amount columns.', 'warning', 'finance');
+        return;
+      }
+      await importStatementLines(importBankAccountId, lines);
+      addNotification(`Imported ${lines.length} statement line${lines.length !== 1 ? 's' : ''}.`, 'success', 'finance');
+      setImportFile(null);
+      await loadData();
+    } catch (err: any) {
+      addNotification(err.message || 'Failed to import statement', 'warning', 'finance');
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  const handleAutoMatchAll = async () => {
+    const unmatched = statementLines.filter(s => s.status !== 'Matched' && s.status !== 'Excluded');
+    if (unmatched.length === 0) {
+      addNotification('No unmatched statement lines to auto-match.', 'info', 'finance');
+      return;
+    }
+    let matchedCount = 0;
+    for (const line of unmatched) {
+      // Try to find a cash transaction with the same amount
+      const amount = Number(line.credit || line.debit || 0);
+      if (amount === 0) continue;
+      const candidate = cashTransactions.find(ct => {
+        const ctAmount = Math.abs(Number(ct.amount || 0));
+        return ctAmount === amount && (!line.bank_account_id || ct.bank_account_id === line.bank_account_id);
+      });
+      if (candidate) {
+        try {
+          await matchStatementLine(line.id, candidate.id);
+          matchedCount++;
+        } catch { /* skip on error, continue matching others */ }
+      }
+    }
+    addNotification(`Auto-matched ${matchedCount} of ${unmatched.length} statement line${unmatched.length !== 1 ? 's' : ''}.`, matchedCount > 0 ? 'success' : 'warning', 'finance');
+    await loadData();
+  };
+
+  const handleManualMatch = async (lineId: string) => {
+    // Find best candidate by amount
+    const line = statementLines.find(s => s.id === lineId);
+    if (!line) return;
+    const amount = Number(line.credit || line.debit || 0);
+    const candidate = cashTransactions.find(ct => Math.abs(Number(ct.amount || 0)) === amount);
+    if (!candidate) {
+      addNotification('No matching ledger entry found by amount. Try importing more transactions or adjust the statement line.', 'warning', 'finance');
+      return;
+    }
+    try {
+      await matchStatementLine(lineId, candidate.id);
+      addNotification('Statement line matched to ledger entry.', 'success', 'finance');
+      await loadData();
+    } catch (err: any) {
+      addNotification(err.message || 'Failed to match statement line', 'warning', 'finance');
+    }
+  };
+
   // Cash action modal state
-  type CashActionType = 'receipt' | 'payment' | 'transfer' | 'replenish';
+  type CashActionType = 'receipt' | 'payment' | 'transfer' | 'replenish' | 'electronic_payment' | 'bank_transfer' | 'bank_charges' | 'interest_income';
   const [cashModal, setCashModal] = useState<{ type: CashActionType; open: boolean; saving: boolean }>({ type: 'receipt', open: false, saving: false });
   const [cashForm, setCashForm] = useState({
     amount: '',
@@ -175,7 +308,50 @@ const BankReconciliation = () => {
     pettyCashId: '',
     fromAccount: '',
     toAccount: '',
+    // Bank operation fields
+    bankAccountId: '',
+    recipient: '',
+    paymentMethod: 'Wire',
+    chargeType: 'Monthly Fee',
+    interestPeriod: '',
+    fromBankAccount: '',
+    toBankAccount: '',
   });
+
+  const exportToCsv = (filename: string, headers: string[], rows: (string | number)[][]) => {
+    const escape = (val: string | number) => {
+      const s = String(val ?? '');
+      if (s.includes(',') || s.includes('"') || s.includes('\n')) return `"${s.replace(/"/g, '""')}"`;
+      return s;
+    };
+    const csv = [headers.map(escape).join(','), ...rows.map(r => r.map(escape).join(','))].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', filename);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    addNotification(`Exported ${rows.length} record${rows.length !== 1 ? 's' : ''} to ${filename}.`, 'success', 'finance');
+  };
+
+  const handleExport = () => {
+    if (activeTab === 'cash_ops') {
+      exportToCsv(`cash_transactions_${new Date().toISOString().slice(0, 10)}.csv`,
+        ['Txn #', 'Date', 'Type', 'Description', 'Amount', 'Bank Account', 'Reference'],
+        cashTransactions.map(t => [t.id, t.transaction_date || '', t.type, t.description || '', Number(t.amount || 0), t.bank_account_id || '', t.reference || '']));
+    } else if (activeTab === 'finalize') {
+      exportToCsv(`reconciliation_batches_${new Date().toISOString().slice(0, 10)}.csv`,
+        ['Batch #', 'Bank Account', 'Statement Date', 'Statement Balance', 'Book Balance', 'Status'],
+        reconciliationBatches.map(b => [b.id, b.bank_account_id || '', b.statement_date || '', Number(b.statement_balance || 0), Number(b.book_balance || 0), b.status || 'Open']));
+    } else {
+      exportToCsv(`bank_accounts_${new Date().toISOString().slice(0, 10)}.csv`,
+        ['Account #', 'Bank', 'Account Name', 'Currency', 'Balance', 'Status'],
+        bankAccounts.map(a => [a.id, a.bank_name || '', a.account_name || '', a.currency || '', Number(a.current_balance || 0), a.status || 'Active']));
+    }
+  };
 
   const openCashModal = (type: CashActionType) => {
     setCashForm({
@@ -187,6 +363,13 @@ const BankReconciliation = () => {
       pettyCashId: pettyCashFloats[0]?.id || '',
       fromAccount: bankAccounts[0]?.id || '',
       toAccount: bankAccounts[0]?.id || '',
+      bankAccountId: bankAccounts[0]?.id || '',
+      recipient: '',
+      paymentMethod: 'Wire',
+      chargeType: 'Monthly Fee',
+      interestPeriod: '',
+      fromBankAccount: bankAccounts[0]?.id || '',
+      toBankAccount: bankAccounts[1]?.id || bankAccounts[0]?.id || '',
     });
     setCashModal({ type, open: true, saving: false });
   };
@@ -198,6 +381,22 @@ const BankReconciliation = () => {
     if (!amount || amount <= 0) {
       addNotification('A positive amount is required', 'warning', 'finance');
       return;
+    }
+    // Bank operations require a bank account
+    if (['electronic_payment', 'bank_transfer', 'bank_charges', 'interest_income'].includes(cashModal.type)) {
+      if (cashModal.type === 'bank_transfer') {
+        if (!cashForm.fromBankAccount || !cashForm.toBankAccount) {
+          addNotification('Select both source and destination bank accounts', 'warning', 'finance');
+          return;
+        }
+        if (cashForm.fromBankAccount === cashForm.toBankAccount) {
+          addNotification('Source and destination accounts must differ', 'warning', 'finance');
+          return;
+        }
+      } else if (!cashForm.bankAccountId) {
+        addNotification('Select a bank account', 'warning', 'finance');
+        return;
+      }
     }
     setCashModal(prev => ({ ...prev, saving: true }));
     try {
@@ -255,6 +454,74 @@ const BankReconciliation = () => {
           propertyId: pid,
         });
         addNotification('Petty cash replenished', 'success', 'finance');
+      } else if (cashModal.type === 'electronic_payment') {
+        const bank = bankAccounts.find(b => b.id === cashForm.bankAccountId);
+        await createCashTransaction({
+          type: 'Electronic Payment' as CashTransactionType,
+          description: cashForm.description || `Electronic payment to ${cashForm.recipient || 'recipient'}`,
+          amount: -amount,
+          transaction_date: cashForm.transactionDate,
+          reference: cashForm.reference || undefined,
+          bank_account_id: cashForm.bankAccountId || undefined,
+          recipient: cashForm.recipient || undefined,
+          payment_method: cashForm.paymentMethod || undefined,
+          propertyId: pid,
+        });
+        addNotification(`Electronic payment (${cashForm.paymentMethod}) recorded for ${bank?.account_name || 'account'}`, 'success', 'finance');
+      } else if (cashModal.type === 'bank_transfer') {
+        const fromBank = bankAccounts.find(b => b.id === cashForm.fromBankAccount);
+        const toBank = bankAccounts.find(b => b.id === cashForm.toBankAccount);
+        // Outbound leg (debit from source account)
+        await createCashTransaction({
+          type: 'Bank Transfer' as CashTransactionType,
+          description: cashForm.description || `Bank transfer ${fromBank?.account_name || '—'} → ${toBank?.account_name || '—'}`,
+          amount: -amount,
+          transaction_date: cashForm.transactionDate,
+          reference: cashForm.reference || undefined,
+          from_account: cashForm.fromBankAccount || undefined,
+          to_account: cashForm.toBankAccount || undefined,
+          bank_account_id: cashForm.fromBankAccount || undefined,
+          propertyId: pid,
+        });
+        // Inbound leg (credit to destination account)
+        await createCashTransaction({
+          type: 'Bank Transfer' as CashTransactionType,
+          description: `Bank transfer received from ${fromBank?.account_name || '—'} → ${toBank?.account_name || '—'}`,
+          amount,
+          transaction_date: cashForm.transactionDate,
+          reference: cashForm.reference || undefined,
+          from_account: cashForm.fromBankAccount || undefined,
+          to_account: cashForm.toBankAccount || undefined,
+          bank_account_id: cashForm.toBankAccount || undefined,
+          propertyId: pid,
+        });
+        addNotification('Bank transfer recorded (two-sided)', 'success', 'finance');
+      } else if (cashModal.type === 'bank_charges') {
+        const bank = bankAccounts.find(b => b.id === cashForm.bankAccountId);
+        await createCashTransaction({
+          type: 'Bank Charges' as CashTransactionType,
+          description: cashForm.description || `Bank charge — ${cashForm.chargeType}`,
+          amount: -amount,
+          transaction_date: cashForm.transactionDate,
+          reference: cashForm.reference || undefined,
+          bank_account_id: cashForm.bankAccountId || undefined,
+          charge_type: cashForm.chargeType || undefined,
+          propertyId: pid,
+        });
+        addNotification(`Bank charge (${cashForm.chargeType}) recorded for ${bank?.account_name || 'account'}`, 'success', 'finance');
+      } else if (cashModal.type === 'interest_income') {
+        const bank = bankAccounts.find(b => b.id === cashForm.bankAccountId);
+        await createCashTransaction({
+          type: 'Interest Income' as CashTransactionType,
+          description: cashForm.description || `Interest income${cashForm.interestPeriod ? ` — ${cashForm.interestPeriod}` : ''}`,
+          amount,
+          transaction_date: cashForm.transactionDate,
+          reference: cashForm.reference || undefined,
+          bank_account_id: cashForm.bankAccountId || undefined,
+          interest_period: cashForm.interestPeriod || undefined,
+          propertyId: pid,
+        });
+        addNotification(`Interest income recorded for ${bank?.account_name || 'account'}`, 'success', 'finance');
       }
       await loadData();
       closeCashModal();
@@ -324,26 +591,6 @@ const BankReconciliation = () => {
   // Filtered datasets
   const filteredStatementLines = statementLines.filter(l => statementStatusFilter === 'All' || l.status === statementStatusFilter);
   const filteredCashTransactions = cashTransactions.filter(t => cashTxTypeFilter === 'All' || t.type === cashTxTypeFilter);
-
-  const handleImportStatement = async (bankAccountId: string, lines: any[]) => {
-    try {
-      await importStatementLines(bankAccountId, lines);
-      await loadData();
-    } catch (err: any) {
-      console.error('Failed to import statement:', err);
-      setError(err.message || 'Failed to import statement');
-    }
-  };
-
-  const handleMatchLine = async (statementLineId: string, journalLineId: string) => {
-    try {
-      await matchStatementLine(statementLineId, journalLineId);
-      await loadData();
-    } catch (err: any) {
-      console.error('Failed to match line:', err);
-      setError(err.message || 'Failed to match line');
-    }
-  };
 
   const handleCreateBatch = async (batch: Omit<ReconciliationBatch, 'id' | 'total_debits' | 'total_credits' | 'status' | 'reconciled_by' | 'reconciled_at' | 'created_at' | 'bank_accounts'>) => {
     try {
@@ -423,28 +670,62 @@ const BankReconciliation = () => {
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
                 <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-2">Select Bank Account</label>
-                <select className="w-full px-4 py-3 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-xs font-medium text-slate-900 dark:text-white">
+                <select
+                  value={importBankAccountId}
+                  onChange={e => setImportBankAccountId(e.target.value)}
+                  className="w-full px-4 py-3 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-xs font-medium text-slate-900 dark:text-white"
+                >
+                  <option value="">— Select account —</option>
                   {bankAccounts.map(bank => (
                     <option key={bank.id} value={bank.id}>{bank.account_name} ({bank.account_number})</option>
                   ))}
                 </select>
               </div>
               <div>
-                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-2">Statement Period</label>
-                <select className="w-full px-4 py-3 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-xs font-medium text-slate-900 dark:text-white">
-                  <option>June 2024</option>
-                  <option>May 2024</option>
-                  <option>April 2024</option>
-                </select>
+                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-2">Statement File</label>
+                <input
+                  type="file"
+                  accept=".csv,.ofx,.qfx,.txt"
+                  onChange={e => setImportFile(e.target.files?.[0] || null)}
+                  className="w-full px-4 py-3 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-xs font-medium text-slate-900 dark:text-white"
+                />
+                {importFile && (
+                  <p className="text-[10px] text-emerald-600 font-bold mt-1">Selected: {importFile.name} ({(importFile.size / 1024).toFixed(1)} KB)</p>
+                )}
               </div>
             </div>
 
-            <div className="border-2 border-dashed border-slate-200 dark:border-slate-700 rounded-xl p-12 text-center hover:border-indigo-400 transition-colors cursor-pointer">
+            <div
+              className="border-2 border-dashed border-slate-200 dark:border-slate-700 rounded-xl p-12 text-center hover:border-indigo-400 transition-colors cursor-pointer"
+              onDragOver={e => { e.preventDefault(); }}
+              onDrop={e => { e.preventDefault(); const f = e.dataTransfer.files?.[0]; if (f) setImportFile(f); }}
+              onClick={() => document.getElementById('bank-statement-file-input')?.click()}
+            >
               <Upload size={32} className="mx-auto text-slate-400 mb-4" />
               <p className="text-sm font-bold text-slate-900 dark:text-white mb-2">Drop your bank statement file here</p>
-              <p className="text-[10px] text-slate-500 font-medium mb-4">Supports CSV, OFX, QFX, PDF formats</p>
-              <button className={button.primary}>
+              <p className="text-[10px] text-slate-500 font-medium mb-4">Supports CSV, OFX, QFX formats</p>
+              <input
+                id="bank-statement-file-input"
+                type="file"
+                accept=".csv,.ofx,.qfx,.txt"
+                className="hidden"
+                onChange={e => setImportFile(e.target.files?.[0] || null)}
+              />
+              <button
+                onClick={(e) => { e.stopPropagation(); document.getElementById('bank-statement-file-input')?.click(); }}
+                className={button.primary}
+              >
                 Browse Files
+              </button>
+            </div>
+            <div className="flex justify-end">
+              <button
+                onClick={handleImportStatement}
+                disabled={importing || !importFile || !importBankAccountId}
+                className={button.primary + ' disabled:opacity-50'}
+              >
+                {importing ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />}
+                {importing ? 'Importing…' : 'Import Statement'}
               </button>
             </div>
           </div>
@@ -509,7 +790,7 @@ const BankReconciliation = () => {
           </button>
         ))}
         <div className="ml-auto">
-          <button className={button.primary + ' text-xs'}>
+          <button onClick={handleAutoMatchAll} className={button.primary + ' text-xs'}>
             <RefreshCw size={12} /> Auto-Match All
           </button>
         </div>
@@ -583,7 +864,7 @@ const BankReconciliation = () => {
             render: (item: StatementLine) => (
               <div className="flex justify-center gap-1">
                 {item.status !== 'Matched' && (
-                  <button className={button.ghost} title="Match to ledger">
+                  <button onClick={() => handleManualMatch(item.id)} className={button.ghost} title="Match to ledger">
                     <ArrowRight size={14} />
                   </button>
                 )}
@@ -661,7 +942,7 @@ const BankReconciliation = () => {
           bodyClassName="divide-y divide-gray-100 dark:divide-slate-700"
         >
           <div className="px-4 py-3 border-b border-gray-100 dark:border-slate-700 flex items-center gap-2 overflow-x-auto">
-            {['All', 'Receipt', 'Payment', 'Transfer'].map(t => (
+            {['All', 'Receipt', 'Payment', 'Transfer', 'Electronic Payment', 'Bank Transfer', 'Bank Charges', 'Interest Income'].map(t => (
               <button key={t} onClick={() => setCashTxTypeFilter(t)}
                 className={`px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-widest transition whitespace-nowrap ${
                   cashTxTypeFilter === t
@@ -674,8 +955,21 @@ const BankReconciliation = () => {
           </div>
           <div className="divide-y divide-gray-100 dark:divide-slate-700">
             {filteredCashTransactions.slice(0, 10).map((tx) => {
-              const TxIcon = tx.type === 'Receipt' ? HandCoins : tx.type === 'Payment' ? ArrowRightLeft : ArrowRight;
-              const iconTone = tx.type === 'Receipt' ? 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600' : tx.type === 'Payment' ? 'bg-rose-50 dark:bg-rose-500/10 text-rose-600' : 'bg-blue-50 dark:bg-blue-500/10 text-blue-600';
+              const TxIcon =
+                tx.type === 'Receipt' ? HandCoins :
+                tx.type === 'Payment' ? ArrowRightLeft :
+                tx.type === 'Electronic Payment' ? Send :
+                tx.type === 'Bank Transfer' ? Building2 :
+                tx.type === 'Bank Charges' ? Receipt :
+                tx.type === 'Interest Income' ? Percent :
+                ArrowRight;
+              const iconTone =
+                tx.type === 'Receipt' ? 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600' :
+                tx.type === 'Interest Income' ? 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600' :
+                tx.type === 'Payment' ? 'bg-rose-50 dark:bg-rose-500/10 text-rose-600' :
+                tx.type === 'Electronic Payment' ? 'bg-rose-50 dark:bg-rose-500/10 text-rose-600' :
+                tx.type === 'Bank Charges' ? 'bg-rose-50 dark:bg-rose-500/10 text-rose-600' :
+                'bg-blue-50 dark:bg-blue-500/10 text-blue-600';
               return (
                 <div key={tx.id} className="px-4 py-3 flex items-center justify-between hover:bg-slate-50 dark:hover:bg-slate-800/40 transition">
                   <div className="flex items-center gap-3">
@@ -702,7 +996,7 @@ const BankReconciliation = () => {
 
       <SectionCard
         title="Cash Management Actions"
-        subtitle="Record cash movements and replenish floats"
+        subtitle="Record cash movements, bank operations, and replenish floats"
         icon={Coins}
       >
         <div className="flex flex-wrap gap-2">
@@ -718,6 +1012,18 @@ const BankReconciliation = () => {
           <button onClick={() => openCashModal('replenish')} className={button.secondary + ' text-xs'}>
             <Coins size={12} /> Replenish Petty Cash
           </button>
+          <button onClick={() => openCashModal('electronic_payment')} className={button.secondary + ' text-xs'}>
+            <Send size={12} /> Electronic Payment
+          </button>
+          <button onClick={() => openCashModal('bank_transfer')} className={button.secondary + ' text-xs'}>
+            <Building2 size={12} /> Bank Transfer
+          </button>
+          <button onClick={() => openCashModal('bank_charges')} className={button.secondary + ' text-xs'}>
+            <Receipt size={12} /> Bank Charges
+          </button>
+          <button onClick={() => openCashModal('interest_income')} className={button.secondary + ' text-xs'}>
+            <Percent size={12} /> Interest Income
+          </button>
         </div>
       </SectionCard>
 
@@ -730,9 +1036,13 @@ const BankReconciliation = () => {
           cashModal.type === 'receipt' ? 'Record Cash Receipt' :
           cashModal.type === 'payment' ? 'Record Cash Payment' :
           cashModal.type === 'transfer' ? 'Cash Transfer' :
-          'Replenish Petty Cash'
+          cashModal.type === 'replenish' ? 'Replenish Petty Cash' :
+          cashModal.type === 'electronic_payment' ? 'Electronic Payment' :
+          cashModal.type === 'bank_transfer' ? 'Bank Transfer' :
+          cashModal.type === 'bank_charges' ? 'Bank Charges' :
+          'Interest Income'
         }
-        subtitle="Record a cash movement"
+        subtitle="Record a cash or bank movement"
         variant="form"
         size="md"
         loading={cashModal.saving}
@@ -800,6 +1110,151 @@ const BankReconciliation = () => {
                 <p className="text-xs text-amber-500 mt-1">No petty cash floats available. Create one first.</p>
               )}
             </div>
+          ) : cashModal.type === 'electronic_payment' ? (
+            <>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Bank Account *</label>
+                <select
+                  value={cashForm.bankAccountId}
+                  onChange={e => setCashForm({ ...cashForm, bankAccountId: e.target.value })}
+                  className="w-full px-3 py-2 text-sm border border-gray-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-gray-900 dark:text-white"
+                >
+                  <option value="">Select a bank account…</option>
+                  {bankAccounts.map(b => (
+                    <option key={b.id} value={b.id}>
+                      {b.account_name} ({b.account_number})
+                    </option>
+                  ))}
+                </select>
+                {bankAccounts.length === 0 && (
+                  <p className="text-xs text-amber-500 mt-1">No bank accounts available. Create one in the Overview tab.</p>
+                )}
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Recipient</label>
+                <input
+                  type="text"
+                  value={cashForm.recipient}
+                  onChange={e => setCashForm({ ...cashForm, recipient: e.target.value })}
+                  className="w-full px-3 py-2 text-sm border border-gray-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-gray-900 dark:text-white"
+                  placeholder="Payee / beneficiary name"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Payment Method</label>
+                <select
+                  value={cashForm.paymentMethod}
+                  onChange={e => setCashForm({ ...cashForm, paymentMethod: e.target.value })}
+                  className="w-full px-3 py-2 text-sm border border-gray-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-gray-900 dark:text-white"
+                >
+                  <option value="Wire">Wire</option>
+                  <option value="ACH">ACH</option>
+                  <option value="RTGS">RTGS</option>
+                  <option value="SWIFT">SWIFT</option>
+                </select>
+              </div>
+            </>
+          ) : cashModal.type === 'bank_transfer' ? (
+            <>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">From Account *</label>
+                <select
+                  value={cashForm.fromBankAccount}
+                  onChange={e => setCashForm({ ...cashForm, fromBankAccount: e.target.value })}
+                  className="w-full px-3 py-2 text-sm border border-gray-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-gray-900 dark:text-white"
+                >
+                  <option value="">Select source account…</option>
+                  {bankAccounts.map(b => (
+                    <option key={b.id} value={b.id}>
+                      {b.account_name} ({b.account_number}) — {fmt(b.balance)}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">To Account *</label>
+                <select
+                  value={cashForm.toBankAccount}
+                  onChange={e => setCashForm({ ...cashForm, toBankAccount: e.target.value })}
+                  className="w-full px-3 py-2 text-sm border border-gray-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-gray-900 dark:text-white"
+                >
+                  <option value="">Select destination account…</option>
+                  {bankAccounts.map(b => (
+                    <option key={b.id} value={b.id}>
+                      {b.account_name} ({b.account_number}) — {fmt(b.balance)}
+                    </option>
+                  ))}
+                </select>
+                {bankAccounts.length < 2 && (
+                  <p className="text-xs text-amber-500 mt-1">At least two bank accounts are required for a transfer.</p>
+                )}
+              </div>
+            </>
+          ) : cashModal.type === 'bank_charges' ? (
+            <>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Bank Account *</label>
+                <select
+                  value={cashForm.bankAccountId}
+                  onChange={e => setCashForm({ ...cashForm, bankAccountId: e.target.value })}
+                  className="w-full px-3 py-2 text-sm border border-gray-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-gray-900 dark:text-white"
+                >
+                  <option value="">Select a bank account…</option>
+                  {bankAccounts.map(b => (
+                    <option key={b.id} value={b.id}>
+                      {b.account_name} ({b.account_number})
+                    </option>
+                  ))}
+                </select>
+                {bankAccounts.length === 0 && (
+                  <p className="text-xs text-amber-500 mt-1">No bank accounts available. Create one in the Overview tab.</p>
+                )}
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Charge Type</label>
+                <select
+                  value={cashForm.chargeType}
+                  onChange={e => setCashForm({ ...cashForm, chargeType: e.target.value })}
+                  className="w-full px-3 py-2 text-sm border border-gray-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-gray-900 dark:text-white"
+                >
+                  <option value="Monthly Fee">Monthly Fee</option>
+                  <option value="Transaction Fee">Transaction Fee</option>
+                  <option value="Wire Fee">Wire Fee</option>
+                  <option value="Other">Other</option>
+                </select>
+              </div>
+            </>
+          ) : cashModal.type === 'interest_income' ? (
+            <>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Bank Account *</label>
+                <select
+                  value={cashForm.bankAccountId}
+                  onChange={e => setCashForm({ ...cashForm, bankAccountId: e.target.value })}
+                  className="w-full px-3 py-2 text-sm border border-gray-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-gray-900 dark:text-white"
+                >
+                  <option value="">Select a bank account…</option>
+                  {bankAccounts.map(b => (
+                    <option key={b.id} value={b.id}>
+                      {b.account_name} ({b.account_number})
+                    </option>
+                  ))}
+                </select>
+                {bankAccounts.length === 0 && (
+                  <p className="text-xs text-amber-500 mt-1">No bank accounts available. Create one in the Overview tab.</p>
+                )}
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Period</label>
+                <input
+                  type="text"
+                  value={cashForm.interestPeriod}
+                  onChange={e => setCashForm({ ...cashForm, interestPeriod: e.target.value })}
+                  className="w-full px-3 py-2 text-sm border border-gray-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-gray-900 dark:text-white"
+                  placeholder="e.g. June 2024"
+                />
+              </div>
+            </>
           ) : (
             <div>
               <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Department</label>
@@ -955,10 +1410,10 @@ const BankReconciliation = () => {
                 <ShieldCheck size={14} />
                 <span>Ready to finalize when all checklist items pass.</span>
               </div>
-              <button className={button.primary + ' w-full justify-center'}>
+              <button onClick={handleFinalizeReconciliation} className={button.primary + ' w-full justify-center'}>
                 <CheckCircle2 size={14} /> Finalize Reconciliation
               </button>
-              <button className={button.secondary + ' w-full justify-center'}>
+              <button onClick={handleExport} className={button.secondary + ' w-full justify-center'}>
                 <Download size={14} /> Export Report
               </button>
             </div>
@@ -1058,7 +1513,7 @@ const BankReconciliation = () => {
               {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
               Refresh
             </button>
-            <button className={button.primary}>
+            <button onClick={handleExport} className={button.primary}>
               <Download className="w-4 h-4" /> Export
             </button>
             {activeTab === 'overview' && (

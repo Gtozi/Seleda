@@ -16,11 +16,46 @@ router.get('/', authenticate, async (_req, res) => {
   res.json({ channels: data });
 });
 
+// Create a channel connection. Body uses snake_case keys (admin ResourceManager
+// sends snakeBody). test_mode defaults to true so a manually registered channel
+// uses the simulated adapter until real credentials are configured.
+router.post('/', authenticate, requirePermission('settings:update'), async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
+  const b = req.body || {};
+  if (!b.channel_name || !b.channel_code) {
+    return res.status(400).json({ error: 'channel_name and channel_code are required' });
+  }
+  const credentials = (b.credentials && typeof b.credentials === 'object' && !Array.isArray(b.credentials))
+    ? Object.fromEntries(Object.entries(b.credentials).filter(([, v]) => v !== undefined && v !== null && v !== ''))
+    : {};
+  const settings = (b.settings && typeof b.settings === 'object' && !Array.isArray(b.settings)) ? b.settings : {};
+  const { data, error } = await supabaseAdmin.from('channel_connections').insert({
+    property_id: b.property_id || req.user?.propertyId || null,
+    channel_name: b.channel_name,
+    channel_code: String(b.channel_code).toUpperCase(),
+    channel_type: b.channel_type || 'ota',
+    api_endpoint: b.api_endpoint || null,
+    api_version: b.api_version || null,
+    credentials,
+    webhook_url: b.webhook_url || null,
+    sync_interval_minutes: b.sync_interval_minutes || 30,
+    rate_parity_enabled: b.rate_parity_enabled !== false,
+    rate_parity_threshold: b.rate_parity_threshold ?? 5,
+    inventory_sync_enabled: b.inventory_sync_enabled !== false,
+    booking_sync_enabled: b.booking_sync_enabled !== false,
+    active: b.active !== false,
+    test_mode: b.test_mode !== false,
+    settings,
+  }).select('*').single();
+  if (error) return res.status(500).json({ error: error.message });
+  res.status(201).json({ channel: data });
+});
+
 // Update channel connection (credentials, settings, active toggle)
 router.patch('/:id', authenticate, requirePermission('settings:update'), async (req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
   const { id } = req.params;
-  const allowedFields = ['credentials', 'active', 'test_mode', 'sync_interval_minutes', 'rate_parity_enabled', 'rate_parity_threshold', 'inventory_sync_enabled', 'booking_sync_enabled', 'settings', 'webhook_url'];
+  const allowedFields = ['credentials', 'active', 'test_mode', 'sync_interval_minutes', 'rate_parity_enabled', 'rate_parity_threshold', 'inventory_sync_enabled', 'booking_sync_enabled', 'settings', 'webhook_url', 'api_endpoint', 'api_version'];
   const updates: Record<string, any> = {};
   for (const field of allowedFields) {
     if (req.body[field] !== undefined) updates[field] = req.body[field];

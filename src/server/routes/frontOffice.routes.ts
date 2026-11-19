@@ -14,7 +14,7 @@ router.put('/rooms/:roomId/status', authenticate, requirePermission('front_offic
 
   try {
     const { roomId } = req.params;
-    const { status } = req.body;
+    const { status, cancel_reservations } = req.body;
 
     if (!status) {
       return res.status(400).json({ error: 'Status is required' });
@@ -31,6 +31,27 @@ router.put('/rooms/:roomId/status', authenticate, requirePermission('front_offic
       return res.status(500).json({ error: error.message });
     }
 
+    // Blocking / out-of-order optionally releases booked reservations on
+    // that room (front desk re-accommodates the guests afterwards).
+    let cancelledReservations = 0;
+    if (cancel_reservations === true) {
+      const { data: room } = await supabaseAdmin
+        .from('rooms').select('number').eq('id', roomId).maybeSingle();
+      if (room?.number) {
+        const { data: cancelled, error: cancelErr } = await supabaseAdmin
+          .from('reservations')
+          .update({ status: 'Cancelled' })
+          .eq('room_number', room.number)
+          .in('status', ['Confirmed', 'CheckedIn'])
+          .select('id');
+        if (cancelErr) {
+          console.error('Reservation cancel error:', cancelErr);
+        } else {
+          cancelledReservations = (cancelled || []).length;
+        }
+      }
+    }
+
     // Write audit event
     writeAuditEvent({
       req,
@@ -45,7 +66,7 @@ router.put('/rooms/:roomId/status', authenticate, requirePermission('front_offic
       console.error('Failed to write audit event:', err);
     });
 
-    res.json({ success: true, message: 'Room status updated successfully' });
+    res.json({ success: true, message: 'Room status updated successfully', cancelledReservations });
   } catch (error) {
     console.error('Error in room status update:', error);
     res.status(500).json({ error: 'Failed to update room status' });
@@ -96,7 +117,7 @@ router.put('/rooms/:roomId/features', authenticate, requirePermission('front_off
 });
 
 // ── Public Test Endpoint (No Auth Required) ───────────────────────
-router.get('/test-connection', async (req, res) => {
+router.get('/test-connection', async (_req, res) => {
   try {
     if (!hasSupabaseAdminConfig || !supabaseAdmin) {
       return res.status(503).json({ error: 'Database not configured' });
@@ -125,12 +146,35 @@ router.get('/test-connection', async (req, res) => {
 // ── Dashboard ──────────────────────────────────────────────────────
 
 // Dashboard KPIs and metrics
-router.get('/dashboard/kpis', authenticate, requirePermission('front_office:view'), async (req, res) => {
+router.get('/dashboard/kpis', authenticate, requirePermission('front_office:view'), async (_req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
 
   try {
-    // Get today's date for calculations
-    const today = new Date().toISOString().split('T')[0];
+    // Use the hotel's business date (from the business_dates table) as the
+    // operational "today". This is the same date the night audit and check-in
+    // validation use. Falling back to UTC date (new Date().toISOString()) can
+    // be wrong for hotels in timezones ahead/behind UTC, especially late at
+    // night or early morning.
+    //
+    // Staleness guard: if the business date is more than 1 day behind the
+    // actual calendar date (i.e. night audit hasn't been run), fall back to
+    // today's date so the dashboard doesn't show empty data from weeks ago.
+    const { data: businessDateRow } = await supabaseAdmin
+      .from('business_dates')
+      .select('business_date')
+      .eq('id', 'current')
+      .maybeSingle();
+    const realToday = new Date().toISOString().split('T')[0];
+    let today = businessDateRow?.business_date || realToday;
+    if (businessDateRow?.business_date) {
+      const bizDate = new Date(businessDateRow.business_date);
+      const now = new Date(realToday);
+      const diffDays = (now.getTime() - bizDate.getTime()) / (1000 * 60 * 60 * 24);
+      if (diffDays > 1) {
+        console.warn(`[Dashboard KPIs] Business date (${businessDateRow.business_date}) is ${diffDays.toFixed(0)} days stale — falling back to ${realToday}. Night audit may not have been run.`);
+        today = realToday;
+      }
+    }
 
     // Fetch ALL rooms (no status filter — totalRooms must reflect every room).
     // Canonical statuses: 'Vacant Clean', 'Vacant Dirty', 'Occupied Clean',
@@ -153,21 +197,67 @@ router.get('/dashboard/kpis', authenticate, requirePermission('front_office:view
 
     // Fetch today's arrivals and departures.
     // Reservation statuses are CamelCase: 'Confirmed', 'CheckedIn', 'CheckedOut'.
-    const { data: reservations, error: reservationsError } = await supabaseAdmin
+    // We fetch by check_in_date = today OR check_out_date = today, PLUS any
+    // CheckedOut reservations updated today (to catch early check-outs whose
+    // scheduled check_out_date is in the future but who already left today).
+    const { data: scheduledRes, error: reservationsError } = await supabaseAdmin
       .from('reservations')
-      .select('id, check_in_date, check_out_date, status, guest_id')
+      .select('id, check_in_date, check_out_date, status, guest_id, updated_at')
       .or(`check_in_date.eq.${today},check_out_date.eq.${today}`)
       .in('status', ['Confirmed', 'CheckedIn', 'CheckedOut']);
+
+    // Separately fetch early check-outs: CheckedOut today but check_out_date != today.
+    const { data: earlyCheckouts, error: earlyCheckoutError } = await supabaseAdmin
+      .from('reservations')
+      .select('id, check_in_date, check_out_date, status, guest_id, updated_at')
+      .eq('status', 'CheckedOut')
+      .gte('updated_at', today)
+      .lt('updated_at', today + 'T23:59:59.999Z')
+      .neq('check_out_date', today);
 
     if (reservationsError) {
       console.error('[Dashboard KPIs] Reservations error:', reservationsError);
       return res.status(500).json({ error: reservationsError.message, details: 'Failed to fetch reservations' });
     }
+    if (earlyCheckoutError) {
+      console.error('[Dashboard KPIs] Early checkouts error:', earlyCheckoutError);
+    }
 
-    const arrivalsToday = reservations?.filter(r => r.check_in_date === today && r.status === 'Confirmed').length || 0;
-    const departuresToday = reservations?.filter(r => r.check_out_date === today && r.status === 'CheckedIn').length || 0;
-    const expectedCheckins = reservations?.filter(r => r.check_in_date === today).length || 0;
-    const expectedCheckouts = reservations?.filter(r => r.check_out_date === today).length || 0;
+    // Merge and deduplicate (a reservation could appear in both queries if
+    // it was checked out today AND has check_out_date = today).
+    const allReservations = [...(scheduledRes || []), ...(earlyCheckouts || [])];
+    const seenIds = new Set<string>();
+    const reservations = allReservations.filter((r: any) => {
+      if (seenIds.has(r.id)) return false;
+      seenIds.add(r.id);
+      return true;
+    });
+
+    // ── KPI definitions (hotel-industry standard) ──────────────────────
+    // Arrivals Today     = ALL guests who arrived today (check_in_date = today,
+    //                       any status: Confirmed, CheckedIn, or CheckedOut
+    //                       for early check-outs).
+    // Departures Today   = ALL guests who departed today:
+    //                         - scheduled departures (check_out_date = today,
+    //                           status CheckedIn or CheckedOut)
+    //                         - early departures (status = CheckedOut AND
+    //                           updated_at is today, even if check_out_date
+    //                           is in the future)
+    // Expected Check-ins = arrivals who have NOT yet checked in (Confirmed only).
+    // Expected Check-outs= departures who have NOT yet checked out (CheckedIn
+    //                       with check_out_date = today).
+    const arrivalsToday = reservations.filter((r: any) => r.check_in_date === today).length;
+    const departuresToday = reservations.filter((r: any) => {
+      if (r.check_out_date === today && (r.status === 'CheckedIn' || r.status === 'CheckedOut')) return true;
+      // Early check-out: already CheckedOut today but scheduled for a future date
+      if (r.status === 'CheckedOut' && r.check_out_date !== today) {
+        const updatedDate = r.updated_at ? new Date(r.updated_at).toISOString().split('T')[0] : null;
+        return updatedDate === today;
+      }
+      return false;
+    }).length;
+    const expectedCheckins = reservations.filter((r: any) => r.check_in_date === today && r.status === 'Confirmed').length;
+    const expectedCheckouts = reservations.filter((r: any) => r.check_out_date === today && r.status === 'CheckedIn').length;
 
     // Stayovers = in-house guests whose stay spans today (neither arriving nor departing today).
     // Fetched separately because the query above only returns today's arrivals/departures.
@@ -182,6 +272,68 @@ router.get('/dashboard/kpis', authenticate, requirePermission('front_office:view
       console.error('[Dashboard KPIs] Stayovers error:', stayoverError);
     }
     const stayovers = stayoverRes?.length || 0;
+
+    // ── Additional operational KPIs ───────────────────────────────────
+    // Cancellations and no-shows today (check_in_date = today).
+    const { data: cancelledRes, error: cancelledError } = await supabaseAdmin
+      .from('reservations')
+      .select('id, status, check_in_date')
+      .eq('check_in_date', today)
+      .in('status', ['Cancelled', 'NoShow']);
+
+    if (cancelledError) {
+      console.error('[Dashboard KPIs] Cancelled/NoShow error:', cancelledError);
+    }
+    const cancellationsToday = cancelledRes?.filter((r: any) => r.status === 'Cancelled').length || 0;
+    const noShowsToday = cancelledRes?.filter((r: any) => r.status === 'NoShow').length || 0;
+
+    // Late check-out requests for today (guests still CheckedIn with
+    // late_check_out_requested = true and check_out_date = today).
+    const { data: lateCheckoutRes, error: lateCheckoutError } = await supabaseAdmin
+      .from('reservations')
+      .select('id, late_check_out_requested, check_out_date, status, guest_name, room_number')
+      .eq('check_out_date', today)
+      .eq('status', 'CheckedIn')
+      .eq('late_check_out_requested', true);
+
+    if (lateCheckoutError) {
+      console.error('[Dashboard KPIs] Late checkout error:', lateCheckoutError);
+    }
+    const lateCheckouts = lateCheckoutRes?.length || 0;
+
+    // Group arrivals today (is_group = true, check_in_date = today).
+    const groupArrivalsToday = reservations.filter(
+      (r: any) => r.check_in_date === today && (r as any).is_group === true
+    ).length;
+
+    // Adults & children currently in-house (CheckedIn reservations).
+    const { data: inHouseGuests, error: inHouseError } = await supabaseAdmin
+      .from('reservations')
+      .select('id, adults, children, status')
+      .eq('status', 'CheckedIn');
+
+    if (inHouseError) {
+      console.error('[Dashboard KPIs] In-house guests error:', inHouseError);
+    }
+    const adultsInHouse = inHouseGuests?.reduce((sum, r) => sum + (r.adults || 0), 0) || 0;
+    const childrenInHouse = inHouseGuests?.reduce((sum, r) => sum + (r.children || 0), 0) || 0;
+
+    // Dirty rooms (Vacant Dirty — rooms needing turnover before arrivals).
+    const dirtyRooms = rooms?.filter(r => r.status === 'Vacant Dirty').length || 0;
+
+    // Pending guest requests (not yet completed).
+    let pendingRequests = 0;
+    try {
+      const { count, error: reqError } = await supabaseAdmin
+        .from('guest_requests')
+        .select('id', { count: 'exact', head: true })
+        .neq('status', 'Completed')
+        .neq('status', 'Cancelled');
+      if (!reqError) pendingRequests = count || 0;
+    } catch (e) {
+      // guest_requests table may not exist in all environments
+      console.error('[Dashboard KPIs] Guest requests error:', e);
+    }
 
     // Fetch revenue data (simplified - in production would aggregate from folios)
     const { data: folios, error: foliosError } = await supabaseAdmin
@@ -214,6 +366,16 @@ router.get('/dashboard/kpis', authenticate, requirePermission('front_office:view
         { title: 'Available Rooms', value: availableRooms, icon: 'Home', color: 'green' },
         { title: 'Out of Order', value: outOfOrder, icon: 'Wrench', color: 'yellow' },
         { title: 'Out of Service', value: outOfService, icon: 'XCircle', color: 'gray' },
+        // ── Additional operational KPIs ──
+        { title: 'In-house Guests', value: occupiedRooms, icon: 'Users', color: 'blue' },
+        { title: 'Adults in House', value: adultsInHouse, icon: 'UserCheck', color: 'cyan' },
+        { title: 'Children in House', value: childrenInHouse, icon: 'Heart', color: 'rose' },
+        { title: 'Cancellations Today', value: cancellationsToday, icon: 'XCircle', color: 'red' },
+        { title: 'No-shows Today', value: noShowsToday, icon: 'UserX', color: 'orange' },
+        { title: 'Late Check-outs', value: lateCheckouts, icon: 'Clock', color: 'amber' },
+        { title: 'Group Arrivals', value: groupArrivalsToday, icon: 'Users', color: 'teal' },
+        { title: 'Dirty Rooms', value: dirtyRooms, icon: 'Wrench', color: 'yellow' },
+        { title: 'Pending Requests', value: pendingRequests, icon: 'Bell', color: 'purple' },
       ],
       lastUpdated: new Date().toISOString()
     });
@@ -223,106 +385,507 @@ router.get('/dashboard/kpis', authenticate, requirePermission('front_office:view
   }
 });
 
-// ── Alerts ─────────────────────────────────────────────────────────
+// ── Weekly Trends (occupancy + revenue + booking sources) ───────────
 
-// Get operational alerts
-router.get('/alerts', authenticate, requirePermission('front_office:view'), async (req, res) => {
+// Returns the last 7 days of occupancy %, revenue, and arrival counts,
+// plus a breakdown of booking sources (channels) for the same period.
+// Used by the Front Office Dashboard's "Weekly Trends" and "Booking Sources"
+// sections. All dates use the hotel business date with a staleness guard.
+router.get('/dashboard/weekly-trends', authenticate, requirePermission('front_office:view'), async (_req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
 
   try {
-    const today = new Date().toISOString().split('T')[0];
+    // Resolve the reference "today" for the trend window.
+    // Unlike the KPIs endpoint (which falls back to the real calendar date
+    // when the business date is stale), trends are HISTORICAL analysis — we
+    // want the 7-day window to cover the period where operational data
+    // actually exists. So we anchor to the LATEST data date, which is the
+    // max of: business_date, latest reservation check_in_date, and latest
+    // folio created_at. This ensures trends always show real data instead
+    // of an empty window when the business date is stale (e.g. night audit
+    // hasn't been run, or a demo/dev environment with static data).
+    const { data: businessDateRow } = await supabaseAdmin
+      .from('business_dates')
+      .select('business_date')
+      .eq('id', 'current')
+      .maybeSingle();
+    const realToday = new Date().toISOString().split('T')[0];
 
-    // Fetch VIP guests arriving today
-    const { data: vipGuests } = await supabaseAdmin
+    // Find the latest reservation check_in_date — only count reservations
+    // that have actually been checked in (excludes future Confirmed bookings
+    // which would anchor the window past the real operational data).
+    const { data: latestRes } = await supabaseAdmin
       .from('reservations')
-      .select(`
-        id,
-        check_in_date,
-        guests!inner(id, first_name, last_name, vip_status)
-      `)
+      .select('check_in_date')
+      .in('status', ['CheckedIn', 'CheckedOut'])
+      .order('check_in_date', { ascending: false })
+      .limit(1);
+
+    // Find the latest folio created_at.
+    const { data: latestFolio } = await supabaseAdmin
+      .from('folios')
+      .select('created_at')
+      .order('created_at', { ascending: false })
+      .limit(1);
+
+    // Compute the reference date = max(business_date, latest check_in_date, latest folio date).
+    // We do NOT include realToday as a candidate — if the business date is stale,
+    // realToday would always win and produce an empty window. Instead, we anchor
+    // to where operational data actually exists, only falling back to realToday
+    // if there is no data at all (fresh database).
+    const candidateDates: string[] = [];
+    if (businessDateRow?.business_date) candidateDates.push(businessDateRow.business_date);
+    if (latestRes?.[0]?.check_in_date) candidateDates.push(latestRes[0].check_in_date);
+    if (latestFolio?.[0]?.created_at) {
+      candidateDates.push(new Date(latestFolio[0].created_at).toISOString().split('T')[0]);
+    }
+    // Use the latest candidate date, but never go beyond real today.
+    const validDates = candidateDates.filter(d => d <= realToday);
+    const today = validDates.length > 0
+      ? validDates.sort().reverse()[0]
+      : realToday;
+
+    // Build the 7-day window (6 days ago through today).
+    const todayDate = new Date(today);
+    const weekStart = new Date(todayDate);
+    weekStart.setDate(weekStart.getDate() - 6);
+    const weekStartStr = weekStart.toISOString().split('T')[0];
+
+    // Fetch total room count (for occupancy %).
+    const { data: roomsData, error: roomsError } = await supabaseAdmin
+      .from('rooms')
+      .select('id, status');
+    if (roomsError) return res.status(500).json({ error: roomsError.message });
+    const totalRooms = roomsData?.length || 0;
+
+    // Fetch reservations that checked in within the last 7 days.
+    // We use check_in_date to bucket arrivals per day. room_type is included
+    // so we can also build a "top room types" breakdown for the same window.
+    const { data: weekReservations, error: resError } = await supabaseAdmin
+      .from('reservations')
+      .select('id, check_in_date, check_out_date, status, channel, total_amount, room_type')
+      .gte('check_in_date', weekStartStr)
+      .lte('check_in_date', today)
+      .in('status', ['Confirmed', 'CheckedIn', 'CheckedOut']);
+
+    if (resError) {
+      console.error('[Weekly Trends] Reservations error:', resError);
+      return res.status(500).json({ error: resError.message });
+    }
+
+    // Fetch folios created in the last 7 days for revenue.
+    const { data: weekFolios, error: foliosError } = await supabaseAdmin
+      .from('folios')
+      .select('total_charges, created_at')
+      .gte('created_at', weekStartStr);
+
+    if (foliosError) {
+      console.error('[Weekly Trends] Folios error:', foliosError);
+    }
+
+    // Fetch reservations that were in-house on each day of the week for
+    // occupancy. A reservation is in-house on day D if check_in_date <= D
+    // AND check_out_date > D AND status is CheckedIn (or was CheckedIn at
+    // some point). We approximate by fetching all reservations whose stay
+    // overlaps the 7-day window and computing per-day occupancy in JS.
+    const { data: overlappingRes, error: overlapError } = await supabaseAdmin
+      .from('reservations')
+      .select('id, check_in_date, check_out_date, status')
+      .lte('check_in_date', today)
+      .gte('check_out_date', weekStartStr)
+      .in('status', ['CheckedIn', 'CheckedOut']);
+
+    if (overlapError) {
+      console.error('[Weekly Trends] Overlap error:', overlapError);
+    }
+
+    // ── Build per-day buckets ────────────────────────────────────────
+    const days: { date: string; label: string; occupancy: number; revenue: number; arrivals: number }[] = [];
+    const dayLabels = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date(todayDate);
+      d.setDate(d.getDate() - i);
+      const dateStr = d.toISOString().split('T')[0];
+      const label = dayLabels[d.getDay()];
+
+      // Occupancy: count reservations in-house on this day.
+      // In-house means check_in_date <= dateStr AND check_out_date > dateStr
+      // AND status is CheckedIn or CheckedOut (was occupied at some point).
+      const inHouse = (overlappingRes || []).filter((r: any) =>
+        r.check_in_date <= dateStr && r.check_out_date > dateStr &&
+        (r.status === 'CheckedIn' || r.status === 'CheckedOut')
+      ).length;
+      const occupancy = totalRooms > 0 ? Math.round((inHouse / totalRooms) * 100) : 0;
+
+      // Revenue: sum folio total_charges created on this day.
+      const revenue = (weekFolios || [])
+        .filter((f: any) => {
+          if (!f.created_at) return false;
+          const fDate = new Date(f.created_at).toISOString().split('T')[0];
+          return fDate === dateStr;
+        })
+        .reduce((sum: number, f: any) => sum + (f.total_charges || 0), 0);
+
+      // Arrivals: reservations with check_in_date = this day.
+      const arrivals = (weekReservations || []).filter((r: any) => r.check_in_date === dateStr).length;
+
+      days.push({ date: dateStr, label, occupancy, revenue: Math.round(revenue), arrivals });
+    }
+
+    // ── Booking sources breakdown ────────────────────────────────────
+    // Group reservations by channel for the 7-day window.
+    const channelMap = new Map<string, { count: number; revenue: number }>();
+    for (const r of (weekReservations || [])) {
+      const channel = r.channel || 'Unknown';
+      const existing = channelMap.get(channel) || { count: 0, revenue: 0 };
+      existing.count += 1;
+      existing.revenue += Number(r.total_amount || 0);
+      channelMap.set(channel, existing);
+    }
+    const sources = Array.from(channelMap.entries())
+      .map(([channel, data]) => ({ channel, count: data.count, revenue: Math.round(data.revenue) }))
+      .sort((a, b) => b.count - a.count);
+
+    // ── Top room types breakdown ─────────────────────────────────────
+    // Group the same 7-day reservations by room_type, counting bookings and
+    // summing revenue. Used by the dashboard's "Top Room Types" widget to
+    // show which room categories are driving the most business this week.
+    const roomTypeMap = new Map<string, { count: number; revenue: number }>();
+    for (const r of (weekReservations || [])) {
+      const rt = r.room_type || 'Unassigned';
+      const existing = roomTypeMap.get(rt) || { count: 0, revenue: 0 };
+      existing.count += 1;
+      existing.revenue += Number(r.total_amount || 0);
+      roomTypeMap.set(rt, existing);
+    }
+    const roomTypes = Array.from(roomTypeMap.entries())
+      .map(([roomType, data]) => ({ roomType, count: data.count, revenue: Math.round(data.revenue) }))
+      .sort((a, b) => b.count - a.count);
+
+    const totalArrivals = days.reduce((sum, d) => sum + d.arrivals, 0);
+    const totalRevenue = days.reduce((sum, d) => sum + d.revenue, 0);
+    const avgOccupancy = days.length > 0 ? Math.round(days.reduce((sum, d) => sum + d.occupancy, 0) / days.length) : 0;
+
+    res.json({
+      days,
+      sources,
+      roomTypes,
+      summary: {
+        totalArrivals,
+        totalRevenue,
+        avgOccupancy,
+        totalRooms,
+      },
+    });
+  } catch (error) {
+    console.error('[Weekly Trends] Unexpected error:', error);
+    res.status(500).json({ error: 'Failed to fetch weekly trends', details: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+// ── Alerts ─────────────────────────────────────────────────────────
+
+// Get operational alerts
+// Generates real-time operational alerts from live database data.
+// Alert types: vip, no-show, overbooking, high-balance, late-checkout,
+// room-assignment, unpaid-arrival, pending-request, dirty-rooms-blocking,
+// long-stay, group-arrival.
+router.get('/alerts', authenticate, requirePermission('front_office:view'), async (_req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
+
+  try {
+    // Resolve "today" — business date with staleness guard (same as KPIs).
+    const { data: businessDateRow } = await supabaseAdmin
+      .from('business_dates')
+      .select('business_date')
+      .eq('id', 'current')
+      .maybeSingle();
+    const realToday = new Date().toISOString().split('T')[0];
+    let today = businessDateRow?.business_date || realToday;
+    if (businessDateRow?.business_date) {
+      const bizDate = new Date(businessDateRow.business_date);
+      const now = new Date(realToday);
+      const diffDays = (now.getTime() - bizDate.getTime()) / (1000 * 60 * 60 * 24);
+      if (diffDays > 1) today = realToday;
+    }
+
+    const alerts: any[] = [];
+    const now = new Date();
+    const timeStr = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+
+    // ── 1. VIP guests arriving today ──────────────────────────────────
+    // guests.status = 'VIP' OR reservations.guest_status = 'VIP'
+    const { data: vipArrivals } = await supabaseAdmin
+      .from('reservations')
+      .select('id, guest_name, guest_status, room_number, check_in_date, status, guest_id')
       .eq('check_in_date', today)
-      .eq('guests.vip_status', true)
-      .eq('status', 'confirmed');
+      .in('status', ['Confirmed', 'CheckedIn'])
+      .or('guest_status.eq.VIP');
 
-    // Fetch guests with birthdays today
-    const { data: birthdayGuests } = await supabaseAdmin
-      .from('guests')
-      .select('id, first_name, last_name, date_of_birth')
-      .not('date_of_birth', 'is', null);
+    // Also check guests table for VIP status (via guest_id join)
+    const vipGuestIds = (vipArrivals || []).map((r: any) => r.guest_id).filter(Boolean);
+    let vipGuestNames: Set<string> = new Set();
+    if (vipGuestIds.length > 0) {
+      const { data: vipGuests } = await supabaseAdmin
+        .from('guests')
+        .select('id, name, status')
+        .in('id', vipGuestIds)
+        .eq('status', 'VIP');
+      vipGuests?.forEach((g: any) => vipGuestNames.add(g.name));
+    }
 
-    const todayBirthday = birthdayGuests?.filter(g => {
-      if (!g.date_of_birth) return false;
-      const dob = new Date(g.date_of_birth);
-      return dob.getMonth() === new Date().getMonth() && dob.getDate() === new Date().getDate();
-    }) || [];
+    // Merge: alerts for guest_status=VIP on reservation OR guests.status=VIP
+    const seenVipIds = new Set<string>();
+    (vipArrivals || []).forEach((r: any) => {
+      if (seenVipIds.has(r.id)) return;
+      seenVipIds.add(r.id);
+      alerts.push({
+        id: `vip-${r.id}`,
+        type: 'vip',
+        message: 'VIP Guest arriving today',
+        guestName: r.guest_name || 'Unknown',
+        roomNumber: r.room_number || 'Unassigned',
+        time: timeStr,
+        priority: 'high'
+      });
+    });
 
-    // Fetch no-show reservations
+    // ── 2. No-show reservations (yesterday's Confirmed that never checked in) ──
     const yesterday = new Date();
     yesterday.setDate(yesterday.getDate() - 1);
     const yesterdayStr = yesterday.toISOString().split('T')[0];
 
     const { data: noShows } = await supabaseAdmin
       .from('reservations')
-      .select('id, guests!inner(id, first_name, last_name), check_in_date')
+      .select('id, guest_name, room_number, check_in_date, status')
       .eq('check_in_date', yesterdayStr)
-      .eq('status', 'confirmed');
+      .eq('status', 'Confirmed');
 
-    // Fetch high balance guests
-    const { data: highBalanceFolios } = await supabaseAdmin
-      .from('folios')
-      .select('id, total_amount, balance, reservations!inner(guests!inner(id, first_name, last_name))')
-      .gt('balance', 1000);
-
-    // Build alerts array
-    const alerts = [];
-
-    vipGuests?.forEach((reservation: any) => {
+    noShows?.forEach((r: any) => {
       alerts.push({
-        id: `vip-${reservation.id}`,
-        type: 'vip',
-        message: 'VIP Guest arriving today',
-        guestName: `${reservation.guests.first_name} ${reservation.guests.last_name}`,
-        roomNumber: 'Unassigned',
-        time: '14:00',
-        priority: 'high'
-      });
-    });
-
-    todayBirthday.forEach((guest: any) => {
-      alerts.push({
-        id: `birthday-${guest.id}`,
-        type: 'birthday',
-        message: 'Birthday guest staying',
-        guestName: `${guest.first_name} ${guest.last_name}`,
-        roomNumber: 'Unassigned',
-        time: 'Today',
-        priority: 'medium'
-      });
-    });
-
-    noShows?.forEach((reservation: any) => {
-      alerts.push({
-        id: `noshow-${reservation.id}`,
+        id: `noshow-${r.id}`,
         type: 'no-show',
-        message: 'No-show reservation',
-        guestName: `${reservation.guests.first_name} ${reservation.guests.last_name}`,
-        roomNumber: 'Unassigned',
+        message: 'No-show reservation from yesterday',
+        guestName: r.guest_name || 'Unknown',
+        roomNumber: r.room_number || 'Unassigned',
         time: 'Yesterday',
         priority: 'high'
       });
     });
 
-    highBalanceFolios?.forEach((folio: any) => {
+    // ── 3. High balance folios (balance > 1000) ───────────────────────
+    const { data: highBalanceFolios } = await supabaseAdmin
+      .from('folios')
+      .select('id, balance, reservation_id, status')
+      .gt('balance', 1000)
+      .eq('status', 'Open');
+
+    // Fetch guest names for these folios via reservation_id
+    const highBalanceResIds = (highBalanceFolios || []).map((f: any) => f.reservation_id).filter(Boolean);
+    let resNameMap: Record<string, { guestName: string; roomNumber: string }> = {};
+    if (highBalanceResIds.length > 0) {
+      const { data: hbRes } = await supabaseAdmin
+        .from('reservations')
+        .select('id, guest_name, room_number')
+        .in('id', highBalanceResIds);
+      hbRes?.forEach((r: any) => {
+        resNameMap[r.id] = { guestName: r.guest_name || 'Unknown', roomNumber: r.room_number || 'Unassigned' };
+      });
+    }
+
+    highBalanceFolios?.forEach((f: any) => {
+      const info = f.reservation_id ? resNameMap[f.reservation_id] : null;
       alerts.push({
-        id: `balance-${folio.id}`,
+        id: `balance-${f.id}`,
         type: 'high-balance',
-        message: 'High balance guest',
-        guestName: `${folio.reservations.guests.first_name} ${folio.reservations.guests.last_name}`,
-        roomNumber: 'Unassigned',
+        message: `High folio balance: $${Number(f.balance).toLocaleString()}`,
+        guestName: info?.guestName || 'Unknown',
+        roomNumber: info?.roomNumber || 'Unassigned',
         time: 'Outstanding',
         priority: 'high'
       });
     });
+
+    // ── 4. Overbooking risk (arrivals > available rooms) ──────────────
+    const { data: todayArrivals } = await supabaseAdmin
+      .from('reservations')
+      .select('id, guest_name, room_number, status')
+      .eq('check_in_date', today)
+      .in('status', ['Confirmed', 'CheckedIn']);
+
+    const { data: availRooms } = await supabaseAdmin
+      .from('rooms')
+      .select('id, status')
+      .in('status', ['Vacant Clean', 'Vacant Dirty']);
+
+    const pendingArrivals = (todayArrivals || []).filter((r: any) => r.status === 'Confirmed').length;
+    const availableRoomsCount = availRooms?.length || 0;
+
+    if (pendingArrivals > availableRoomsCount && pendingArrivals > 0) {
+      alerts.push({
+        id: `overbooking-${today}`,
+        type: 'overbooking',
+        message: `Overbooking risk: ${pendingArrivals} arrivals but only ${availableRoomsCount} rooms available`,
+        guestName: undefined,
+        roomNumber: undefined,
+        time: timeStr,
+        priority: 'high'
+      });
+    }
+
+    // ── 5. Late check-out requests (today's departures still CheckedIn) ──
+    const { data: lateCheckouts } = await supabaseAdmin
+      .from('reservations')
+      .select('id, guest_name, room_number, check_out_date, late_check_out_requested, status')
+      .eq('check_out_date', today)
+      .eq('status', 'CheckedIn')
+      .eq('late_check_out_requested', true);
+
+    lateCheckouts?.forEach((r: any) => {
+      alerts.push({
+        id: `late-checkout-${r.id}`,
+        type: 'late-checkout',
+        message: 'Late check-out requested',
+        guestName: r.guest_name || 'Unknown',
+        roomNumber: r.room_number || 'Unassigned',
+        time: timeStr,
+        priority: 'medium'
+      });
+    });
+
+    // ── 6. Room assignment pending (arrivals today without room_number) ──
+    const unassignedArrivals = (todayArrivals || []).filter(
+      (r: any) => r.status === 'Confirmed' && !r.room_number
+    );
+    unassignedArrivals.forEach((r: any) => {
+      alerts.push({
+        id: `room-assignment-${r.id}`,
+        type: 'room-assignment',
+        message: 'Arrival today — room not yet assigned',
+        guestName: r.guest_name || 'Unknown',
+        roomNumber: 'Unassigned',
+        time: timeStr,
+        priority: 'medium'
+      });
+    });
+
+    // ── 7. Unpaid arrivals (Confirmed, payment_status = Unpaid, arriving today) ──
+    const { data: unpaidArrivals } = await supabaseAdmin
+      .from('reservations')
+      .select('id, guest_name, room_number, payment_status, total_amount, deposit_amount')
+      .eq('check_in_date', today)
+      .eq('status', 'Confirmed')
+      .eq('payment_status', 'Unpaid');
+
+    unpaidArrivals?.forEach((r: any) => {
+      alerts.push({
+        id: `unpaid-arrival-${r.id}`,
+        type: 'unpaid-arrival',
+        message: `Unpaid reservation arriving today — $${Number(r.total_amount || 0).toLocaleString()}`,
+        guestName: r.guest_name || 'Unknown',
+        roomNumber: r.room_number || 'Unassigned',
+        time: timeStr,
+        priority: 'medium'
+      });
+    });
+
+    // ── 8. Pending guest requests (open requests assigned to front office) ──
+    try {
+      const { data: pendingReqs } = await supabaseAdmin
+        .from('guest_requests')
+        .select('id, request_number, guest_name, room_number, request_type, priority, status, submitted_at')
+        .neq('status', 'Completed')
+        .neq('status', 'Cancelled')
+        .order('submitted_at', { ascending: false })
+        .limit(10);
+
+      pendingReqs?.forEach((r: any) => {
+        alerts.push({
+          id: `pending-request-${r.id}`,
+          type: 'pending-request',
+          message: `Pending guest request: ${r.request_type || 'General'}`,
+          guestName: r.guest_name || 'Unknown',
+          roomNumber: r.room_number || 'N/A',
+          time: r.submitted_at ? new Date(r.submitted_at).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }) : 'Recently',
+          priority: r.priority === 'high' ? 'high' : r.priority === 'medium' ? 'medium' : 'low'
+        });
+      });
+    } catch (e) {
+      // guest_requests table may not exist
+      console.error('[Alerts] Guest requests error:', e);
+    }
+
+    // ── 9. Dirty rooms blocking arrivals (Vacant Dirty when arrivals pending) ──
+    const { data: dirtyRoomsData } = await supabaseAdmin
+      .from('rooms')
+      .select('id, number, status')
+      .eq('status', 'Vacant Dirty');
+
+    if (dirtyRoomsData && dirtyRoomsData.length > 0 && pendingArrivals > 0) {
+      alerts.push({
+        id: `dirty-rooms-blocking-${today}`,
+        type: 'dirty-rooms-blocking',
+        message: `${dirtyRoomsData.length} dirty room(s) need turnover for ${pendingArrivals} pending arrival(s)`,
+        guestName: undefined,
+        roomNumber: dirtyRoomsData.slice(0, 5).map((r: any) => r.number).join(', ') + (dirtyRoomsData.length > 5 ? '...' : ''),
+        time: timeStr,
+        priority: 'medium'
+      });
+    }
+
+    // ── 10. Long-stay guests (CheckedIn for more than 14 days) ─────────
+    const { data: longStayRes } = await supabaseAdmin
+      .from('reservations')
+      .select('id, guest_name, room_number, check_in_date, check_out_date, status')
+      .eq('status', 'CheckedIn');
+
+    const longStayThreshold = 14; // days
+    (longStayRes || []).forEach((r: any) => {
+      if (!r.check_in_date) return;
+      const checkIn = new Date(r.check_in_date);
+      const daysStaying = Math.floor((now.getTime() - checkIn.getTime()) / (1000 * 60 * 60 * 24));
+      if (daysStaying >= longStayThreshold) {
+        alerts.push({
+          id: `long-stay-${r.id}`,
+          type: 'long-stay',
+          message: `Long-stay guest: ${daysStaying} days in house`,
+          guestName: r.guest_name || 'Unknown',
+          roomNumber: r.room_number || 'Unassigned',
+          time: `${daysStaying} days`,
+          priority: 'low'
+        });
+      }
+    });
+
+    // ── 11. Group arrivals today ───────────────────────────────────────
+    const { data: groupArrivals } = await supabaseAdmin
+      .from('reservations')
+      .select('id, guest_name, group_name, room_number, is_group, status')
+      .eq('check_in_date', today)
+      .eq('is_group', true)
+      .in('status', ['Confirmed', 'CheckedIn']);
+
+    if (groupArrivals && groupArrivals.length > 0) {
+      // Group by group_name to avoid duplicate alerts
+      const groupMap = new Map<string, { count: number; guestName: string }>();
+      groupArrivals.forEach((r: any) => {
+        const gName = r.group_name || r.guest_name || 'Unknown Group';
+        const existing = groupMap.get(gName) || { count: 0, guestName: r.guest_name || 'Unknown' };
+        existing.count += 1;
+        groupMap.set(gName, existing);
+      });
+      groupMap.forEach((info, gName) => {
+        alerts.push({
+          id: `group-arrival-${gName.replace(/\s+/g, '-')}`,
+          type: 'group-arrival',
+          message: `Group arrival today: ${gName} (${info.count} room(s))`,
+          guestName: info.guestName,
+          roomNumber: 'Multiple',
+          time: timeStr,
+          priority: 'medium'
+        });
+      });
+    }
 
     res.json({ alerts });
   } catch (error) {
@@ -361,6 +924,10 @@ router.post('/reservations', authenticate, requirePermission('front_office:manag
   try {
     const { 
       guest_id, 
+      guest_name,
+      guest_email,
+      guest_phone,
+      guest_status,
       check_in_date, 
       check_out_date, 
       adults, 
@@ -399,7 +966,7 @@ router.post('/reservations', authenticate, requirePermission('front_office:manag
       if (rtName) requestedByTypeName.set(rtName, (requestedByTypeName.get(rtName) || 0) + 1);
     }
     // Single-room fallback when no rooms[] payload is provided
-    const singleTypeName = rooms?.[0]?.roomType || reservationData?.room_type;
+    const singleTypeName = rooms?.[0]?.roomType || req.body?.room_type;
     if (requestedByTypeId.size === 0 && requestedByTypeName.size === 0 && singleTypeName) {
       requestedByTypeName.set(singleTypeName, 1);
     }
@@ -465,10 +1032,10 @@ router.post('/reservations', authenticate, requirePermission('front_office:manag
     const reservationData: any = {
       id: reservationId,
       guest_id: guest_id || null,
-      guest_name: 'Guest Name', // TODO: Get from guest_id or form
-      guest_email: 'guest@example.com',
-      guest_phone: '',
-      guest_status: 'Regular',
+      guest_name: guest_name || 'Guest Name',
+      guest_email: guest_email || 'guest@example.com',
+      guest_phone: guest_phone || '',
+      guest_status: guest_status || 'Regular',
       room_type: rooms?.[0]?.roomType || 'Standard',
       room_number: rooms?.[0]?.roomNumber || null,
       check_in_date: check_in_date,
@@ -1070,7 +1637,6 @@ router.get('/guests', authenticate, async (req, res) => {
       }
       const thresholds: Record<string, number> = { diamond: 10000, platinum: 5000, gold: 2500, silver: 1000 };
       if (thresholds[tier]) {
-        const f = `loyalty_points.gte.${thresholds[tier]}`;
         query = query.filter('loyalty_points', 'gte', String(thresholds[tier]));
         countQuery = countQuery.filter('loyalty_points', 'gte', String(thresholds[tier]));
         void pointsFilter;
@@ -1194,6 +1760,11 @@ router.get('/guests/:id', authenticate, requirePermission('front_office:view'), 
 
   try {
     const { id } = req.params;
+    // ?minimal=true skips reservation history, group profile, and group
+    // memberships — used by the edit-guest form which only needs the guest
+    // record itself. This avoids several sequential round-trips and makes the
+    // "Loading guest for editing..." state resolve near-instantly.
+    const minimal = req.query.minimal === 'true';
 
     const { data: guest, error } = await supabaseAdmin
       .from('guests')
@@ -1204,41 +1775,64 @@ router.get('/guests/:id', authenticate, requirePermission('front_office:view'), 
     if (error) return res.status(500).json({ error: error.message });
     if (!guest) return res.status(404).json({ error: 'Guest not found' });
 
-    // Fetch reservation history
-    const { data: reservations } = await supabaseAdmin
+    // For the edit form we only need the guest record — skip the heavy extras.
+    if (minimal) {
+      const idDoc = guest.identification_doc || {};
+      const nameParts = guest.name?.split(' ') || ['', ''];
+      const transformedGuest = {
+        id: guest.id,
+        firstName: nameParts[0] || '',
+        lastName: nameParts.slice(1).join(' ') || '',
+        email: guest.email,
+        phone: guest.phone || '',
+        nationality: guest.nationality || '',
+        passportNumber: idDoc.number || '',
+        visaInfo: idDoc.visaInfo || '',
+        idDocument: idDoc,
+        emergencyContact: (guest.preferences || {}).emergencyContact || null,
+        company: (guest.preferences || {}).company || null,
+        preferences: (guest.preferences || {}),
+        status: guest.status,
+        specialRequests: guest.special_requests,
+        notes: guest.notes,
+        loyaltyPoints: guest.loyalty_points || 0,
+        raw: guest
+      };
+      return res.json({ guest: transformedGuest, reservations: [], groupProfile: null, groupMemberships: [], rawGuest: guest });
+    }
+
+    // Fetch reservation history, group profile, and group memberships in
+    // parallel — these are independent of each other (groupProfile only
+    // depends on guest.parent_group_id, which is already known).
+    const reservationsPromise = supabaseAdmin
       .from('reservations')
       .select('*')
       .eq('guest_id', id)
       .in('status', ['Confirmed', 'CheckedIn', 'CheckedOut'])
       .order('check_in_date', { ascending: false });
 
-    // Fetch group profile if exists (legacy single-group field)
-    let groupProfile = null;
-    if (guest.parent_group_id) {
-      const { data: group } = await supabaseAdmin
-        .from('group_profiles')
-        .select('*')
-        .eq('id', guest.parent_group_id)
-        .single();
-      groupProfile = group;
-    }
+    const groupProfilePromise = guest.parent_group_id
+      ? supabaseAdmin.from('group_profiles').select('*').eq('id', guest.parent_group_id).single()
+      : Promise.resolve({ data: null, error: null });
 
-    // Fetch all active group memberships from the guest_group_relationships table
-    // (the many-to-many system). This is the authoritative linkage and may include
-    // multiple groups per guest. Kept in sync with parent_group_id by the
-    // link_guest_to_group / unlink_guest_from_group RPCs.
-    let groupMemberships: any[] = [];
-    try {
-      const { data: memberships, error: membershipsError } = await supabaseAdmin.rpc(
-        'get_guest_active_groups',
-        { p_guest_id: id }
-      );
-      if (!membershipsError && memberships) {
-        groupMemberships = memberships;
-      }
-    } catch (e) {
+    const groupMembershipsPromise = Promise.resolve(
+      supabaseAdmin.rpc('get_guest_active_groups', { p_guest_id: id })
+    ).catch((e: any) => {
       // RPC may not exist in older schemas — fail soft, fall back to legacy groupProfile.
-      console.warn('get_guest_active_groups RPC unavailable:', (e as any)?.message);
+      console.warn('get_guest_active_groups RPC unavailable:', e?.message);
+      return { data: null, error: e };
+    });
+
+    const [
+      { data: reservations },
+      { data: group },
+      { data: memberships, error: membershipsError },
+    ] = await Promise.all([reservationsPromise, groupProfilePromise, groupMembershipsPromise]);
+
+    const groupProfile = group;
+    let groupMemberships: any[] = [];
+    if (!membershipsError && memberships) {
+      groupMemberships = memberships;
     }
 
     // Build a transformed guest shape (consistent with the list endpoint) so the
@@ -1311,7 +1905,24 @@ router.post('/guests', authenticate, async (req, res) => {
   try {
     const { firstName, lastName, email, phone, nationality, passportNumber, visaInfo, idDocument, emergencyContact, company, preferences, status, loyaltyPoints, notes, specialRequests } = req.body;
 
-    // Generate guest ID
+    // Build full name for deduplication check
+    const fullName = `${firstName} ${lastName}`;
+
+    // FIXED: Check for existing guest with same email AND name before creating
+    const { data: existingGuest } = await supabaseAdmin
+      .from('guests')
+      .select('id')
+      .eq('email', email)
+      .eq('name', fullName)
+      .limit(1)
+      .single();
+
+    if (existingGuest) {
+      // Guest already exists, return existing ID
+      return res.json({ success: true, guestId: existingGuest.id, existing: true });
+    }
+
+    // Generate guest ID only if no existing guest found
     const guestId = `GST-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 
     // Build preferences object
@@ -1357,7 +1968,7 @@ router.post('/guests', authenticate, async (req, res) => {
     // Insert guest
     const guestData = {
       id: guestId,
-      name: `${firstName} ${lastName}`,
+      name: fullName,
       email: email,
       phone: phone || null,
       nationality: nationality || null,
@@ -1828,7 +2439,7 @@ router.delete('/groups/:id', authenticate, async (req, res) => {
 // ── Night Audit ────────────────────────────────────────────────────
 
 // Get current night audit summary and recent history
-router.get('/night-audit', authenticate, async (req, res) => {
+router.get('/night-audit', authenticate, async (_req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
 
   try {
@@ -2313,7 +2924,7 @@ router.delete('/keys/:keyId', authenticate, requirePermission('front_office:edit
 });
 
 // Fetch key encoders
-router.get('/keys/encoders', authenticate, requirePermission('front_office:view'), async (req, res) => {
+router.get('/keys/encoders', authenticate, requirePermission('front_office:view'), async (_req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
 
   try {
@@ -2379,7 +2990,7 @@ router.get('/keys/access-logs', authenticate, requirePermission('front_office:vi
 });
 
 // Fetch key statistics
-router.get('/keys/stats', authenticate, requirePermission('front_office:view'), async (req, res) => {
+router.get('/keys/stats', authenticate, requirePermission('front_office:view'), async (_req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
 
   try {
@@ -2476,7 +3087,7 @@ router.get('/guest-requests', async (req, res) => {
 });
 
 // Get guest request statistics
-router.get('/guest-requests/stats', async (req, res) => {
+router.get('/guest-requests/stats', async (_req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
 
   try {
@@ -2495,7 +3106,7 @@ router.get('/guest-requests/stats', async (req, res) => {
     const completedToday = statusCounts?.filter(r => r.status === 'Completed' || r.status === 'completed').length || 0;
 
     // Calculate average response time (from submission to acknowledgment)
-    const { data: responseTimes, error: responseError } = await supabaseAdmin
+    const { data: responseTimes } = await supabaseAdmin
       .from('guest_requests')
       .select('submitted_at, acknowledged_at')
       .not('acknowledged_at', 'is', null)
@@ -2512,7 +3123,7 @@ router.get('/guest-requests/stats', async (req, res) => {
     }
 
     // Get analytics data
-    const { data: allRequests, error: allError } = await supabaseAdmin
+    const { data: allRequests } = await supabaseAdmin
       .from('guest_requests')
       .select('*')
       .gte('submitted_at', today);
@@ -2607,7 +3218,8 @@ router.post('/guest-requests', async (req, res) => {
       description,
       priority,
       notes,
-      estimatedCompletion
+      assignedDepartment,
+      propertyId
     } = req.body || {};
 
     if (!guestName || !description) {
@@ -2617,7 +3229,7 @@ router.post('/guest-requests', async (req, res) => {
     // Generate request number
     const requestNumber = `REQ-${Date.now()}-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
 
-    const { data, error } = await supabaseAdmin.from('guest_requests').insert({
+    const insertRow: any = {
       request_number: requestNumber,
       reservation_id: reservationId || null,
       room_number: roomNumber || null,
@@ -2628,7 +3240,11 @@ router.post('/guest-requests', async (req, res) => {
       status: 'Open',
       notes: notes || null,
       submitted_at: new Date().toISOString(),
-    }).select().single();
+    };
+    if (assignedDepartment) insertRow.assigned_department = assignedDepartment;
+    if (propertyId) insertRow.property_id = propertyId;
+
+    const { data, error } = await supabaseAdmin.from('guest_requests').insert(insertRow).select().single();
 
     if (error) return res.status(500).json({ error: error.message });
 
@@ -2666,8 +3282,7 @@ router.put('/guest-requests/:id', async (req, res) => {
       priority,
       notes,
       rating,
-      feedback,
-      estimatedCompletion
+      feedback
     } = req.body || {};
 
     const updateData: any = {
@@ -2698,6 +3313,20 @@ router.put('/guest-requests/:id', async (req, res) => {
       .single();
 
     if (error) return res.status(500).json({ error: error.message });
+
+    // Notify the guest of the status change in their notification feed.
+    if (status && data?.guest_id) {
+      const label = data.service_name || data.request_type || 'Your request';
+      const { error: notifErr } = await supabaseAdmin.from('guest_notifications').insert({
+        guest_id: data.guest_id,
+        reservation_id: data.reservation_id || null,
+        property_id: data.property_id || null,
+        category: 'request_update',
+        title: `Request ${data.status}`,
+        message: `${label} is now ${data.status}.`,
+      });
+      if (notifErr) console.warn('guest request notification insert failed:', notifErr.message);
+    }
 
     // Write audit event
     writeAuditEvent({
@@ -2756,7 +3385,7 @@ router.delete('/guest-requests/:id', async (req, res) => {
 });
 
 // Get staff members for assignment
-router.get('/guest-requests/staff', async (req, res) => {
+router.get('/guest-requests/staff', async (_req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
 
   try {
@@ -2829,7 +3458,7 @@ router.get('/communications', async (req, res) => {
 });
 
 // Get communication statistics
-router.get('/communications/stats', async (req, res) => {
+router.get('/communications/stats', async (_req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
 
   try {
@@ -3064,7 +3693,7 @@ router.delete('/communications/:id', async (req, res) => {
 });
 
 // Get communication templates
-router.get('/communications/templates', async (req, res) => {
+router.get('/communications/templates', async (_req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
 
   try {
@@ -3300,6 +3929,619 @@ router.delete('/room-blocks/:id', authenticate, requirePermission('front_office:
     console.error('Error deleting room block:', error);
     res.status(500).json({ error: 'Failed to delete room block' });
   }
+});
+
+// ── Front Office Staff Operations ──────────────────────────────────────
+// Staff Roster (with HR linkage), Shift Requirements, Staffing Requirements,
+// Training, Productivity. Tailored for Front Office.
+
+const FO_STAFF_ROLES_SET = new Set([
+  'Front Desk Agent', 'Concierge', 'Bell Attendant',
+  'Night Auditor', 'Guest Relations', 'Cashier', 'Supervisor',
+]);
+const FO_STAFF_SHIFTS_SET = new Set(['Morning', 'Evening', 'Night']);
+
+function shapeFOStaff(row: any, employee: any = null) {
+  return {
+    id: row.id,
+    name: row.name,
+    avatar: row.avatar || (row.name || '').split(' ').map((p: string) => p[0]).join('').slice(0, 2).toUpperCase(),
+    role: row.role,
+    shift: row.shift,
+    station: row.station,
+    checkIns: row.check_ins ?? 0,
+    checkOuts: row.check_outs ?? 0,
+    guestSatisfaction: row.guest_satisfaction ?? 0,
+    upsellRevenue: row.upsell_revenue ?? 0,
+    avgResponseMin: row.avg_response_min ?? 0,
+    workload: row.workload ?? 0,
+    status: row.status,
+    isActive: row.is_active,
+    employeeId: row.employee_id || null,
+    email: employee?.email || null,
+    phone: employee?.phone || null,
+    hireDate: employee?.hire_date || null,
+    salary: employee?.salary ?? null,
+    department: employee?.department || 'Front Office',
+    position: employee?.position || row.role,
+  };
+}
+
+// List all FO staff for a property, with HR employee data joined.
+router.get('/staff/:propertyId', authenticate, async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
+  const { data: staffRows, error } = await supabaseAdmin
+    .from('fo_staff').select('*')
+    .eq('property_id', req.params.propertyId)
+    .eq('is_active', true)
+    .order('name');
+  if (error) return res.status(500).json({ error: error.message });
+
+  const employeeIds = (staffRows || []).map((s: any) => s.employee_id).filter(Boolean);
+  let employeesById: Record<string, any> = {};
+  if (employeeIds.length > 0) {
+    const { data: empRows } = await supabaseAdmin
+      .from('employees').select('id, email, phone, hire_date, salary, department, position')
+      .in('id', employeeIds);
+    (empRows || []).forEach((e: any) => { employeesById[e.id] = e; });
+  }
+
+  const staff = (staffRows || []).map((s: any) =>
+    shapeFOStaff(s, s.employee_id ? employeesById[s.employee_id] : null)
+  );
+
+  return res.json({
+    propertyId: req.params.propertyId,
+    staff,
+    summary: {
+      total: staff.length,
+      onDuty: staff.filter((s: any) => s.status === 'Active Duty').length,
+      avgSatisfaction: staff.length ? (staff.reduce((sum: number, s: any) => sum + Number(s.guestSatisfaction), 0) / staff.length).toFixed(2) : '0',
+    },
+    generatedAt: new Date().toISOString(),
+  });
+});
+
+// Create a new FO staff member. Optionally links to existing HR employee
+// or creates a new HR employee record.
+router.post('/staff', authenticate, async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
+  const {
+    propertyId, name, role, shift, station, status,
+    checkIns, checkOuts, guestSatisfaction, upsellRevenue, avgResponseMin, workload,
+    employeeId, email, phone, hireDate, salary,
+  } = req.body || {};
+
+  if (!propertyId || !name?.trim()) return res.status(400).json({ error: 'propertyId and name are required' });
+  if (role && !FO_STAFF_ROLES_SET.has(role)) return res.status(400).json({ error: `role must be one of: ${[...FO_STAFF_ROLES_SET].join(', ')}` });
+  if (shift && !FO_STAFF_SHIFTS_SET.has(shift)) return res.status(400).json({ error: `shift must be one of: ${[...FO_STAFF_SHIFTS_SET].join(', ')}` });
+
+  const id = `FO-${Date.now()}`;
+  const avatar = name.trim().split(' ').map((p: string) => p[0]).join('').slice(0, 2).toUpperCase();
+  const resolvedRole = role || 'Front Desk Agent';
+
+  let linkedEmployeeId = employeeId || null;
+  let employeeRecord: any = null;
+
+  if (linkedEmployeeId) {
+    const { data: emp } = await supabaseAdmin
+      .from('employees').select('id, email, phone, hire_date, salary, department, position')
+      .eq('id', linkedEmployeeId).single();
+    if (emp) employeeRecord = emp;
+    else linkedEmployeeId = null;
+  } else if (email || phone || hireDate || salary) {
+    const empId = `EMP-FO-${Date.now()}`;
+    const { data: newEmp, error: empError } = await supabaseAdmin
+      .from('employees').insert({
+        id: empId, name: name.trim(), email: email || null, phone: phone || null,
+        department: 'Front Office', position: resolvedRole, status: 'Active',
+        hire_date: hireDate || new Date().toISOString().split('T')[0],
+        salary: salary ?? 0, avatar_initials: avatar, property_id: propertyId,
+      }).select('id, email, phone, hire_date, salary, department, position').single();
+    if (!empError && newEmp) { linkedEmployeeId = empId; employeeRecord = newEmp; }
+  }
+
+  const { data, error } = await supabaseAdmin
+    .from('fo_staff').insert({
+      id, property_id: propertyId, name: name.trim(), avatar,
+      status: status || 'Active Duty', is_active: true,
+      role: resolvedRole, shift: shift || 'Morning', station: station || 'Front Desk',
+      check_ins: checkIns ?? 0, check_outs: checkOuts ?? 0,
+      guest_satisfaction: guestSatisfaction ?? 0, upsell_revenue: upsellRevenue ?? 0,
+      avg_response_min: avgResponseMin ?? 0, workload: workload ?? 0,
+      employee_id: linkedEmployeeId,
+    }).select('*').single();
+
+  if (error) return res.status(500).json({ error: error.message });
+  return res.status(201).json(shapeFOStaff(data, employeeRecord));
+});
+
+// List available HR employees not yet linked to fo_staff.
+router.get('/staff/available-employees/:propertyId', authenticate, async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
+  const { data: linkedRows } = await supabaseAdmin
+    .from('fo_staff').select('employee_id').not('employee_id', 'is', null);
+  const linkedIds = (linkedRows || []).map((r: any) => r.employee_id);
+
+  let q = supabaseAdmin
+    .from('employees').select('id, name, email, phone, position, hire_date, salary, department')
+    .eq('status', 'Active')
+    .eq('department', 'Front Office')
+    .order('name');
+  const { propertyId } = req.params;
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(propertyId || '')) {
+    q = q.eq('property_id', propertyId);
+  }
+  if (linkedIds.length > 0) q = q.filter('id', 'not.in', `(${linkedIds.join(',')})`);
+
+  const { data, error } = await q;
+  if (error) return res.status(500).json({ error: error.message });
+  return res.json({ employees: data || [] });
+});
+
+// Update a FO staff member (reassign station/shift/role, update metrics, link HR).
+router.put('/staff/:id', authenticate, async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
+  const {
+    name, role, shift, station, status, isActive, employeeId,
+    checkIns, checkOuts, guestSatisfaction, upsellRevenue, avgResponseMin, workload,
+  } = req.body || {};
+
+  if (role !== undefined && !FO_STAFF_ROLES_SET.has(role))
+    return res.status(400).json({ error: `role must be one of: ${[...FO_STAFF_ROLES_SET].join(', ')}` });
+  if (shift !== undefined && !FO_STAFF_SHIFTS_SET.has(shift))
+    return res.status(400).json({ error: `shift must be one of: ${[...FO_STAFF_SHIFTS_SET].join(', ')}` });
+
+  const patch: Record<string, any> = { updated_at: new Date().toISOString() };
+  if (name !== undefined) patch.name = name.trim();
+  if (role !== undefined) patch.role = role;
+  if (shift !== undefined) patch.shift = shift;
+  if (station !== undefined) patch.station = station;
+  if (status !== undefined) patch.status = status;
+  if (isActive !== undefined) patch.is_active = isActive;
+  if (employeeId !== undefined) patch.employee_id = employeeId || null;
+  if (checkIns !== undefined) patch.check_ins = Number(checkIns);
+  if (checkOuts !== undefined) patch.check_outs = Number(checkOuts);
+  if (guestSatisfaction !== undefined) patch.guest_satisfaction = Number(guestSatisfaction);
+  if (upsellRevenue !== undefined) patch.upsell_revenue = Number(upsellRevenue);
+  if (avgResponseMin !== undefined) patch.avg_response_min = Number(avgResponseMin);
+  if (workload !== undefined) patch.workload = Number(workload);
+
+  if (Object.keys(patch).length === 1) return res.status(400).json({ error: 'Nothing to update' });
+
+  const { data, error } = await supabaseAdmin
+    .from('fo_staff').update(patch).eq('id', req.params.id).select('*').single();
+  if (error) return res.status(500).json({ error: error.message });
+  if (!data) return res.status(404).json({ error: 'Staff not found' });
+
+  let employeeRecord: any = null;
+  if (data.employee_id) {
+    const { data: emp } = await supabaseAdmin
+      .from('employees').select('id, email, phone, hire_date, salary, department, position')
+      .eq('id', data.employee_id).single();
+    if (emp) employeeRecord = emp;
+  }
+  return res.json(shapeFOStaff(data, employeeRecord));
+});
+
+// Delete (soft-delete by default, hard=true to remove).
+router.delete('/staff/:id', authenticate, async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
+  const { hard } = req.query as Record<string, string>;
+  if (hard === 'true') {
+    const { error } = await supabaseAdmin.from('fo_staff').delete().eq('id', req.params.id);
+    if (error) return res.status(500).json({ error: error.message });
+  } else {
+    const { error } = await supabaseAdmin
+      .from('fo_staff').update({ is_active: false, updated_at: new Date().toISOString() })
+      .eq('id', req.params.id);
+    if (error) return res.status(500).json({ error: error.message });
+  }
+  return res.json({ success: true, id: req.params.id });
+});
+
+
+const FO_STAFF_ROLES = new Set(['Front Desk Agent', 'Concierge', 'Bell Attendant', 'Night Auditor', 'Guest Relations', 'Cashier', 'Supervisor']);
+
+// ── Shift Requirements ────────────────────────────────────────────────
+router.get('/staff/shifts/:propertyId', authenticate, async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
+  const { data, error } = await supabaseAdmin
+    .from('fo_shift_requirements').select('*')
+    .eq('property_id', req.params.propertyId).order('start_time');
+  if (error) return res.status(500).json({ error: error.message });
+  return res.json(data || []);
+});
+
+router.post('/staff/shifts', authenticate, async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
+  const { propertyId, name, startTime, endTime, assignedStaff, requiredStaff } = req.body || {};
+  if (!name?.trim()) return res.status(400).json({ error: 'name is required' });
+  const { data, error } = await supabaseAdmin
+    .from('fo_shift_requirements')
+    .insert({ name: name.trim(), start_time: startTime || '07:00', end_time: endTime || '15:00',
+      assigned_staff: assignedStaff ?? 0, required_staff: requiredStaff ?? 1, property_id: propertyId || null })
+    .select('*').single();
+  if (error) return res.status(500).json({ error: error.message });
+  return res.status(201).json(data);
+});
+
+router.put('/staff/shifts/:id', authenticate, async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
+  const patch: Record<string, any> = { updated_at: new Date().toISOString() };
+  const { name, startTime, endTime, assignedStaff, requiredStaff } = req.body || {};
+  if (name !== undefined) patch.name = name;
+  if (startTime !== undefined) patch.start_time = startTime;
+  if (endTime !== undefined) patch.end_time = endTime;
+  if (assignedStaff !== undefined) patch.assigned_staff = Number(assignedStaff);
+  if (requiredStaff !== undefined) patch.required_staff = Number(requiredStaff);
+  const { data, error } = await supabaseAdmin
+    .from('fo_shift_requirements').update(patch).eq('id', req.params.id).select('*').single();
+  if (error) return res.status(500).json({ error: error.message });
+  return res.json(data);
+});
+
+router.delete('/staff/shifts/:id', authenticate, async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
+  const { error } = await supabaseAdmin.from('fo_shift_requirements').delete().eq('id', req.params.id);
+  if (error) return res.status(500).json({ error: error.message });
+  return res.json({ success: true });
+});
+
+// ── Staffing Requirements ─────────────────────────────────────────────
+router.get('/staff/staffing/:propertyId', authenticate, async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
+  const { data, error } = await supabaseAdmin
+    .from('fo_staffing_requirements').select('*')
+    .eq('property_id', req.params.propertyId).order('station');
+  if (error) return res.status(500).json({ error: error.message });
+  return res.json(data || []);
+});
+
+router.post('/staff/staffing', authenticate, async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
+  const { propertyId, station, role, requiredCount, assignedCount, shift } = req.body || {};
+  if (!role) return res.status(400).json({ error: 'role is required' });
+  if (!FO_STAFF_ROLES.has(role)) return res.status(400).json({ error: `role must be one of: ${[...FO_STAFF_ROLES].join(', ')}` });
+  const { data, error } = await supabaseAdmin
+    .from('fo_staffing_requirements')
+    .insert({ station: station ?? null, role, required_count: requiredCount ?? 1, assigned_count: assignedCount ?? 0,
+      shift: shift || 'Morning', property_id: propertyId || null })
+    .select('*').single();
+  if (error) return res.status(500).json({ error: error.message });
+  return res.status(201).json(data);
+});
+
+router.put('/staff/staffing/:id', authenticate, async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
+  const patch: Record<string, any> = { updated_at: new Date().toISOString() };
+  const { station, role, requiredCount, assignedCount, shift } = req.body || {};
+  if (station !== undefined) patch.station = station || null;
+  if (role !== undefined) patch.role = role;
+  if (requiredCount !== undefined) patch.required_count = Number(requiredCount);
+  if (assignedCount !== undefined) patch.assigned_count = Number(assignedCount);
+  if (shift !== undefined) patch.shift = shift;
+  const { data, error } = await supabaseAdmin
+    .from('fo_staffing_requirements').update(patch).eq('id', req.params.id).select('*').single();
+  if (error) return res.status(500).json({ error: error.message });
+  return res.json(data);
+});
+
+router.delete('/staff/staffing/:id', authenticate, async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
+  const { error } = await supabaseAdmin.from('fo_staffing_requirements').delete().eq('id', req.params.id);
+  if (error) return res.status(500).json({ error: error.message });
+  return res.json({ success: true });
+});
+
+// ── Training ──────────────────────────────────────────────────────────
+router.get('/staff/training/:propertyId', authenticate, async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
+  const { data, error } = await supabaseAdmin
+    .from('fo_staff_training').select('*')
+    .eq('property_id', req.params.propertyId).order('due_date');
+  if (error) return res.status(500).json({ error: error.message });
+  return res.json(data || []);
+});
+
+router.post('/staff/training', authenticate, async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
+  const { propertyId, course, employeeId, dueDate, status } = req.body || {};
+  if (!course?.trim()) return res.status(400).json({ error: 'course is required' });
+  const { data, error } = await supabaseAdmin
+    .from('fo_staff_training')
+    .insert({ course: course.trim(), employee_id: employeeId || null, due_date: dueDate || null,
+      status: status || 'Not Started', property_id: propertyId || null })
+    .select('*').single();
+  if (error) return res.status(500).json({ error: error.message });
+  return res.status(201).json(data);
+});
+
+router.put('/staff/training/:id', authenticate, async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
+  const patch: Record<string, any> = { updated_at: new Date().toISOString() };
+  const { course, employeeId, dueDate, status } = req.body || {};
+  if (course !== undefined) patch.course = course;
+  if (employeeId !== undefined) patch.employee_id = employeeId || null;
+  if (dueDate !== undefined) patch.due_date = dueDate || null;
+  if (status !== undefined) patch.status = status;
+  const { data, error } = await supabaseAdmin
+    .from('fo_staff_training').update(patch).eq('id', req.params.id).select('*').single();
+  if (error) return res.status(500).json({ error: error.message });
+  return res.json(data);
+});
+
+router.delete('/staff/training/:id', authenticate, async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
+  const { error } = await supabaseAdmin.from('fo_staff_training').delete().eq('id', req.params.id);
+  if (error) return res.status(500).json({ error: error.message });
+  return res.json({ success: true });
+});
+
+// ── Productivity ──────────────────────────────────────────────────────
+router.get('/staff/productivity/:propertyId', authenticate, async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
+  const { data, error } = await supabaseAdmin
+    .from('fo_staff_productivity').select('*')
+    .eq('property_id', req.params.propertyId).order('period_date', { ascending: false });
+  if (error) return res.status(500).json({ error: error.message });
+  return res.json(data || []);
+});
+
+router.post('/staff/productivity', authenticate, async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
+  const { propertyId, employeeId, checkIns, checkOuts, guestSatisfaction, upsellRevenue, avgResponseMin, hours, periodDate } = req.body || {};
+  const { data, error } = await supabaseAdmin
+    .from('fo_staff_productivity')
+    .insert({ employee_id: employeeId || null, check_ins: checkIns ?? 0, check_outs: checkOuts ?? 0,
+      guest_satisfaction: guestSatisfaction ?? 0, upsell_revenue: upsellRevenue ?? 0,
+      avg_response_min: avgResponseMin ?? 0, hours: hours ?? 8, period_date: periodDate || null,
+      property_id: propertyId || null })
+    .select('*').single();
+  if (error) return res.status(500).json({ error: error.message });
+  return res.status(201).json(data);
+});
+
+router.put('/staff/productivity/:id', authenticate, async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
+  const patch: Record<string, any> = { updated_at: new Date().toISOString() };
+  const { employeeId, checkIns, checkOuts, guestSatisfaction, upsellRevenue, avgResponseMin, hours, periodDate } = req.body || {};
+  if (employeeId !== undefined) patch.employee_id = employeeId || null;
+  if (checkIns !== undefined) patch.check_ins = Number(checkIns);
+  if (checkOuts !== undefined) patch.check_outs = Number(checkOuts);
+  if (guestSatisfaction !== undefined) patch.guest_satisfaction = Number(guestSatisfaction);
+  if (upsellRevenue !== undefined) patch.upsell_revenue = Number(upsellRevenue);
+  if (avgResponseMin !== undefined) patch.avg_response_min = Number(avgResponseMin);
+  if (hours !== undefined) patch.hours = Number(hours);
+  if (periodDate !== undefined) patch.period_date = periodDate || null;
+  const { data, error } = await supabaseAdmin
+    .from('fo_staff_productivity').update(patch).eq('id', req.params.id).select('*').single();
+  if (error) return res.status(500).json({ error: error.message });
+  return res.json(data);
+});
+
+router.delete('/staff/productivity/:id', authenticate, async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
+  const { error } = await supabaseAdmin.from('fo_staff_productivity').delete().eq('id', req.params.id);
+  if (error) return res.status(500).json({ error: error.message });
+  return res.json({ success: true });
+});
+
+// ── Attendance (Front Office) ──────────────────────────────────────────
+const FO_ATT_SHIFTS = new Set(['Morning', 'Evening', 'Night']);
+const FO_ATT_STATUSES = new Set(['Present', 'Late', 'Absent', 'On Leave', 'Sick', 'Half Day', 'Day Off', 'Public Holiday', 'Work From Home', 'Mission', 'Training Day']);
+
+function shapeFOAttendance(row: any) {
+  return {
+    id: row.id,
+    staffId: row.staff_id,
+    staffName: row.staff_name,
+    departmentScope: row.department_scope,
+    employeeId: row.employee_id || null,
+    attendanceDate: row.attendance_date,
+    shift: row.shift,
+    checkIn: row.check_in || null,
+    checkOut: row.check_out || null,
+    status: row.status,
+    hoursWorked: Number(row.hours_worked) || 0,
+    overtimeHours: Number(row.overtime_hours) || 0,
+    notes: row.notes || null,
+    email: null as string | null,
+    phone: null as string | null,
+    department: null as string | null,
+    position: null as string | null,
+  };
+}
+
+// Attendance summary grouped per staff member (one row per staff).
+router.get('/attendance/summary/:propertyId', authenticate, async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
+  const { data, error } = await supabaseAdmin
+    .from('staff_attendance').select('*')
+    .eq('property_id', req.params.propertyId)
+    .eq('department_scope', 'FO')
+    .order('staff_name')
+    .order('attendance_date', { ascending: false });
+  if (error) return res.status(500).json({ error: error.message });
+
+  const byStaff: Record<string, any> = {};
+  for (const row of data || []) {
+    if (!byStaff[row.staff_id]) {
+      byStaff[row.staff_id] = {
+        staffId: row.staff_id,
+        staffName: row.staff_name,
+        employeeId: row.employee_id || null,
+        records: [],
+        present: 0, late: 0, absent: 0, onLeave: 0, sick: 0, halfDay: 0,
+        dayOff: 0, publicHoliday: 0, workFromHome: 0, mission: 0, trainingDay: 0,
+        totalHours: 0, totalOvertime: 0, totalDays: 0,
+      };
+    }
+    const s = byStaff[row.staff_id];
+    s.totalDays++;
+    s.totalHours += Number(row.hours_worked) || 0;
+    s.totalOvertime += Number(row.overtime_hours) || 0;
+    s.records.push(shapeFOAttendance(row));
+    switch (row.status) {
+      case 'Present': s.present++; break;
+      case 'Late': s.late++; break;
+      case 'Absent': s.absent++; break;
+      case 'On Leave': s.onLeave++; break;
+      case 'Sick': s.sick++; break;
+      case 'Half Day': s.halfDay++; break;
+      case 'Day Off': s.dayOff++; break;
+      case 'Public Holiday': s.publicHoliday++; break;
+      case 'Work From Home': s.workFromHome++; break;
+      case 'Mission': s.mission++; break;
+      case 'Training Day': s.trainingDay++; break;
+    }
+  }
+
+  const empIds = Object.values(byStaff).map((s: any) => s.employeeId).filter(Boolean);
+  let employeesById: Record<string, any> = {};
+  if (empIds.length > 0) {
+    const { data: empRows } = await supabaseAdmin
+      .from('employees').select('id, email, phone, department, position')
+      .in('id', empIds);
+    (empRows || []).forEach((e: any) => { employeesById[e.id] = e; });
+  }
+
+  const summary = Object.values(byStaff).map((s: any) => {
+    const emp = s.employeeId ? employeesById[s.employeeId] : null;
+    return {
+      ...s,
+      email: emp?.email || null,
+      phone: emp?.phone || null,
+      department: emp?.department || null,
+      position: emp?.position || null,
+      attendanceRate: s.totalDays > 0
+        ? Math.round(((s.present + s.late) / s.totalDays) * 100) : 0,
+    };
+  });
+
+  return res.json({
+    propertyId: req.params.propertyId,
+    summary,
+    totals: {
+      staffCount: summary.length,
+      totalHours: summary.reduce((sum: number, s: any) => sum + s.totalHours, 0),
+      totalOvertime: summary.reduce((sum: number, s: any) => sum + s.totalOvertime, 0),
+      avgAttendanceRate: summary.length > 0
+        ? Math.round(summary.reduce((sum: number, s: any) => sum + s.attendanceRate, 0) / summary.length) : 0,
+    },
+  });
+});
+
+// List attendance for a property (FO scope), optional date filter.
+router.get('/attendance/:propertyId', authenticate, async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
+  const { date } = req.query as Record<string, string>;
+  let q = supabaseAdmin
+    .from('staff_attendance').select('*')
+    .eq('property_id', req.params.propertyId)
+    .eq('department_scope', 'FO')
+    .order('attendance_date', { ascending: false })
+    .order('staff_name');
+  if (date) q = q.eq('attendance_date', date);
+  const { data, error } = await q;
+  if (error) return res.status(500).json({ error: error.message });
+
+  // Join HR employee data
+  const empIds = (data || []).map((r: any) => r.employee_id).filter(Boolean);
+  let employeesById: Record<string, any> = {};
+  if (empIds.length > 0) {
+    const { data: empRows } = await supabaseAdmin
+      .from('employees').select('id, email, phone, department, position')
+      .in('id', empIds);
+    (empRows || []).forEach((e: any) => { employeesById[e.id] = e; });
+  }
+
+  const records = (data || []).map((row: any) => {
+    const shaped = shapeFOAttendance(row);
+    const emp = row.employee_id ? employeesById[row.employee_id] : null;
+    if (emp) {
+      shaped.email = emp.email || null;
+      shaped.phone = emp.phone || null;
+      shaped.department = emp.department || null;
+      shaped.position = emp.position || null;
+    }
+    return shaped;
+  });
+
+  return res.json({
+    propertyId: req.params.propertyId,
+    attendance: records,
+    summary: {
+      total: records.length,
+      present: records.filter(r => r.status === 'Present').length,
+      late: records.filter(r => r.status === 'Late').length,
+      absent: records.filter(r => r.status === 'Absent').length,
+      onLeave: records.filter(r => r.status === 'On Leave' || r.status === 'Sick').length,
+      totalHours: records.reduce((s, r) => s + r.hoursWorked, 0),
+      totalOvertime: records.reduce((s, r) => s + r.overtimeHours, 0),
+    },
+  });
+});
+
+// Create / check-in a staff member for today.
+router.post('/attendance', authenticate, async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
+  const { propertyId, staffId, staffName, shift, status, checkIn, notes } = req.body || {};
+  if (!propertyId || !staffId || !staffName) return res.status(400).json({ error: 'propertyId, staffId, staffName are required' });
+  if (shift && !FO_ATT_SHIFTS.has(shift)) return res.status(400).json({ error: 'Invalid shift' });
+  if (status && !FO_ATT_STATUSES.has(status)) return res.status(400).json({ error: 'Invalid status' });
+
+  const today = new Date().toISOString().split('T')[0];
+  const id = `ATT-FO-${staffId}-${today}`;
+
+  // Look up the staff member's HR employee_id
+  let employeeId: string | null = null;
+  const { data: staffRow } = await supabaseAdmin
+    .from('fo_staff').select('employee_id').eq('id', staffId).single();
+  if (staffRow?.employee_id) employeeId = staffRow.employee_id;
+
+  const { data, error } = await supabaseAdmin
+    .from('staff_attendance').upsert({
+      id, property_id: propertyId, staff_id: staffId, staff_name: staffName,
+      department_scope: 'FO', attendance_date: today,
+      shift: shift || 'Morning', status: status || 'Present',
+      check_in: checkIn || new Date().toISOString(),
+      hours_worked: 0, overtime_hours: 0, notes: notes || null,
+      employee_id: employeeId,
+    }, { onConflict: 'staff_id,attendance_date' }).select('*').single();
+  if (error) return res.status(500).json({ error: error.message });
+  return res.status(201).json(shapeFOAttendance(data));
+});
+
+// Update attendance (check-out, status change, hours, notes).
+router.put('/attendance/:id', authenticate, async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
+  const { status, checkIn, checkOut, hoursWorked, overtimeHours, shift, notes } = req.body || {};
+  if (status && !FO_ATT_STATUSES.has(status)) return res.status(400).json({ error: 'Invalid status' });
+  if (shift && !FO_ATT_SHIFTS.has(shift)) return res.status(400).json({ error: 'Invalid shift' });
+
+  const patch: Record<string, any> = { updated_at: new Date().toISOString() };
+  if (status !== undefined) patch.status = status;
+  if (checkIn !== undefined) patch.check_in = checkIn;
+  if (checkOut !== undefined) patch.check_out = checkOut;
+  if (hoursWorked !== undefined) patch.hours_worked = Number(hoursWorked);
+  if (overtimeHours !== undefined) patch.overtime_hours = Number(overtimeHours);
+  if (shift !== undefined) patch.shift = shift;
+  if (notes !== undefined) patch.notes = notes;
+
+  const { data, error } = await supabaseAdmin
+    .from('staff_attendance').update(patch).eq('id', req.params.id).select('*').single();
+  if (error) return res.status(500).json({ error: error.message });
+  if (!data) return res.status(404).json({ error: 'Attendance record not found' });
+  return res.json(shapeFOAttendance(data));
+});
+
+// Delete an attendance record.
+router.delete('/attendance/:id', authenticate, async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
+  const { error } = await supabaseAdmin.from('staff_attendance').delete().eq('id', req.params.id);
+  if (error) return res.status(500).json({ error: error.message });
+  return res.json({ success: true, id: req.params.id });
 });
 
 export default router;

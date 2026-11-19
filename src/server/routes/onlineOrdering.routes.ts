@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { authenticate, requirePermission } from '../middleware/auth';
 import { hasSupabaseAdminConfig, supabaseAdmin } from '../supabaseAdmin';
 import { cacheService } from '../services/cacheService';
+import { getTaxRates } from '../services/adminConfigService';
 
 const router = Router();
 
@@ -33,7 +34,8 @@ router.post('/orders', async (req, res) => {
   
   // Calculate totals
   const subtotal = items.reduce((sum, item) => sum + (item.price * item.quantity), 0);
-  const tax = subtotal * 0.15; // 15% VAT
+  const vatPercent = (await getTaxRates({ appliesTo: 'f&b' })).vat ?? 15; // central Admin rule, default 15% VAT
+  const tax = subtotal * vatPercent / 100;
   const deliveryFee = deliveryType === 'delivery' ? 50 : 0;
   const total = subtotal + tax + deliveryFee;
 

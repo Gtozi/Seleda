@@ -20,8 +20,10 @@ import AssetProtection from './AssetProtection';
 import FraudPrevention from './FraudPrevention';
 import EvidenceManagement from './EvidenceManagement';
 import CommunicationCenter from './CommunicationCenter';
+import StaffManagement from './StaffManagement';
 import SecurityReports from './SecurityReports';
 import SecurityConfiguration from './SecurityConfiguration';
+import DepartmentRequisitionForm from '../Inventory/DepartmentRequisitionForm';
 
 const SecurityPortal: React.FC<{ activeTab?: string }> = ({ activeTab = 'dashboard' }) => {
   return (
@@ -48,6 +50,8 @@ const SecurityPortal: React.FC<{ activeTab?: string }> = ({ activeTab = 'dashboa
         {activeTab === 'fraud-prevention' && <FraudPrevention />}
         {activeTab === 'evidence' && <EvidenceManagement />}
         {activeTab === 'communication' && <CommunicationCenter />}
+        {activeTab === 'staff' && <StaffManagement />}
+        {activeTab === 'requisitions' && <DepartmentRequisitionForm department="Security" />}
         {activeTab === 'reports' && <SecurityReports />}
         {activeTab === 'configuration' && <SecurityConfiguration />}
       </div>

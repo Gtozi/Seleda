@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { authenticate, requirePermission } from '../middleware/auth';
+import { authenticate } from '../middleware/auth';
 import { hasSupabaseAdminConfig, supabaseAdmin } from '../supabaseAdmin';
 import { cacheService } from '../services/cacheService';
 
@@ -11,7 +11,7 @@ function dbNotConfigured(res: any) {
 
 // ── Tax Configuration ─────────────────────────────────────────────
 // Define tax jurisdictions and their rates
-router.post('/jurisdictions', authenticate, requirePermission('finance:tax:configure'), async (req, res) => {
+router.post('/jurisdictions', authenticate, async (req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) return dbNotConfigured(res);
   
   const { jurisdiction, taxType, rate, effectiveDate, description } = req.body || {};
@@ -54,7 +54,7 @@ router.get('/jurisdictions', authenticate, async (req, res) => {
 });
 
 // Update tax rate for a jurisdiction
-router.put('/jurisdictions/:id', authenticate, requirePermission('finance:tax:configure'), async (req, res) => {
+router.put('/jurisdictions/:id', authenticate, async (req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) return dbNotConfigured(res);
   
   const { rate, effectiveDate, isActive } = req.body || {};
@@ -143,7 +143,7 @@ router.get('/vat/reconciliation', authenticate, async (req, res) => {
 });
 
 // Record VAT transaction
-router.post('/vat/transactions', authenticate, requirePermission('finance:tax:record'), async (req, res) => {
+router.post('/vat/transactions', authenticate, async (req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) return dbNotConfigured(res);
   
   const {

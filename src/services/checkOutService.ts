@@ -71,11 +71,22 @@ function buildCheckOutRequest(reservation: any, folio: any | null, steps: CheckO
   const reservationBalance = Number(reservation.total_amount ?? 0) - Number(reservation.deposit_amount ?? 0);
   const balance = folio ? folioBalance : Math.max(0, reservationBalance);
 
+  // Auto-check rules:
+  //  - Invoice review is considered done when balance is 0 (no charges to review)
+  //  - Settlement is considered processed when the balance is 0 (nothing owed)
+  //  - Refund is considered processed when balance >= 0 (no credit owed to guest)
+  const autoInvoice = balance === 0;
+  const autoSettlement = balance === 0;
+  const autoRefund = balance >= 0;
+  const invoiceReviewed = (steps?.invoiceReviewed ?? false) || autoInvoice;
+  const settlementProcessed = (steps?.settlementProcessed ?? false) || autoSettlement;
+  const refundProcessed = (steps?.refundProcessed ?? false) || autoRefund;
+
   // Determine workflow status from reservation status + step progress
   let status: CheckOutStatus = 'pending';
   if (reservation.status === 'CheckedOut') {
     status = 'completed';
-  } else if (steps && (steps.invoiceReviewed || steps.settlementProcessed || steps.folioClosed)) {
+  } else if (steps && (invoiceReviewed || settlementProcessed || steps.folioClosed)) {
     status = 'in-progress';
   }
 
@@ -95,9 +106,9 @@ function buildCheckOutRequest(reservation: any, folio: any | null, steps: CheckO
     balance,
     lateCheckoutRequested: Boolean(reservation.late_check_out_requested),
     lateCheckoutFee: reservation.late_check_out_requested ? 50 : undefined,
-    invoiceReviewed: steps?.invoiceReviewed ?? false,
-    settlementProcessed: steps?.settlementProcessed ?? false,
-    refundProcessed: steps?.refundProcessed ?? false,
+    invoiceReviewed,
+    settlementProcessed,
+    refundProcessed,
     feedbackCollected: steps?.feedbackCollected ?? false,
     folioClosed: steps?.folioClosed ?? (folio?.status === 'Closed'),
     groupBookingId: reservation.group_booking_id || null,
@@ -313,6 +324,66 @@ export async function updateCheckOutStep(
 }
 
 /**
+ * Auto-check bill-related steps based on the current balance:
+ *  - invoiceReviewed     = true when balance === 0 (no charges to review)
+ *  - settlementProcessed = true when balance === 0 (nothing owed)
+ *  - refundProcessed     = true when balance >= 0 (no credit owed to guest)
+ *
+ * Persists the derived values into the reservation notes so the DB state
+ * matches what the UI derives in buildCheckOutRequest. Only flips false→true;
+ * never unchecks a step the user explicitly toggled.
+ *
+ * Returns the steps that were auto-checked (for caller UI updates).
+ */
+export async function autoCheckBillSteps(
+  reservationId: string,
+  balance: number
+): Promise<{ invoiceReviewed: boolean; settlementProcessed: boolean; refundProcessed: boolean }> {
+  const autoInvoice = balance === 0;
+  const autoSettlement = balance === 0;
+  const autoRefund = balance >= 0;
+  if (!autoInvoice && !autoSettlement && !autoRefund) {
+    return { invoiceReviewed: false, settlementProcessed: false, refundProcessed: false };
+  }
+  try {
+    const { data: existing } = await supabase
+      .from('reservations')
+      .select('notes')
+      .eq('id', reservationId)
+      .maybeSingle();
+    if (!existing) return { invoiceReviewed: false, settlementProcessed: false, refundProcessed: false };
+
+    const checkOutData = parseCheckOutData(existing.notes || '');
+    let changed = false;
+    if (autoInvoice && !checkOutData.invoiceReviewed) {
+      checkOutData.invoiceReviewed = true;
+      changed = true;
+    }
+    if (autoSettlement && !checkOutData.settlementProcessed) {
+      checkOutData.settlementProcessed = true;
+      changed = true;
+    }
+    if (autoRefund && !checkOutData.refundProcessed) {
+      checkOutData.refundProcessed = true;
+      changed = true;
+    }
+    if (!changed) {
+      return { invoiceReviewed: autoInvoice, settlementProcessed: autoSettlement, refundProcessed: autoRefund };
+    }
+    const updatedNotes = updateCheckOutDataInNotes(existing.notes || '', checkOutData);
+    const { error } = await supabase
+      .from('reservations')
+      .update({ notes: updatedNotes, updated_at: new Date().toISOString() })
+      .eq('id', reservationId);
+    if (error) throw error;
+    return { invoiceReviewed: autoInvoice, settlementProcessed: autoSettlement, refundProcessed: autoRefund };
+  } catch (error) {
+    console.error('Error auto-checking bill steps:', error);
+    return { invoiceReviewed: false, settlementProcessed: false, refundProcessed: false };
+  }
+}
+
+/**
  * Fetch folio details (folio + charges/lines + payments) for invoice review
  */
 export async function getFolioDetails(reservationId: string): Promise<FolioDetails> {
@@ -522,6 +593,400 @@ export async function completeCheckOut(reservationId: string): Promise<boolean> 
     console.error('Error completing check-out:', error);
     return false;
   }
+}
+
+/**
+ * Result of a batch group operation for a single member.
+ */
+export interface GroupBatchResult {
+  reservationId: string;
+  guestName: string;
+  success: boolean;
+  error?: string;
+}
+
+/**
+ * Process a group-level settlement: records a payment on each member's folio
+ * for their individual balance (or a distributed share when `amount` is less
+ * than the total group balance). Runs in parallel across members.
+ *
+ * Returns per-member results so the caller can show a precise summary.
+ */
+export async function processGroupSettlement(
+  members: CheckOutRequest[],
+  amount: number,
+  paymentMethod: string,
+  reference?: string
+): Promise<GroupBatchResult[]> {
+  const totalBalance = members.reduce((s, m) => s + Math.max(0, m.balance), 0);
+
+  // If the entered amount covers the total balance, settle each member's full
+  // balance. Otherwise distribute proportionally (floor to 2 decimals).
+  const proportional = amount < totalBalance && totalBalance > 0;
+
+  const tasks = members.map(async (member) => {
+    const memberBalance = Math.max(0, member.balance);
+    if (memberBalance <= 0) {
+      // Nothing to settle — still mark the step so the workflow can advance.
+      const stepOk = await updateCheckOutStep(member.reservationId, 'settlementProcessed', true);
+      // Auto-check refund (balance >= 0)
+      await autoCheckBillSteps(member.reservationId, 0);
+      return {
+        reservationId: member.reservationId,
+        guestName: member.guestName,
+        success: stepOk,
+        error: stepOk ? undefined : 'Failed to mark settlement step',
+      };
+    }
+
+    const settlementAmount = proportional
+      ? Math.min(memberBalance, Math.round((amount * memberBalance / totalBalance) * 100) / 100)
+      : memberBalance;
+
+    const ok = await processSettlement(member.reservationId, settlementAmount, paymentMethod, reference);
+    if (!ok) {
+      return {
+        reservationId: member.reservationId,
+        guestName: member.guestName,
+        success: false,
+        error: 'Failed to record payment',
+      };
+    }
+    const stepOk = await updateCheckOutStep(member.reservationId, 'settlementProcessed', true);
+    // Auto-check settlement/refund based on the remaining balance
+    const remainingBalance = Math.max(0, memberBalance - settlementAmount);
+    await autoCheckBillSteps(member.reservationId, remainingBalance);
+    return {
+      reservationId: member.reservationId,
+      guestName: member.guestName,
+      success: stepOk,
+      error: stepOk ? undefined : 'Payment recorded but step update failed',
+    };
+  });
+
+  return Promise.all(tasks);
+}
+
+/**
+ * Mark a check-out step for multiple reservations in parallel.
+ * Returns per-member results.
+ */
+export async function markStepForGroup(
+  members: CheckOutRequest[],
+  step: keyof CheckOutStep,
+  completed: boolean
+): Promise<GroupBatchResult[]> {
+  const tasks = members.map(async (member) => {
+    const ok = await updateCheckOutStep(member.reservationId, step, completed);
+    return {
+      reservationId: member.reservationId,
+      guestName: member.guestName,
+      success: ok,
+      error: ok ? undefined : `Failed to update ${String(step)}`,
+    };
+  });
+  return Promise.all(tasks);
+}
+
+/**
+ * Express check-out for multiple zero-balance members in parallel.
+ * Marks all steps, closes folios, and completes the check-out.
+ * Returns per-member results.
+ */
+export async function expressCheckOutGroup(
+  members: CheckOutRequest[]
+): Promise<GroupBatchResult[]> {
+  const tasks = members.map(async (member) => {
+    try {
+      if (member.balance > 0) {
+        return {
+          reservationId: member.reservationId,
+          guestName: member.guestName,
+          success: false,
+          error: 'Non-zero balance',
+        };
+      }
+      const steps: (keyof CheckOutStep)[] = [
+        'invoiceReviewed',
+        'settlementProcessed',
+        'refundProcessed',
+        'feedbackCollected',
+        'folioClosed',
+      ];
+      for (const step of steps) {
+        const ok = await updateCheckOutStep(member.reservationId, step, true);
+        if (!ok) {
+          return {
+            reservationId: member.reservationId,
+            guestName: member.guestName,
+            success: false,
+            error: `Failed to mark ${String(step)}`,
+          };
+        }
+      }
+      if (member.folioId) {
+        await closeFolio(member.reservationId);
+      }
+      const ok = await completeCheckOut(member.reservationId);
+      return {
+        reservationId: member.reservationId,
+        guestName: member.guestName,
+        success: ok,
+        error: ok ? undefined : 'Failed to complete check-out',
+      };
+    } catch (e) {
+      return {
+        reservationId: member.reservationId,
+        guestName: member.guestName,
+        success: false,
+        error: String(e),
+      };
+    }
+  });
+  return Promise.all(tasks);
+}
+
+/**
+ * Bill-related action types that should be cross-checked against the folio.
+ */
+export type BillAction =
+  | 'invoice'
+  | 'settlement'
+  | 'refund'
+  | 'closeFolio'
+  | 'complete'
+  | 'express';
+
+/**
+ * Result of a folio cross-check before performing a bill-related action.
+ */
+export interface FolioCrossCheckResult {
+  /** The fresh folio fetched from the DB (null if none exists). */
+  folio: any | null;
+  /** Fresh folio details (charges, payments, balance). */
+  details: FolioDetails;
+  /**
+   * Whether the user should be routed to the Folio & Billing module
+   * instead of proceeding with the action in the Check-Out screen.
+   */
+  needsRouting: boolean;
+  /** Human-readable reason when `needsRouting` is true. */
+  reason?: string;
+}
+
+/**
+ * Cross-check the folio state for a reservation before performing a
+ * bill-related action. Fetches the live folio from the DB and compares
+ * it against the cached `CheckOutRequest` values.
+ *
+ * Returns `needsRouting: true` when the folio requires attention that
+ * is better handled in the dedicated Folio & Billing module:
+ *  - No folio exists (charges/payments can't be managed from Check-Out)
+ *  - Folio balance is stale (cached != live)
+ *  - Folio status is stale (e.g. cached says open, but DB says Closed)
+ *  - Action-specific guards (e.g. closeFolio on an already-closed folio,
+ *    complete when folio is still open, refund when there are no payments)
+ */
+export async function crossCheckFolioForAction(
+  reservationId: string,
+  cached: CheckOutRequest,
+  action: BillAction
+): Promise<FolioCrossCheckResult> {
+  const details = await getFolioDetails(reservationId);
+  const folio = details.folio;
+  const liveBalance = details.balance;
+
+  // No folio at all — any bill action must be handled in Folio & Billing
+  // so the user can create/review charges there.
+  if (!folio) {
+    // For express check-out with zero balance and no folio, it's safe to
+    // proceed (nothing to settle or close).
+    if (action === 'express' && cached.balance <= 0) {
+      return { folio: null, details, needsRouting: false };
+    }
+    // For invoice review with no folio, the user needs to go to Folio &
+    // Billing to create one / post charges.
+    if (action === 'invoice') {
+      return {
+        folio: null,
+        details,
+        needsRouting: true,
+        reason: 'No folio exists for this reservation. Open Folio & Billing to create one and post charges before reviewing the invoice.',
+      };
+    }
+    // For settlement with no folio, route to folio to create one first.
+    if (action === 'settlement') {
+      return {
+        folio: null,
+        details,
+        needsRouting: true,
+        reason: 'No folio exists for this reservation. Open Folio & Billing to create a folio before processing settlement.',
+      };
+    }
+    // For refund with no folio, there's nothing to refund against.
+    if (action === 'refund') {
+      return {
+        folio: null,
+        details,
+        needsRouting: true,
+        reason: 'No folio exists for this reservation. Refunds require an existing folio with payments.',
+      };
+    }
+    // For closeFolio with no folio, nothing to close — but route so the
+    // user can verify.
+    if (action === 'closeFolio') {
+      return {
+        folio: null,
+        details,
+        needsRouting: true,
+        reason: 'No folio exists to close. Open Folio & Billing to verify.',
+      };
+    }
+    // For complete with no folio and zero balance, allow proceeding.
+    if (action === 'complete' && cached.balance <= 0) {
+      return { folio: null, details, needsRouting: false };
+    }
+    return {
+      folio: null,
+      details,
+      needsRouting: true,
+      reason: 'No folio exists. Open Folio & Billing to manage billing before completing check-out.',
+    };
+  }
+
+  // Folio exists — check for stale cached values.
+  const liveFolioBalance = Number(folio.balance ?? 0);
+  const cachedBalance = Number(cached.folioBalance ?? 0);
+  const balanceMismatch = Math.abs(liveFolioBalance - cachedBalance) > 0.005;
+
+  const liveFolioClosed = folio.status === 'Closed';
+  const folioStatusMismatch = cached.folioClosed !== liveFolioClosed;
+
+  // Action-specific cross-checks
+  switch (action) {
+    case 'invoice':
+      // Invoice review is fine as long as a folio exists. But if the
+      // cached balance is stale, route so the user sees the live folio.
+      if (balanceMismatch) {
+        return {
+          folio,
+          details,
+          needsRouting: true,
+          reason: `Folio balance has changed (cached $${cachedBalance.toFixed(2)} → live $${liveFolioBalance.toFixed(2)}). Open Folio & Billing to review the updated charges before marking the invoice reviewed.`,
+        };
+      }
+      return { folio, details, needsRouting: false };
+
+    case 'settlement':
+      // If there's an open folio with a balance, always route to the
+      // dedicated Folio & Billing module for settlement (it has the full
+      // payment workflow). This matches the existing openSettlementModal
+      // behavior.
+      if (liveFolioBalance > 0) {
+        return {
+          folio,
+          details,
+          needsRouting: true,
+          reason: `Open folio with balance $${liveFolioBalance.toFixed(2)}. Open Folio & Billing to process the payment through the full billing workflow.`,
+        };
+      }
+      // Folio balance is 0 — settlement step can be marked directly.
+      return { folio, details, needsRouting: false };
+
+    case 'refund':
+      // Refund requires existing payments on the folio.
+      const hasPayments = details.payments.length > 0;
+      if (!hasPayments) {
+        return {
+          folio,
+          details,
+          needsRouting: true,
+          reason: 'No payments exist on this folio to refund. Open Folio & Billing to verify.',
+        };
+      }
+      // If folio is closed, refunds should go through Folio & Billing.
+      if (liveFolioClosed) {
+        return {
+          folio,
+          details,
+          needsRouting: true,
+          reason: 'Folio is already closed. Refunds on a closed folio must be processed through Folio & Billing.',
+        };
+      }
+      return { folio, details, needsRouting: false };
+
+    case 'closeFolio':
+      // Can't close an already-closed folio.
+      if (liveFolioClosed) {
+        return {
+          folio,
+          details,
+          needsRouting: true,
+          reason: 'Folio is already closed in the database. Open Folio & Billing to verify.',
+        };
+      }
+      // Can't close a folio with an outstanding balance.
+      if (liveFolioBalance > 0) {
+        return {
+          folio,
+          details,
+          needsRouting: true,
+          reason: `Folio has an outstanding balance of $${liveFolioBalance.toFixed(2)}. Settle the balance in Folio & Billing before closing.`,
+        };
+      }
+      return { folio, details, needsRouting: false };
+
+    case 'complete':
+      // Completing check-out requires the folio to be closed.
+      if (!liveFolioClosed) {
+        return {
+          folio,
+          details,
+          needsRouting: true,
+          reason: 'Folio is still open. Close the folio in Folio & Billing before completing check-out.',
+        };
+      }
+      return { folio, details, needsRouting: false };
+
+    case 'express':
+      // Express check-out requires zero balance and (if folio exists) a
+      // closed folio.
+      if (liveFolioBalance > 0) {
+        return {
+          folio,
+          details,
+          needsRouting: true,
+          reason: `Folio has an outstanding balance of $${liveFolioBalance.toFixed(2)}. Express check-out is only for zero-balance guests. Open Folio & Billing to settle.`,
+        };
+      }
+      if (!liveFolioClosed) {
+        return {
+          folio,
+          details,
+          needsRouting: true,
+          reason: 'Folio is still open. Open Folio & Billing to close it before express check-out.',
+        };
+      }
+      return { folio, details, needsRouting: false };
+
+    default:
+      return { folio, details, needsRouting: false };
+  }
+}
+
+/**
+ * Cross-check folios for multiple reservations (group batch actions).
+ * Returns per-member cross-check results.
+ */
+export async function crossCheckFolioForGroup(
+  members: CheckOutRequest[],
+  action: BillAction
+): Promise<{ member: CheckOutRequest; check: FolioCrossCheckResult }[]> {
+  const tasks = members.map(async (member) => {
+    const check = await crossCheckFolioForAction(member.reservationId, member, action);
+    return { member, check };
+  });
+  return Promise.all(tasks);
 }
 
 /**

@@ -1,305 +1,359 @@
-import React from 'react';
-import { 
-  Package, 
-  Search, 
-  Camera, 
-  UserCheck, 
-  ShieldCheck, 
-  MapPin, 
-  Clock, 
-  ArrowRight,
-  Filter,
-  CheckCircle,
-  Plus
-} from 'lucide-react';
-import { motion, AnimatePresence } from 'motion/react';
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Lost & Found module — docs/Housekeeping Portal new.md §16.
+ * Registration (description, category, location, date, finder, photo) and
+ * lifecycle backed by the shared lost_found table via /api/hk-portal/lost-found.
+ * Statuses mirror the DB CHECK values: Found, Claimed, Donated, Disposed,
+ * Returned to Owner, Transferred to Lost Property.
+ */
 
-interface LostFoundItem {
+import { useState, useMemo, useEffect, useCallback } from 'react';
+import {
+  Package,
+  Search,
+  Plus,
+  Camera,
+  Archive,
+  UserSearch,
+  RotateCcw,
+  Truck,
+  Trash2,
+  MapPin,
+  Calendar,
+  User,
+  RefreshCw,
+  X,
+  type LucideIcon,
+} from 'lucide-react';
+import StatCard from '../FrontOffice/StatCard';
+import { PageHeader, SectionCard, Badge } from '../FrontOffice/ui';
+import { button, layout, statusTone, type StatusTone } from '../FrontOffice/brandTheme';
+import { useERP } from '../../context/ERPContext';
+
+// DB-backed statuses (lost_found.status CHECK constraint).
+type Lifecycle = 'Found' | 'Claimed' | 'Donated' | 'Disposed' | 'Returned to Owner' | 'Transferred to Lost Property';
+type Category = 'Electronics' | 'Jewelry' | 'Clothing' | 'Documents' | 'Keys' | 'Luggage' | 'Toiletries' | 'Other';
+
+interface LostItem {
   id: string;
-  item: string;
-  room: string;
-  category: 'Electronics' | 'Clothing' | 'Valuables' | 'Documents' | 'Others';
-  status: 'Found' | 'Logged' | 'Vaulted' | 'Claim Pending' | 'Returned' | 'Disposed';
-  foundDate: string;
-  foundBy: string;
-  location: string;
-  description?: string;
-  guestName?: string;
-  guestContact?: string;
-  custodyLog: Array<{ action: string; timestamp: string; performedBy: string }>;
-  photoUrl?: string;
-  disposalDate?: string;
+  item_name: string;
+  item_description?: string;
+  item_category?: string;
+  found_location: string;
+  found_date: string;
+  found_time?: string;
+  found_by?: string;
+  found_by_name?: string;
+  room_number?: string;
+  status: Lifecycle;
+  storage_location?: string;
+  photo_url?: string;
+  claimed_by?: string;
+  claimed_date?: string;
+  property_id?: string;
 }
 
-const initialItems: LostFoundItem[] = [
-  { 
-    id: 'LF-2209', 
-    item: 'iPhone 14 Pro Max', 
-    room: '402', 
-    category: 'Electronics', 
-    status: 'Vaulted', 
-    foundDate: '2026-05-28', 
-    foundBy: 'Staff Member A', 
-    location: 'Safe A-04',
-    description: 'Black iPhone with cracked screen, found in bedside drawer',
-    guestName: 'John Smith',
-    guestContact: '+251911123456',
-    custodyLog: [
-      { action: 'Found', timestamp: '2026-05-28 09:30', performedBy: 'Staff Member A' },
-      { action: 'Logged', timestamp: '2026-05-28 09:45', performedBy: 'Front Desk' },
-      { action: 'Vaulted', timestamp: '2026-05-28 10:00', performedBy: 'Security' }
-    ]
-  },
-  { 
-    id: 'LF-2210', 
-    item: 'Woolen Scarf', 
-    room: '105', 
-    category: 'Clothing', 
-    status: 'Claim Pending', 
-    foundDate: '2026-05-29', 
-    foundBy: 'Staff Member B', 
-    location: 'Bin 12',
-    description: 'Navy blue wool scarf, designer brand',
-    guestName: 'Jane Doe',
-    guestContact: '+251911987654',
-    custodyLog: [
-      { action: 'Found', timestamp: '2026-05-29 14:00', performedBy: 'Staff Member B' },
-      { action: 'Logged', timestamp: '2026-05-29 14:15', performedBy: 'Front Desk' }
-    ]
-  },
-  { 
-    id: 'LF-2211', 
-    item: 'Gold Wedding Ring', 
-    room: 'Suite 2', 
-    category: 'Valuables', 
-    status: 'Vaulted', 
-    foundDate: '2026-05-27', 
-    foundBy: 'Staff Member A', 
-    location: 'Safe A-01',
-    description: 'Gold band with diamond, wedding ring',
-    guestName: 'Robert Johnson',
-    guestContact: '+251911555555',
-    custodyLog: [
-      { action: 'Found', timestamp: '2026-05-27 16:30', performedBy: 'Staff Member A' },
-      { action: 'Logged', timestamp: '2026-05-27 16:45', performedBy: 'Front Desk' },
-      { action: 'Vaulted', timestamp: '2026-05-27 17:00', performedBy: 'Security' }
-    ]
-  },
-  { 
-    id: 'LF-2212', 
-    item: 'Passport', 
-    room: '301', 
-    category: 'Documents', 
-    status: 'Returned', 
-    foundDate: '2026-05-26', 
-    foundBy: 'Staff Member C', 
-    location: 'Front Desk',
-    description: 'US Passport, expired 2027',
-    guestName: 'Michael Brown',
-    guestContact: '+251911333333',
-    custodyLog: [
-      { action: 'Found', timestamp: '2026-05-26 11:00', performedBy: 'Staff Member C' },
-      { action: 'Logged', timestamp: '2026-05-26 11:15', performedBy: 'Front Desk' },
-      { action: 'Returned', timestamp: '2026-05-26 12:00', performedBy: 'Front Desk' }
-    ]
-  },
-];
+const LIFECYCLE_ICON: Record<Lifecycle, LucideIcon> = {
+  'Found': Archive,
+  'Claimed': UserSearch,
+  'Returned to Owner': RotateCcw,
+  'Transferred to Lost Property': Truck,
+  'Donated': Package,
+  'Disposed': Trash2,
+};
+
+const LIFECYCLE_TONE: Record<Lifecycle, StatusTone> = {
+  'Found': 'neutral',
+  'Claimed': 'info',
+  'Returned to Owner': 'success',
+  'Transferred to Lost Property': 'info',
+  'Donated': 'neutral',
+  'Disposed': 'danger',
+};
+
+const LIFECYCLE_LABEL: Record<Lifecycle, string> = {
+  'Found': 'Stored',
+  'Claimed': 'Matched',
+  'Returned to Owner': 'Returned',
+  'Transferred to Lost Property': 'Shipped',
+  'Donated': 'Donated',
+  'Disposed': 'Disposed',
+};
+
+const CATEGORIES: Category[] = ['Electronics', 'Jewelry', 'Clothing', 'Documents', 'Keys', 'Luggage', 'Toiletries', 'Other'];
+
+function authHeaders(json = false): Record<string, string> {
+  const token = typeof window !== 'undefined' ? localStorage.getItem('auth_token') : null;
+  const headers: Record<string, string> = {};
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+  if (json) headers['Content-Type'] = 'application/json';
+  return headers;
+}
 
 export default function LostAndFoundModule() {
-  const [items, setItems] = React.useState<LostFoundItem[]>(initialItems);
-  const [searchTerm, setSearchTerm] = React.useState('');
-  const [statusFilter, setStatusFilter] = React.useState<'All' | 'Found' | 'Logged' | 'Vaulted' | 'Claim Pending' | 'Returned' | 'Disposed'>('All');
-
-  const filteredItems = items.filter(i => {
-    const matchesSearch = i.item.toLowerCase().includes(searchTerm.toLowerCase()) || i.room.includes(searchTerm);
-    const matchesStatus = statusFilter === 'All' || i.status === statusFilter;
-    return matchesSearch && matchesStatus;
+  const { addNotification, currentPropertyId } = useERP();
+  const [items, setItems] = useState<LostItem[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [filter, setFilter] = useState<'All' | Lifecycle>('All');
+  const [search, setSearch] = useState('');
+  const [showForm, setShowForm] = useState(false);
+  const [form, setForm] = useState({
+    itemName: '',
+    itemDescription: '',
+    itemCategory: 'Other' as Category,
+    foundLocation: '',
+    roomNumber: '',
+    foundByName: '',
+    dateFound: new Date().toISOString().slice(0, 10),
+    storageLocation: '',
   });
 
-  const updateItemStatus = (itemId: string, newStatus: LostFoundItem['status']) => {
-    setItems(prev => prev.map(item => {
-      if (item.id === itemId) {
-        const newLog = {
-          action: newStatus,
-          timestamp: new Date().toISOString().slice(0, 16).replace('T', ' '),
-          performedBy: 'Current User'
-        };
-        return {
-          ...item,
-          status: newStatus,
-          custodyLog: [...item.custodyLog, newLog]
-        };
-      }
-      return item;
-    }));
+  const loadItems = useCallback(async () => {
+    if (!currentPropertyId) return;
+    setLoading(true);
+    try {
+      const res = await fetch(`/api/hk-portal/lost-found/${currentPropertyId}`, { headers: authHeaders() });
+      if (!res.ok) throw new Error(`Failed to load (${res.status})`);
+      const json = await res.json();
+      setItems(json.items || []);
+    } catch (err) {
+      console.error('Error loading lost & found:', err);
+      addNotification('Failed to load lost & found items', 'warning', 'Housekeeping');
+    } finally {
+      setLoading(false);
+    }
+  }, [currentPropertyId, addNotification]);
+
+  useEffect(() => { loadItems(); }, [loadItems]);
+
+  const filtered = useMemo(
+    () =>
+      items.filter(i => {
+        const matchesFilter = filter === 'All' || i.status === filter;
+        const s = search.toLowerCase();
+        const matchesSearch =
+          (i.item_name || '').toLowerCase().includes(s) ||
+          (i.item_description || '').toLowerCase().includes(s) ||
+          (i.found_location || '').toLowerCase().includes(s) ||
+          (i.found_by_name || '').toLowerCase().includes(s) ||
+          (i.room_number || '').toLowerCase().includes(s) ||
+          (i.claimed_by || '').toLowerCase().includes(s) ||
+          (i.id || '').toLowerCase().includes(s);
+        return matchesFilter && matchesSearch;
+      }),
+    [items, filter, search]
+  );
+
+  const advance = async (id: string, next: Lifecycle) => {
+    const update: Record<string, unknown> = { status: next };
+    if (next === 'Claimed' || next === 'Returned to Owner') {
+      update.claimed_date = new Date().toISOString().slice(0, 10);
+    }
+    try {
+      const res = await fetch(`/api/hk-portal/lost-found/${id}`, {
+        method: 'PUT',
+        headers: authHeaders(true),
+        body: JSON.stringify(update),
+      });
+      if (!res.ok) throw new Error(`Failed to update (${res.status})`);
+      addNotification(`Lost item ${id} → ${LIFECYCLE_LABEL[next]}`, 'info', 'Housekeeping');
+      loadItems();
+    } catch (err) {
+      console.error(err);
+      addNotification('Failed to update item status', 'warning', 'Housekeeping');
+    }
   };
 
+  const submitItem = async () => {
+    if (!currentPropertyId) {
+      addNotification('No active property selected', 'warning', 'Housekeeping');
+      return;
+    }
+    if (!form.itemName.trim() || !form.foundLocation.trim() || !form.foundByName.trim()) {
+      addNotification('Item name, found location, and finder are required', 'warning', 'Housekeeping');
+      return;
+    }
+    try {
+      const res = await fetch('/api/hk-portal/lost-found', {
+        method: 'POST',
+        headers: authHeaders(true),
+        body: JSON.stringify({
+          propertyId: currentPropertyId,
+          itemName: form.itemName.trim(),
+          itemDescription: form.itemDescription.trim() || undefined,
+          itemCategory: form.itemCategory,
+          foundLocation: form.foundLocation.trim(),
+          foundBy: form.foundByName.trim(),
+          foundByName: form.foundByName.trim(),
+          roomNumber: form.roomNumber.trim() || undefined,
+          dateFound: form.dateFound,
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || `Failed to register (${res.status})`);
+      }
+      addNotification('Lost & found item registered', 'success', 'Housekeeping');
+      setShowForm(false);
+      setForm({
+        itemName: '', itemDescription: '', itemCategory: 'Other',
+        foundLocation: '', roomNumber: '', foundByName: '',
+        dateFound: new Date().toISOString().slice(0, 10), storageLocation: '',
+      });
+      loadItems();
+    } catch (err: any) {
+      addNotification(err.message || 'Failed to register item', 'warning', 'Housekeeping');
+    }
+  };
+
+  const counts = (['Found', 'Claimed', 'Returned to Owner', 'Transferred to Lost Property', 'Disposed'] as Lifecycle[]).map(l => ({
+    label: LIFECYCLE_LABEL[l], value: items.filter(i => i.status === l).length, icon: LIFECYCLE_ICON[l], tone: LIFECYCLE_TONE[l],
+  }));
+
   return (
-    <div className="space-y-6 animate-fade-in" id="lost-found-vault">
-      <div className="flex flex-col md:row justify-between items-start md:items-center gap-4">
-        <div>
-          <span className="text-[10px] font-mono font-black text-rose-500 uppercase tracking-widest">Secured Evidence Vault</span>
-          <h2 className="text-2xl font-black text-slate-900 dark:text-white">Lost & Found Inventory</h2>
-        </div>
-        <div className="flex gap-2">
-           <div className="relative">
-             <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-             <input 
-               type="text" 
-               placeholder="Search item or room..." 
-               value={searchTerm}
-               onChange={(e) => setSearchTerm(e.target.value)}
-               className="pl-9 pr-4 py-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-xs outline-none focus:ring-2 focus:ring-rose-500/20 transition w-64"
-             />
-           </div>
-           <select 
-             value={statusFilter}
-             onChange={(e) => setStatusFilter(e.target.value as any)}
-             className="px-4 py-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-xs outline-none focus:ring-2 focus:ring-rose-500/20 transition"
-           >
-             <option value="All">All Status</option>
-             <option value="Found">Found</option>
-             <option value="Logged">Logged</option>
-             <option value="Vaulted">Vaulted</option>
-             <option value="Claim Pending">Claim Pending</option>
-             <option value="Returned">Returned</option>
-             <option value="Disposed">Disposed</option>
-           </select>
-           <button className="px-4 py-2 bg-slate-950 dark:bg-white text-white dark:text-slate-950 rounded-xl font-bold text-xs shadow-lg flex items-center gap-2">
-             <Plus size={14} /> Intake Item
-           </button>
-        </div>
+    <div className={layout.sectionStack}>
+      <PageHeader
+        title="Lost & Found"
+        subtitle="Item registration & lifecycle management."
+        icon={Package}
+        actions={
+          <div className="flex gap-2">
+            <button onClick={loadItems} disabled={loading} className={button.ghost + ' text-xs'}>
+              <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} /> Refresh
+            </button>
+            <button onClick={() => setShowForm(true)} className={button.primary}>
+              <Plus className="w-4 h-4" /> Register Item
+            </button>
+          </div>
+        }
+      />
+
+      <div className={layout.kpiGrid}>
+        {counts.map(t => (
+          <StatCard key={t.label} title={t.label} value={t.value} icon={t.icon} tone={t.tone} />
+        ))}
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        {/* Item Grid */}
-        <div className="lg:col-span-8 grid grid-cols-1 md:grid-cols-2 gap-4">
-           {filteredItems.map((item) => (
-             <div key={item.id} className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-5 rounded-3xl shadow-3xl flex gap-4 transition-all hover:border-rose-200 group">
-                <div className="w-20 h-20 bg-slate-50 dark:bg-slate-950 rounded-2xl flex items-center justify-center shrink-0 border border-slate-100 dark:border-slate-850 relative overflow-hidden">
-                   {item.category === 'Electronics' ? <Camera size={32} className="text-slate-300" /> : 
-                    item.category === 'Documents' ? <Package size={32} className="text-slate-300" /> : 
-                    <Package size={32} className="text-slate-300" />}
-                   <div className="absolute top-1 right-1">
-                     <div className={`w-2 h-2 rounded-full ${
-                       item.status === 'Vaulted' ? 'bg-emerald-500' : 
-                       item.status === 'Claim Pending' ? 'bg-amber-500' : 
-                       item.status === 'Returned' ? 'bg-blue-500' : 
-                       item.status === 'Disposed' ? 'bg-slate-500' : 
-                       'bg-rose-500'
-                     }`} />
-                   </div>
-                </div>
-
-                <div className="flex-1 space-y-2">
-                   <div className="flex justify-between items-start">
-                      <div className="flex flex-col leading-tight">
-                        <span className="text-xs font-black text-slate-900 dark:text-white leading-none">{item.item}</span>
-                        <span className="text-[10px] font-mono text-slate-400 uppercase">Room {item.room} • {item.id}</span>
-                      </div>
-                   </div>
-
-                   {item.description && (
-                     <p className="text-[9px] text-slate-500 italic">{item.description}</p>
-                   )}
-
-                   {item.guestName && (
-                     <div className="text-[9px] text-slate-600">
-                       <span className="font-bold">Guest:</span> {item.guestName}
-                     </div>
-                   )}
-
-                   <div className="flex gap-2 text-[9px] font-mono">
-                      <div className="flex items-center gap-1 text-slate-500">
-                        <MapPin size={10} /> {item.location}
-                      </div>
-                      <div className="flex items-center gap-1 text-slate-500">
-                        <Clock size={10} /> {item.foundDate}
-                      </div>
-                   </div>
-
-                   <div className="flex items-center justify-between pt-2">
-                      <span className={`text-[8px] font-black px-1.5 py-0.5 rounded uppercase ${
-                        item.status === 'Vaulted' ? 'bg-emerald-50 text-emerald-700' :
-                        item.status === 'Claim Pending' ? 'bg-amber-50 text-amber-700' :
-                        item.status === 'Returned' ? 'bg-blue-50 text-blue-700' :
-                        item.status === 'Disposed' ? 'bg-slate-100 text-slate-600' :
-                        item.status === 'Logged' ? 'bg-indigo-50 text-indigo-700' :
-                        'bg-rose-50 text-rose-700'
-                      }`}>{item.status}</span>
-                      <div className="flex gap-1">
-                        {item.status === 'Claim Pending' && (
-                          <button 
-                            onClick={() => updateItemStatus(item.id, 'Returned')}
-                            className="text-[9px] font-black flex items-center gap-1 text-emerald-600 hover:bg-emerald-50 px-2 py-1 rounded transition-colors"
-                          >
-                            <CheckCircle size={10} /> Return
-                          </button>
-                        )}
-                        {item.status === 'Logged' && (
-                          <button 
-                            onClick={() => updateItemStatus(item.id, 'Vaulted')}
-                            className="text-[9px] font-black flex items-center gap-1 text-indigo-600 hover:bg-indigo-50 px-2 py-1 rounded transition-colors"
-                          >
-                            Vault
-                          </button>
-                        )}
-                      </div>
-                   </div>
-                </div>
-             </div>
-           ))}
+      <SectionCard pad="md">
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <div className="flex bg-slate-100 dark:bg-slate-900/40 p-1 rounded-xl gap-1 flex-wrap">
+            {(['All', 'Found', 'Claimed', 'Returned to Owner', 'Transferred to Lost Property', 'Disposed'] as const).map(f => (
+              <button key={f} onClick={() => setFilter(f)} className={`px-3 py-1.5 rounded-lg text-xs font-medium transition ${filter === f ? 'bg-white dark:bg-slate-700 text-gray-900 dark:text-white shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>
+                {f === 'All' ? 'All' : LIFECYCLE_LABEL[f]}
+              </button>
+            ))}
+          </div>
+          <div className="relative w-full max-w-xs">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+            <input placeholder="Search item, location, owner..." value={search} onChange={e => setSearch(e.target.value)} className="w-full pl-9 pr-3 py-2 text-sm border border-gray-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-gray-900 dark:text-white outline-none focus:ring-1 focus:ring-[var(--color-accent-operations)]" />
+          </div>
         </div>
+      </SectionCard>
 
-        {/* Sidebar Controls */}
-        <div className="lg:col-span-4 space-y-6">
-           <div className="bg-slate-950 p-6 rounded-3xl text-white space-y-6 shadow-xl relative overflow-hidden">
-             <div className="absolute -right-4 -top-4 opacity-10">
-                <ShieldCheck size={120} />
-             </div>
-             <div>
-               <h3 className="font-black text-sm uppercase tracking-widest font-sans">Security Protocol</h3>
-               <p className="text-[10px] opacity-60 mt-1 font-sans">Chain of custody auditing enabled for all valuable intakes.</p>
-             </div>
-             
-             <div className="space-y-4 relative z-10">
-                <div className="flex items-center gap-3">
-                   <div className="w-8 h-8 rounded-full bg-white/10 flex items-center justify-center">
-                      <UserCheck size={16} className="text-rose-400" />
-                   </div>
-                   <div>
-                     <span className="text-[9px] font-mono text-slate-400 uppercase block font-bold">Authorized Keeper</span>
-                     <span className="text-xs font-black font-sans">Staff Member A</span>
-                   </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        {filtered.map(i => {
+          const Icon = LIFECYCLE_ICON[i.status] || Archive;
+          const tone = LIFECYCLE_TONE[i.status] || 'neutral';
+          return (
+            <div key={i.id} className="bg-white dark:bg-slate-800 rounded-2xl border border-gray-200 dark:border-slate-700 card-shadow smooth-transition overflow-hidden">
+              <div className={`h-1 ${statusTone[tone].dot}`} />
+              <div className="p-5">
+                <div className="flex justify-between items-start mb-3">
+                  <div className="flex items-center gap-2">
+                    <div className={`p-2 rounded-xl ${statusTone[tone].soft}`}><Package className="w-4 h-4" /></div>
+                    <div>
+                      <h3 className="text-sm font-bold text-gray-900 dark:text-white leading-tight">{i.item_name}</h3>
+                      <p className="text-xs text-gray-500">{i.id}</p>
+                    </div>
+                  </div>
+                  {i.photo_url && <Camera className="w-3.5 h-3.5 text-gray-400" />}
                 </div>
 
-                <div className="bg-white/5 border border-white/10 p-3 rounded-2xl space-y-2">
-                   <span className="text-[9px] font-mono font-black text-rose-400 uppercase block">Disposal Schedule</span>
-                   <p className="text-[10px] opacity-70 leading-tight font-sans">Items older than 90 days are automatically flagged for charitable disposal or staff claim cycles.</p>
+                <div className="space-y-1.5 text-xs mb-3">
+                  <p className="flex items-center gap-1.5 text-gray-500"><Badge tone="neutral">{i.item_category || 'Other'}</Badge></p>
+                  <p className="flex items-center gap-1.5 text-gray-700 dark:text-gray-300"><MapPin className="w-3 h-3 text-gray-400" /> {i.found_location}</p>
+                  <p className="flex items-center gap-1.5 text-gray-700 dark:text-gray-300"><Calendar className="w-3 h-3 text-gray-400" /> {i.found_date}</p>
+                  <p className="flex items-center gap-1.5 text-gray-700 dark:text-gray-300"><User className="w-3 h-3 text-gray-400" /> Finder: {i.found_by_name || i.found_by || '—'}</p>
+                  {i.room_number && <p className="flex items-center gap-1.5 text-gray-700 dark:text-gray-300"><MapPin className="w-3 h-3 text-gray-400" /> Room {i.room_number}</p>}
+                  {i.claimed_by && <p className="flex items-center gap-1.5 text-[var(--color-accent-operations)]"><UserSearch className="w-3 h-3" /> Claimed by: {i.claimed_by}</p>}
                 </div>
-             </div>
-           </div>
 
-           <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-6 rounded-3xl space-y-4 shadow-3xs">
-              <div className="flex items-center gap-2">
-                <Filter size={14} className="text-slate-400" />
-                <span className="text-[10px] font-mono font-black text-slate-400 uppercase tracking-widest">Vault Analytics</span>
+                <div className="pt-3 border-t border-gray-100 dark:border-slate-700 flex items-center justify-between">
+                  <span className={`flex items-center gap-1.5 text-xs font-bold uppercase ${statusTone[tone].text}`}><Icon className="w-3.5 h-3.5" /> {LIFECYCLE_LABEL[i.status]}</span>
+                  <div className="flex gap-1.5">
+                    {i.status === 'Found' && (
+                      <button onClick={() => advance(i.id, 'Claimed')} className={button.ghost + ' text-xs'}>Match</button>
+                    )}
+                    {i.status === 'Claimed' && (
+                      <>
+                        <button onClick={() => advance(i.id, 'Returned to Owner')} className={button.ghost + ' text-xs'}>Return</button>
+                        <button onClick={() => advance(i.id, 'Transferred to Lost Property')} className={button.ghost + ' text-xs'}>Ship</button>
+                      </>
+                    )}
+                    {(i.status === 'Found' || i.status === 'Claimed') && (
+                      <button onClick={() => advance(i.id, 'Disposed')} className={button.ghost + ' text-xs'}>Dispose</button>
+                    )}
+                  </div>
+                </div>
               </div>
-              <div className="space-y-4">
-                 {[
-                   { label: 'Unclaimed Valuables', value: '12', color: 'text-rose-600' },
-                   { label: 'Successful Returns', value: '84%', color: 'text-emerald-600' },
-                   { label: 'Average Claim Time', value: '2.4 days', color: 'text-indigo-600' },
-                 ].map((s, i) => (
-                   <div key={i} className="flex justify-between items-center pb-2 border-b dark:border-slate-850">
-                      <span className="text-xs font-bold text-slate-600 dark:text-slate-400">{s.label}</span>
-                      <span className={`text-sm font-black ${s.color}`}>{s.value}</span>
-                   </div>
-                 ))}
-              </div>
-           </div>
-        </div>
+            </div>
+          );
+        })}
       </div>
+      {filtered.length === 0 && <div className="bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 p-8 rounded-2xl text-center text-sm text-gray-500">{loading ? 'Loading…' : 'No items match the filters.'}</div>}
+
+      {showForm && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white dark:bg-slate-800 rounded-2xl max-w-lg w-full max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between p-5 border-b border-gray-200 dark:border-slate-700">
+              <h2 className="text-lg font-bold text-gray-900 dark:text-white">Register Lost & Found Item</h2>
+              <button onClick={() => setShowForm(false)} className="p-2 hover:bg-gray-100 dark:hover:bg-slate-700 rounded-lg"><X className="w-5 h-5" /></button>
+            </div>
+            <div className="p-5 space-y-4">
+              <div>
+                <label className="block text-xs font-bold uppercase text-gray-500 mb-1">Item Name *</label>
+                <input value={form.itemName} onChange={e => setForm({ ...form, itemName: e.target.value })} className="w-full px-3 py-2 text-sm border border-gray-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-gray-900 dark:text-white" />
+              </div>
+              <div>
+                <label className="block text-xs font-bold uppercase text-gray-500 mb-1">Description</label>
+                <textarea value={form.itemDescription} onChange={e => setForm({ ...form, itemDescription: e.target.value })} rows={2} className="w-full px-3 py-2 text-sm border border-gray-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-gray-900 dark:text-white" />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-bold uppercase text-gray-500 mb-1">Category</label>
+                  <select value={form.itemCategory} onChange={e => setForm({ ...form, itemCategory: e.target.value as Category })} className="w-full px-3 py-2 text-sm border border-gray-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-gray-900 dark:text-white">
+                    {CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-bold uppercase text-gray-500 mb-1">Room (optional)</label>
+                  <input value={form.roomNumber} onChange={e => setForm({ ...form, roomNumber: e.target.value })} className="w-full px-3 py-2 text-sm border border-gray-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-gray-900 dark:text-white" />
+                </div>
+              </div>
+              <div>
+                <label className="block text-xs font-bold uppercase text-gray-500 mb-1">Found Location *</label>
+                <input value={form.foundLocation} onChange={e => setForm({ ...form, foundLocation: e.target.value })} placeholder="e.g. Room 204, Lobby, Spa" className="w-full px-3 py-2 text-sm border border-gray-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-gray-900 dark:text-white" />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-bold uppercase text-gray-500 mb-1">Finder *</label>
+                  <input value={form.foundByName} onChange={e => setForm({ ...form, foundByName: e.target.value })} className="w-full px-3 py-2 text-sm border border-gray-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-gray-900 dark:text-white" />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold uppercase text-gray-500 mb-1">Date Found</label>
+                  <input type="date" value={form.dateFound} onChange={e => setForm({ ...form, dateFound: e.target.value })} className="w-full px-3 py-2 text-sm border border-gray-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-gray-900 dark:text-white" />
+                </div>
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 p-5 border-t border-gray-200 dark:border-slate-700">
+              <button onClick={() => setShowForm(false)} className={button.ghost}>Cancel</button>
+              <button onClick={submitItem} className={button.primary}>Register</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

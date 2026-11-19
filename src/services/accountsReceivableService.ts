@@ -33,6 +33,8 @@ export interface ArCustomer {
   payment_terms?: string;
   commission_rate?: number;
   is_active?: boolean;
+  property_id?: string | null;
+  property_name?: string | null;
   created_at?: string;
   updated_at?: string;
 }
@@ -53,6 +55,44 @@ export interface FolioWithAging {
   payment_status: string | null;
   days_outstanding: number;
   aging_bucket: string;
+  property_id?: string | null;
+  property_name?: string | null;
+}
+
+export interface ArCreditNote {
+  id: string;
+  note_number: string;
+  note_type: 'Credit' | 'Debit';
+  customer_id: string | null;
+  customer_name?: string | null;
+  invoice_id: string | null;
+  reason: string | null;
+  amount: number;
+  status: 'Pending' | 'Applied' | 'Void';
+  applied_at: string | null;
+  property_id?: string | null;
+  property_name?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface ArCollection {
+  id: string;
+  customer_id: string | null;
+  customer_name?: string | null;
+  folio_id: string | null;
+  amount: number;
+  days_overdue: number;
+  last_contact: string | null;
+  next_action: string | null;
+  next_action_date: string | null;
+  status: 'In Progress' | 'Promised' | 'Escalated' | 'Resolved';
+  notes: string | null;
+  assigned_to: string | null;
+  property_id?: string | null;
+  property_name?: string | null;
+  created_at?: string;
+  updated_at?: string;
 }
 
 export interface AgingSummary {
@@ -76,6 +116,82 @@ export async function createCustomer(customer: Partial<ArCustomer>): Promise<{ s
 
 export async function fetchFoliosWithAging(): Promise<FolioWithAging[]> {
   return apiRequest<FolioWithAging[]>('/folios');
+}
+
+// ── Credit/Debit Notes ──────────────────────────────────────────────────
+export async function fetchCreditNotes(params: { noteType?: string; status?: string; propertyId?: string } = {}): Promise<ArCreditNote[]> {
+  const qs = new URLSearchParams();
+  if (params.noteType) qs.set('noteType', params.noteType);
+  if (params.status) qs.set('status', params.status);
+  if (params.propertyId) qs.set('propertyId', params.propertyId);
+  const q = qs.toString();
+  return apiRequest<ArCreditNote[]>(`/credit-notes${q ? `?${q}` : ''}`);
+}
+
+export async function createCreditNote(payload: {
+  noteType: 'Credit' | 'Debit';
+  customerId?: string;
+  invoiceId?: string;
+  reason?: string;
+  amount: number;
+  status?: string;
+  propertyId?: string;
+}): Promise<ArCreditNote> {
+  return apiRequest<ArCreditNote>('/credit-notes', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function updateCreditNote(id: string, patch: Partial<{ status: string; reason: string; amount: number }>): Promise<ArCreditNote> {
+  return apiRequest<ArCreditNote>(`/credit-notes/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify(patch),
+  });
+}
+
+export async function deleteCreditNote(id: string): Promise<{ success: boolean }> {
+  return apiRequest<{ success: boolean }>(`/credit-notes/${id}`, { method: 'DELETE' });
+}
+
+// ── Collections ──────────────────────────────────────────────────────────
+export async function fetchCollections(params: { status?: string; propertyId?: string } = {}): Promise<ArCollection[]> {
+  const qs = new URLSearchParams();
+  if (params.status) qs.set('status', params.status);
+  if (params.propertyId) qs.set('propertyId', params.propertyId);
+  const q = qs.toString();
+  return apiRequest<ArCollection[]>(`/collections${q ? `?${q}` : ''}`);
+}
+
+export async function createCollection(payload: {
+  customerId?: string;
+  folioId?: string;
+  amount: number;
+  daysOverdue?: number;
+  lastContact?: string;
+  nextAction?: string;
+  nextActionDate?: string;
+  status?: string;
+  notes?: string;
+  propertyId?: string;
+}): Promise<ArCollection> {
+  return apiRequest<ArCollection>('/collections', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function updateCollection(id: string, patch: Partial<{
+  status: string; nextAction: string; nextActionDate: string; lastContact: string; notes: string; amount: number; daysOverdue: number;
+}>): Promise<ArCollection> {
+  return apiRequest<ArCollection>(`/collections/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify(patch),
+  });
+}
+
+export async function deleteCollection(id: string): Promise<{ success: boolean }> {
+  return apiRequest<{ success: boolean }>(`/collections/${id}`, { method: 'DELETE' });
 }
 
 export function computeAgingSummary(folios: FolioWithAging[]): AgingSummary {

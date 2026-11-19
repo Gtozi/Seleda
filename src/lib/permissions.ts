@@ -170,6 +170,54 @@ export const hasPermission = (
     custom: [], // Permissions handled via customRoleId and allowedSettings
     gm: [], // Has all permissions
     owner: [], // Has all permissions
+    // Role aliases used by fallback users and seeded system_users
+    'front office manager': [
+      'viewRatePlans',
+      'editRatePlans',
+      'viewRoomOutlook',
+      'viewSalesCampaigns',
+    ],
+    fb_manager: [
+      'viewRoomOutlook',
+      'accessPOS',
+    ],
+    fin_manager: [
+      'viewRatePlans',
+      'editRatePlans',
+      'viewRoomOutlook',
+      'adjustHotelTaxes',
+      'voidTransactions',
+      'accessAuditLogs',
+    ],
+    ops_manager: [
+      'viewRoomOutlook',
+      'managePOSOutlets',
+      'assignPOSRoles',
+    ],
+    concierge: [
+      'viewRoomOutlook',
+    ],
+    concierge_manager: [
+      'viewRoomOutlook',
+    ],
+    guest_services_manager: [
+      'viewRoomOutlook',
+    ],
+    spa: [
+      'viewRoomOutlook',
+    ],
+    banquet: [
+      'viewRoomOutlook',
+    ],
+    transportation: [
+      'viewRoomOutlook',
+    ],
+    revenue: [
+      'viewRatePlans',
+      'viewSalesCampaigns',
+    ],
+    security_manager: [],
+    guest: [],
   };
 
   return rolePermissions[user.role]?.includes(permission) || false;
@@ -216,6 +264,19 @@ export const canAccessTab = (
     general_manager: ['executive', 'operations'],
     gm: ['executive', 'operations'],
     owner: ['executive', 'operations'],
+    'front office manager': ['frontoffice'],
+    fb_manager: ['f&b', 'pos'],
+    fin_manager: ['finance'],
+    ops_manager: ['operations', 'executive', 'pos'],
+    concierge: ['concierge'],
+    concierge_manager: ['concierge'],
+    guest_services_manager: ['concierge'],
+    spa: ['spa-wellness'],
+    banquet: ['banquet-events'],
+    transportation: ['operations'],
+    revenue: ['revenue'],
+    security_manager: ['operations'],
+    guest: [],
   };
 
   // For custom roles, rely on explicit allowedTabs
@@ -227,6 +288,37 @@ export const canAccessTab = (
   // allowedTabs cannot override role boundaries
   const allowedTabsForRole = roleToTabMap[user.role];
   return !!(allowedTabsForRole && allowedTabsForRole.includes(tab));
+};
+
+/**
+ * Roles that may read the Executive BI portal without holding an exec:* grant.
+ * Director-tier users are routed to /erp/executive by ROLE_TO_DEPT, so they get
+ * read-only access. Mutation endpoints still require the granular exec:*
+ * permissions, which these roles do not hold.
+ * NOTE: keep in sync with EXEC_VIEW_ROLES in server/routes/executive.routes.ts.
+ */
+export const EXEC_PORTAL_VIEW_ROLES: ReadonlySet<string> = new Set([
+  'director',
+  'managing_director',
+  'managing director',
+  'exec',
+  'general manager',
+]);
+
+/**
+ * Whether the user can read the Executive BI portal.
+ * UI-level hint used by DepartmentSwitcher / DepartmentRoute — the server still
+ * enforces exec:view on every /api/executive/* endpoint.
+ */
+export const canViewExecutivePortal = (user: User | null): boolean => {
+  if (!user) return false;
+  if (user.status === 'Inactive' || user.status === 'Pending') return false;
+  if (isFullAccessRole(user.role)) return true;
+  const role = String(user.role || '').trim().toLowerCase();
+  if (EXEC_PORTAL_VIEW_ROLES.has(role)) return true;
+  if (user.allowedTabs && Array.isArray(user.allowedTabs) && (user.allowedTabs as string[]).includes('executive')) return true;
+  if ((user.allowedSettings as Record<string, unknown> | undefined)?.['exec:view'] === true) return true;
+  return false;
 };
 
 /**

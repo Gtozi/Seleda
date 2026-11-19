@@ -6,6 +6,9 @@
 import React from 'react';
 import { ShoppingCart, AlertTriangle, Warehouse, Plus, Edit2, Trash2, MapPin } from 'lucide-react';
 import { InventoryItem } from '../../types/inventory';
+import StatCard from '../../FrontOffice/StatCard';
+import { SectionCard } from '../../FrontOffice/ui';
+import { button } from '../../FrontOffice/brandTheme';
 
 interface InventoryCategoryProps {
   inventoryItems: InventoryItem[];
@@ -33,25 +36,10 @@ export default function InventoryCategory({
   return (
     <div className="space-y-6">
       {/* Internal Dashboard metrics */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        {[
-          { label: 'Unique SKUs Mapped', count: inventoryItems.length, desc: 'Central Item Registry', icon: ShoppingCart, accent: 'text-indigo-500' },
-          { label: 'Reorder Alerts Status', count: reorderAlertCount, desc: 'Critical Thresholds', icon: AlertTriangle, accent: reorderAlertCount > 0 ? 'text-rose-500 animate-pulse' : 'text-slate-400' },
-          { label: 'Asset Book Value (FIFO)', count: formatAmount(totalStockVal), desc: 'Inventory Asset Ledger', icon: Warehouse, accent: 'text-emerald-500' },
-        ].map((s, i) => (
-          <div key={i} className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-5 rounded-3xl flex items-center justify-between shadow-xs">
-            <div className="flex items-center gap-4">
-              <div className="w-10 h-10 bg-slate-50 dark:bg-slate-850 flex items-center justify-center rounded-xl">
-                <s.icon size={20} className={s.accent} />
-              </div>
-              <div>
-                <span className="text-[10px] font-mono font-black text-slate-400 uppercase tracking-widest">{s.label}</span>
-                <h4 className="text-sm md:text-base font-black text-slate-900 dark:text-white leading-none mt-1">{s.count}</h4>
-              </div>
-            </div>
-            <span className="text-[8px] font-bold text-slate-400 bg-slate-100 dark:bg-slate-800 px-2 py-1 rounded-sm uppercase font-mono">{s.desc}</span>
-          </div>
-        ))}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+        <StatCard title="Unique SKUs Mapped" value={inventoryItems.length} icon={ShoppingCart} tone="accent" />
+        <StatCard title="Reorder Alerts Status" value={reorderAlertCount} icon={AlertTriangle} tone={reorderAlertCount > 0 ? 'danger' : 'success'} />
+        <StatCard title="Asset Book Value (FIFO)" value={formatAmount(totalStockVal)} icon={Warehouse} tone="success" />
       </div>
 
       {/* Master Items directory */}

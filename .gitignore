@@ -4,5 +4,7 @@ dist/
 coverage/
 .DS_Store
 *.log
+tsc-out.txt
+.tmp-*.js
 
 !.env.example

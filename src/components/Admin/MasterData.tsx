@@ -49,6 +49,9 @@ import InventoryCategory from './MasterData/InventoryCategory';
 import FinanceCategory from './MasterData/FinanceCategory';
 import InfrastructureCategory from './MasterData/InfrastructureCategory';
 import AttributesCategory from './MasterData/AttributesCategory';
+import StatCard from '../FrontOffice/StatCard';
+import { PageHeader, SectionCard, Badge } from '../FrontOffice/ui';
+import { button } from '../FrontOffice/brandTheme';
 
 export default function MasterData() {
   const {
@@ -318,54 +321,82 @@ export default function MasterData() {
         )}
       </AnimatePresence>
 
-      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-        <div>
-          <span className="text-[10px] font-mono font-black text-amber-500 uppercase tracking-widest block mb-0.5">Global System Registries</span>
-          <h2 className="text-2xl font-black text-slate-900 dark:text-white uppercase tracking-tight flex items-center gap-2">
-            <Database className="text-amber-500" size={24} /> Master Data Repositories
-          </h2>
-        </div>
-        
-        <div className="flex flex-wrap gap-2 w-full md:w-auto">
-          <div className="relative flex-1 md:flex-initial">
-            <Search size={14} className="absolute left-3/5 md:left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-            <input 
-              type="text" 
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder={`Search in ${category}...`} 
-              className="pl-9 pr-4 py-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-xs outline-none focus:ring-2 focus:ring-indigo-500/20 w-full md:w-64"
-            />
-          </div>
-          
-          <button 
-            onClick={() => setShowAddModal(true)}
-            className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-black uppercase tracking-widest flex items-center gap-2 transition cursor-pointer"
-          >
-            <Plus size={14} /> Add new entry
-          </button>
-        </div>
-      </div>
+      <PageHeader
+        title="Master Data Repositories"
+        subtitle="Global system registries for rooms, guests, inventory, finance, infrastructure, and attributes"
+        icon={Database}
+        actions={
+          <>
+            <div className="relative">
+              <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder={`Search in ${category}...`}
+                className="pl-9 pr-4 py-2 text-sm border border-gray-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-gray-900 dark:text-white outline-none focus:ring-1 focus:ring-[var(--color-accent-operations)] w-64"
+              />
+            </div>
+            <button
+              onClick={() => setShowAddModal(true)}
+              className={button.primary}
+            >
+              <Plus size={16} /> Add new entry
+            </button>
+          </>
+        }
+      />
 
-      {/* Horizontal Tab Navigation */}
-      <div className="px-6 pt-4 flex justify-center">
-        <div className="flex bg-slate-100 p-1 border border-slate-200 rounded-xl">
-          {CATEGORY_TABS.map(t => {
-            const Icon = t.icon;
-            return (
-              <button key={t.id} onClick={() => {
+      {/* Success banner */}
+      <AnimatePresence>
+        {successMessage && (
+          <motion.div
+            initial={{ opacity: 0, y: -20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -20 }}
+            className="bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 px-4 py-3 rounded-xl border border-emerald-100 dark:border-emerald-500/20 flex items-center justify-between text-sm font-medium"
+          >
+            <div className="flex items-center gap-2">
+              <Check size={16} />
+              <span>{successMessage}</span>
+            </div>
+            <button onClick={() => setSuccessMessage(null)} className="opacity-85 hover:opacity-100">
+              <X size={14} />
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Category Tabs */}
+      <div className="flex gap-2 flex-wrap">
+        {CATEGORY_TABS.map(t => {
+          const Icon = t.icon;
+          return (
+            <button
+              key={t.id}
+              onClick={() => {
                 setCategory(t.id);
                 setSearchQuery('');
                 setInspectItem(null);
               }}
-                className={`px-4 py-2 flex items-center justify-center gap-2 rounded-lg text-xs font-sans font-bold transition-all ${
-                  category === t.id ? 'bg-indigo-600 text-white shadow-md' : 'text-slate-600 hover:text-slate-900 bg-white'
-                }`}>
-                <Icon size={14} /> {t.label}
-              </button>
-            );
-          })}
-        </div>
+              className={`px-4 py-2 flex items-center gap-2 rounded-xl text-sm font-medium transition ${
+                category === t.id
+                  ? 'bg-slate-950 dark:bg-slate-700 text-white'
+                  : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
+              }`}
+            >
+              <Icon size={14} /> {t.label}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* KPI Cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <StatCard title="Rooms" value={rooms.length} icon={Home} tone="accent" />
+        <StatCard title="Guests" value={guests.length} icon={Users} tone="info" />
+        <StatCard title="Inventory Items" value={inventoryItems.length} icon={ShoppingCart} tone="success" />
+        <StatCard title="Accounts" value={chartOfAccounts.length} icon={DollarSign} tone="warning" />
       </div>
 
       {/* Dynamic Content Panel */}
