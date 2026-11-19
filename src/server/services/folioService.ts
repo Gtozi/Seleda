@@ -166,37 +166,6 @@ function userLabel(user?: User | null): { id: string | null; name: string | null
   return { id: user.id, name: user.name || user.username || null };
 }
 
-function snakeToCamelFolio(row: any): FolioRow {
-  return {
-    id: row.id,
-    reservation_id: row.reservation_id ?? null,
-    folio_type: row.folio_type ?? 'Guest',
-    target_folio: row.target_folio ?? null,
-    status: row.status ?? 'Open',
-    balance: Number(row.balance ?? 0),
-    total_charges: Number(row.total_charges ?? 0),
-    total_payments: Number(row.total_payments ?? 0),
-    tax_total: Number(row.tax_total ?? 0),
-    service_charge_total: Number(row.service_charge_total ?? 0),
-    currency: row.currency ?? 'USD',
-    opened_at: row.opened_at ?? null,
-    closed_at: row.closed_at ?? null,
-    created_by: row.created_by ?? null,
-    updated_at: row.updated_at ?? null,
-    notes: row.notes ?? null,
-    owner_type: row.owner_type ?? null,
-    owner_id: row.owner_id ?? null,
-    operator_id: row.operator_id ?? null,
-    group_id: row.group_id ?? null,
-    parent_folio_id: row.parent_folio_id ?? null,
-    credit_limit: row.credit_limit != null ? Number(row.credit_limit) : null,
-    folio_number: row.folio_number ?? null,
-    split_rules: row.split_rules ?? {},
-    bill_to_entity_id: row.bill_to_entity_id ?? null,
-    created_at: row.created_at ?? null,
-  };
-}
-
 // ----------------------------------------------------------------
 // Read operations
 // ----------------------------------------------------------------
@@ -693,7 +662,7 @@ export async function postCharge(
     });
   }
 
-  return { lineId, lineNumber: nextLineNo, newBalance, routedTo: isRouted ? targetFolioId : undefined };
+  return { lineId, lineNumber: nextLineNo, newBalance };
 }
 
 /**

@@ -171,7 +171,7 @@ export async function getTaxRates(opts: { appliesTo?: string; propertyId?: strin
   for (const r of [...others].sort((a, b) => score(b) - score(a) || String(b.effectiveFrom || '').localeCompare(String(a.effectiveFrom || '')))) {
     if (!byType.has(r.taxType)) byType.set(r.taxType, r);
   }
-  const strip = ({ code, name, taxType, rate, inclusive, calcBase }: TaxRate) => ({ code, name, taxType, rate, inclusive, calcBase });
+  const strip = ({ code, name, taxType, rate, inclusive, calcBase }: TaxRate) => ({ code, name, taxType, rate, inclusive, calcBase: calcBase || 'subtotal' });
   return {
     vat: vat ? vat.rate : null,
     serviceCharge: sc ? sc.rate : null,
