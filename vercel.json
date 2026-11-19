@@ -4,17 +4,14 @@
   "outputDirectory": "dist",
   "installCommand": "npm install",
   "framework": null,
-  "routes": [
+  "rewrites": [
     {
-      "handle": "filesystem"
+      "source": "/api/:path*",
+      "destination": "/api/index"
     },
     {
-      "src": "/api/(.*)",
-      "dest": "/server.ts"
-    },
-    {
-      "src": "/(.*)",
-      "dest": "/index.html"
+      "source": "/(.*)",
+      "destination": "/index.html"
     }
   ]
 }
