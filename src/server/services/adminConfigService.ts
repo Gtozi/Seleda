@@ -136,14 +136,15 @@ interface TaxRuleRow extends TaxRate { propertyId: string | null; outletId: stri
 
 async function getTaxRuleRows(): Promise<TaxRuleRow[]> {
   return cached('tax-rules', async () => {
-    const { data, error } = await supabaseAdmin!.from('admin_tax_rules').select('*').eq('active', true);
+    if (!supabaseAdmin) return [];
+    const { data, error } = await supabaseAdmin.from('admin_tax_rules').select('*').eq('active', true);
     if (error) throw error;
     return (data || []).map((r: any) => ({
       code: r.code, name: r.name, taxType: r.tax_type, rate: Number(r.rate), inclusive: r.inclusive,
       calcBase: r.calc_base || 'subtotal',
       propertyId: r.property_id, outletId: r.outlet_id || null, appliesTo: String(r.applies_to || 'all').toLowerCase(), effectiveFrom: r.effective_from, effectiveTo: r.effective_to,
     }));
-  }, [] as TaxRuleRow[]);
+  }, [] as any[]);
 }
 
 /**

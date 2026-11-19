@@ -267,7 +267,7 @@ router.post('/:id/approval', authenticate, async (req, res) => {
 });
 
 // Get pending approvals
-router.get('/approvals/pending', authenticate, async (req, res) => {
+router.get('/approvals/pending', authenticate, async (_req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) return dbNotConfigured(res);
   
   const { data, error } = await supabaseAdmin

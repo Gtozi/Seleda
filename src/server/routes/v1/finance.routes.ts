@@ -9,7 +9,7 @@ function dbNotConfigured(res: any) {
 }
 
 // ── Chart of Accounts ─────────────────────────────────────────
-router.get('/chart-of-accounts', authenticate, async (req, res) => {
+router.get('/chart-of-accounts', authenticate, async (_req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) return dbNotConfigured(res);
   const { data, error } = await supabaseAdmin
     .from('usali_chart_of_accounts')
@@ -153,10 +153,10 @@ router.post('/journal-entries/:id/post', authenticate, async (req, res) => {
   }
 
   const updates = Array.from(balanceMap.entries()).map(([code, balance]) =>
-    supabaseAdmin.from('usali_chart_of_accounts').update({ balance }).eq('code', code)
+    supabaseAdmin?.from('usali_chart_of_accounts').update({ balance }).eq('code', code)
   );
 
-  const { error: postError } = await supabaseAdmin.from('journal_entries').update({
+  const { error: postError } = await supabaseAdmin?.from('journal_entries').update({
     status: 'Posted',
     posted_at: new Date().toISOString(),
     approved_by: req.user?.id || null,

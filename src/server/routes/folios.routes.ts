@@ -459,7 +459,7 @@ router.post('/:folioId/generate-invoice', authenticate, async (req, res) => {
               .select('balance')
               .eq('code', code)
               .single();
-            if (row) {
+            if (row && supabaseAdmin) {
               await supabaseAdmin
                 .from(table)
                 .update({ balance: Number(row.balance || 0) + delta })
@@ -741,7 +741,7 @@ router.post('/invoices/:invoiceId/collect-payment', authenticate, async (req, re
               .select('balance')
               .eq('code', code)
               .single();
-            if (row) {
+            if (row && supabaseAdmin) {
               await supabaseAdmin
                 .from(table)
                 .update({ balance: Number(row.balance || 0) + delta })
@@ -1659,7 +1659,7 @@ router.delete('/routing-rules/:ruleId', authenticate, async (req, res) => {
 
 router.post('/group/:groupId/mass-post', authenticate, async (req, res) => {
   const { groupId } = req.params;
-  const { description, amount, lineType, reservationIds, excludeRouted } = req.body;
+  const { description, amount, lineType, reservationIds } = req.body;
   if (!hasSupabaseAdminConfig || !supabaseAdmin) {
     return res.status(503).json({ error: 'Database not configured' });
   }
