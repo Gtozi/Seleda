@@ -4,6 +4,7 @@
  */
 
 import React, { Suspense, lazy, useState } from 'react';
+import { SpeedInsights } from '@vercel/speed-insights/react';
 import { Routes, Route, useLocation, Navigate, useNavigate } from 'react-router-dom';
 import { useERP } from './context/ERPContext';
 import { AppProviders } from './context/AppProviders';
@@ -1124,6 +1125,7 @@ function MasterHotelERP() {
         {printGroupForm && (
           <GroupCheckInPrintModal data={printGroupForm} onClose={() => setPrintGroupForm(null)} />
         )}
+        <SpeedInsights />
       </div>
     </div>
   );
@@ -1138,4 +1140,3 @@ export default function App() {
     </ErrorBoundary>
   );
 }
-
