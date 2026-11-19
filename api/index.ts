@@ -1,8 +1,9 @@
 /**
  * Vercel Serverless Function Entry Point
- * Simple Express app wrapper for Vercel deployment
+ * Uses Vercel's Node.js runtime with Express
  */
 
+import { createServer } from 'http';
 import express from 'express';
 import apiRouter from '../src/server/routes/index';
 import {
@@ -48,11 +49,14 @@ app.get('/api/health', (_req, res) => {
 // API router
 app.use('/api', apiRouter);
 
-// Export handler for Vercel
+// Create server instance
+const server = createServer(app);
+
+// Export for Vercel
 export default async (req: any, res: any) => {
   try {
     await initializeTables();
-    return app(req, res);
+    return server.emit('request', req, res);
   } catch (error) {
     console.error('[Vercel Serverless] Error:', error);
     return res.status(500).json({ error: 'Internal server error' });
