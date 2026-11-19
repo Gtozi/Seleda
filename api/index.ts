@@ -4,7 +4,6 @@
  */
 
 import express from 'express';
-import './src/server/env';
 import apiRouter from '../src/server/routes/index';
 import {
   IS_FALLBACK_MODE,
@@ -49,5 +48,13 @@ app.get('/api/health', (_req, res) => {
 // API router
 app.use('/api', apiRouter);
 
-// Export for Vercel - the app itself is the handler
-export default app;
+// Export handler for Vercel
+export default async (req: any, res: any) => {
+  try {
+    await initializeTables();
+    return app(req, res);
+  } catch (error) {
+    console.error('[Vercel Serverless] Error:', error);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+};
