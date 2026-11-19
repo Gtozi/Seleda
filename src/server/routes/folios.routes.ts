@@ -255,7 +255,7 @@ router.post('/:folioId/generate-invoice', authenticate, async (req, res) => {
     const { data: folioTotals } = await supabaseAdmin.rpc('recompute_folio_totals', {
       p_folio_id: folioId
     });
-    const folioBalance = folioTotals?.folio_balance || 0;
+    // folioBalance is available via folioTotals?.folio_balance if needed
 
     // For a new invoice, no payments are linked yet — amount_paid starts at 0
     // and status is 'Issued'. The link_payments_to_invoice RPC may link existing
@@ -454,6 +454,7 @@ router.post('/:folioId/generate-invoice', authenticate, async (req, res) => {
         //    Update both CoA tables (chart_of_accounts for operational, usali_chart_of_accounts for finance UI)
         const updateCoaBalance = async (table: string, code: string, delta: number) => {
           try {
+            if (!supabaseAdmin) return;
             const { data: row } = await supabaseAdmin
               .from(table)
               .select('balance')
@@ -736,6 +737,7 @@ router.post('/invoices/:invoiceId/collect-payment', authenticate, async (req, re
         // Update CoA balances (both tables)
         const settleCoaBalance = async (table: string, code: string, delta: number) => {
           try {
+            if (!supabaseAdmin) return;
             const { data: row } = await supabaseAdmin
               .from(table)
               .select('balance')
