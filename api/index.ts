@@ -49,8 +49,5 @@ app.get('/api/health', (_req, res) => {
 // API router
 app.use('/api', apiRouter);
 
-// Export for Vercel
-export default async (req: any, res: any) => {
-  await initializeTables();
-  return app(req, res);
-};
+// Export for Vercel - the app itself is the handler
+export default app;
