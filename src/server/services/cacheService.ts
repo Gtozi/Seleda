@@ -122,7 +122,7 @@ export function cached<T extends (...args: any[]) => Promise<any>>(
   ttl?: number,
   keyGenerator?: (...args: Parameters<T>) => string
 ) {
-  return function (_target: any, _propertyKey: string, descriptor: PropertyDescriptor) {
+  return function (target: any, propertyKey: string, descriptor: PropertyDescriptor) {
     const originalMethod = descriptor.value;
 
     descriptor.value = async function (...args: Parameters<T>): Promise<ReturnType<T>> {

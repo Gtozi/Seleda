@@ -12,7 +12,6 @@ import { supabaseAdmin } from '../supabaseAdmin';
 
 /** Batch-read concierge_settings values keyed by id (missing rows omitted). */
 export async function getConciergeSettings(ids: string[]): Promise<Record<string, any>> {
-  if (!supabaseAdmin) return {};
   const { data } = await supabaseAdmin
     .from('concierge_settings')
     .select('id, value')
@@ -46,7 +45,6 @@ function isValidTimeZone(tz: string): boolean {
 
 /** The property's IANA timezone, or null (→ server-local fallback). */
 export async function getPropertyTimezone(propertyId?: string | null): Promise<string | null> {
-  if (!supabaseAdmin) return null;
   const key = propertyId || '__default__';
   if (tzCache.has(key)) return tzCache.get(key) ?? null;
 
@@ -156,7 +154,6 @@ export async function pickConciergeAssignee(opts: {
   now?: Date;
   timeZone?: string | null;
 } = {}): Promise<string | null> {
-  if (!supabaseAdmin) return null;
   const now = opts.now ?? new Date();
 
   let rosterQ = supabaseAdmin

@@ -113,7 +113,7 @@ export async function processBackupJob(jobId: string): Promise<void> {
     } else {
       const relations = await listPublicRelations();
       for (const name of relations) {
-        const { rows, error } = await exportRelation(name);
+        const { rows, bytes, error } = await exportRelation(name);
         if (error) {
           manifest.errors[name] = error;
           continue;

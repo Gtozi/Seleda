@@ -255,7 +255,7 @@ router.post('/:folioId/generate-invoice', authenticate, async (req, res) => {
     const { data: folioTotals } = await supabaseAdmin.rpc('recompute_folio_totals', {
       p_folio_id: folioId
     });
-    // folioBalance is available via folioTotals?.folio_balance if needed
+    const folioBalance = folioTotals?.folio_balance || 0;
 
     // For a new invoice, no payments are linked yet — amount_paid starts at 0
     // and status is 'Issued'. The link_payments_to_invoice RPC may link existing
@@ -454,13 +454,12 @@ router.post('/:folioId/generate-invoice', authenticate, async (req, res) => {
         //    Update both CoA tables (chart_of_accounts for operational, usali_chart_of_accounts for finance UI)
         const updateCoaBalance = async (table: string, code: string, delta: number) => {
           try {
-            if (!supabaseAdmin) return;
             const { data: row } = await supabaseAdmin
               .from(table)
               .select('balance')
               .eq('code', code)
               .single();
-            if (row && supabaseAdmin) {
+            if (row) {
               await supabaseAdmin
                 .from(table)
                 .update({ balance: Number(row.balance || 0) + delta })
@@ -737,13 +736,12 @@ router.post('/invoices/:invoiceId/collect-payment', authenticate, async (req, re
         // Update CoA balances (both tables)
         const settleCoaBalance = async (table: string, code: string, delta: number) => {
           try {
-            if (!supabaseAdmin) return;
             const { data: row } = await supabaseAdmin
               .from(table)
               .select('balance')
               .eq('code', code)
               .single();
-            if (row && supabaseAdmin) {
+            if (row) {
               await supabaseAdmin
                 .from(table)
                 .update({ balance: Number(row.balance || 0) + delta })
@@ -1661,7 +1659,7 @@ router.delete('/routing-rules/:ruleId', authenticate, async (req, res) => {
 
 router.post('/group/:groupId/mass-post', authenticate, async (req, res) => {
   const { groupId } = req.params;
-  const { description, amount, lineType, reservationIds } = req.body;
+  const { description, amount, lineType, reservationIds, excludeRouted } = req.body;
   if (!hasSupabaseAdminConfig || !supabaseAdmin) {
     return res.status(503).json({ error: 'Database not configured' });
   }

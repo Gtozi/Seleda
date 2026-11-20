@@ -136,15 +136,14 @@ interface TaxRuleRow extends TaxRate { propertyId: string | null; outletId: stri
 
 async function getTaxRuleRows(): Promise<TaxRuleRow[]> {
   return cached('tax-rules', async () => {
-    if (!supabaseAdmin) return [];
-    const { data, error } = await supabaseAdmin.from('admin_tax_rules').select('*').eq('active', true);
+    const { data, error } = await supabaseAdmin!.from('admin_tax_rules').select('*').eq('active', true);
     if (error) throw error;
     return (data || []).map((r: any) => ({
       code: r.code, name: r.name, taxType: r.tax_type, rate: Number(r.rate), inclusive: r.inclusive,
       calcBase: r.calc_base || 'subtotal',
       propertyId: r.property_id, outletId: r.outlet_id || null, appliesTo: String(r.applies_to || 'all').toLowerCase(), effectiveFrom: r.effective_from, effectiveTo: r.effective_to,
     }));
-  }, [] as any[]);
+  }, [] as TaxRuleRow[]);
 }
 
 /**
@@ -172,7 +171,7 @@ export async function getTaxRates(opts: { appliesTo?: string; propertyId?: strin
   for (const r of [...others].sort((a, b) => score(b) - score(a) || String(b.effectiveFrom || '').localeCompare(String(a.effectiveFrom || '')))) {
     if (!byType.has(r.taxType)) byType.set(r.taxType, r);
   }
-  const strip = ({ code, name, taxType, rate, inclusive, calcBase }: TaxRate) => ({ code, name, taxType, rate, inclusive, calcBase: calcBase || 'subtotal' });
+  const strip = ({ code, name, taxType, rate, inclusive, calcBase }: TaxRate) => ({ code, name, taxType, rate, inclusive, calcBase });
   return {
     vat: vat ? vat.rate : null,
     serviceCharge: sc ? sc.rate : null,

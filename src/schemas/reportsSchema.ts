@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { dateSchema } from './common';
+import { dateSchema, emailSchema } from './common';
 
 // Report email dispatch validation
 export const reportEmailSchema = z.object({

@@ -113,7 +113,7 @@ export const requireActiveAccount = async (req: Request, res: Response, next: Ne
     }
 
     const inactiveStatuses = ['Inactive', 'Pending', 'Suspended', 'Locked'];
-    if (req.user.status && inactiveStatuses.includes(req.user.status)) {
+    if (inactiveStatuses.includes(req.user.status)) {
       return res.status(403).json({ 
         error: `Account is ${req.user.status}`,
         status: req.user.status

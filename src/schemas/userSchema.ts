@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { idSchema, emailSchema } from './common';
+import { idSchema, emailSchema, phoneSchema } from './common';
 
 // User validation (backend API)
 export const userApiSchema = z.object({
