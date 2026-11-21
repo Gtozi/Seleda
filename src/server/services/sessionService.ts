@@ -148,6 +148,97 @@ export function mapSystemUserFromDb(db: any): User {
   };
 }
 
+/**
+ * Fetch tenant assignments for a user
+ */
+export async function fetchUserTenants(userId: string): Promise<{ tenantId: string; isDefault: boolean; isSuperAdmin: boolean; tenant?: { id: string; name: string; code: string; status: string } }[]> {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) return [];
+
+  try {
+    const { data: assignments, error } = await supabaseAdmin
+      .from('tenant_user_assignments')
+      .select('tenant_id, is_default, is_super_admin, tenants (id, name, code, status)')
+      .eq('user_id', userId);
+
+    if (error || !assignments) return [];
+
+    return assignments.map((a: any) => ({
+      tenantId: a.tenant_id,
+      isDefault: a.is_default || false,
+      isSuperAdmin: a.is_super_admin || false,
+      tenant: a.tenants ? {
+        id: a.tenants.id,
+        name: a.tenants.name,
+        code: a.tenants.code,
+        status: a.tenants.status,
+      } : undefined,
+    }));
+  } catch (error) {
+    console.error('Error fetching user tenants:', error);
+    return [];
+  }
+}
+
+/**
+ * Get user's default tenant ID
+ */
+export async function getUserDefaultTenantId(userId: string): Promise<string | null> {
+  const tenants = await fetchUserTenants(userId);
+  const defaultTenant = tenants.find(t => t.isDefault);
+  if (defaultTenant) return defaultTenant.tenantId;
+  return tenants.length > 0 ? tenants[0].tenantId : null;
+}
+
+/**
+ * Switch user's active tenant (super-admin only for cross-tenant)
+ */
+export async function switchTenant(userId: string, tenantId: string, req: express.Request): Promise<{ success: boolean; error?: string }> {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) {
+    return { success: false, error: 'Database not configured' };
+  }
+
+  // Verify user has access to this tenant
+  const { data: assignment, error: assignmentError } = await supabaseAdmin
+    .from('tenant_user_assignments')
+    .select('tenant_id, is_super_admin')
+    .eq('user_id', userId)
+    .eq('tenant_id', tenantId)
+    .maybeSingle();
+
+  if (assignmentError || !assignment) {
+    return { success: false, error: 'User does not have access to this tenant' };
+  }
+
+  // Update the current session's active_tenant_id
+  const token = parseCookies(req.headers.cookie)[SESSION_COOKIE];
+  if (!token) {
+    return { success: false, error: 'No active session' };
+  }
+
+  const tokenHash = hashToken(token);
+
+  const { error: updateError } = await supabaseAdmin
+    .from('user_sessions')
+    .update({ active_tenant_id: tenantId })
+    .eq('token_hash', tokenHash)
+    .is('revoked_at', null);
+
+  if (updateError) {
+    return { success: false, error: 'Failed to update session' };
+  }
+
+  await writeAuditEvent({
+    req,
+    action: 'tenant.switch',
+    entityType: 'tenant',
+    entityId: tenantId,
+    module: 'auth',
+    details: { userId, tenantId }
+  });
+
+  return { success: true };
+}
+
 // ─── Session settings ────────────────────────────────────────────────────
 
 export async function fetchSessionSettings(): Promise<{ timeoutMs: number; maxConcurrent: number }> {
@@ -169,6 +260,12 @@ export async function createSession(user: User, req: express.Request, res: expre
   const token = createSessionToken();
   const { timeoutMs, maxConcurrent } = await fetchSessionSettings();
   const expiresAt = new Date(Date.now() + timeoutMs);
+
+  // Get user's default tenant
+  let activeTenantId: string | null = null;
+  if (!IS_FALLBACK_MODE && hasSupabaseAdminConfig && supabaseAdmin) {
+    activeTenantId = await getUserDefaultTenantId(user.id);
+  }
 
   if (IS_FALLBACK_MODE) {
     fallbackSessions.set(token, { user, expiresAt: Date.now() + timeoutMs });
@@ -201,6 +298,7 @@ export async function createSession(user: User, req: express.Request, res: expre
       user_agent: req.headers['user-agent'] || null,
       ip_address: req.ip,
       last_activity: new Date().toISOString(),
+      active_tenant_id: activeTenantId, // Add tenant context
     });
   } else {
     throw new Error('Database not configured');
@@ -229,7 +327,7 @@ export async function getRequestUser(req: express.Request): Promise<User | null>
   if (hasSupabaseAdminConfig && supabaseAdmin) {
     const { data: session, error } = await supabaseAdmin
       .from('user_sessions')
-      .select('id, expires_at, revoked_at, last_activity, system_users (*)')
+      .select('id, expires_at, revoked_at, last_activity, active_tenant_id, system_users (*)')
       .eq('token_hash', tokenHash)
       .is('revoked_at', null)
       .maybeSingle();
@@ -253,7 +351,16 @@ export async function getRequestUser(req: express.Request): Promise<User | null>
 
     const systemUser = Array.isArray(session.system_users) ? session.system_users[0] : session.system_users;
     if (!systemUser) return null;
-    return mapSystemUserFromDb(systemUser);
+
+    const user = mapSystemUserFromDb(systemUser);
+
+    // Fetch tenant assignments for the user
+    const tenantAssignments = await fetchUserTenants(user.id);
+    user.availableTenants = tenantAssignments.map(t => t.tenant).filter(Boolean) as Tenant[];
+    user.isSuperAdmin = tenantAssignments.some(t => t.isSuperAdmin);
+    user.activeTenantId = session.active_tenant_id || undefined;
+
+    return user;
   }
 
   return null;
@@ -373,6 +480,14 @@ export async function authenticateUser(
 
   const user = mapSystemUserFromDb(dbUser);
   user.lastLogin = new Date().toISOString();
+
+  // Fetch tenant assignments for the user
+  const tenantAssignments = await fetchUserTenants(user.id);
+  user.availableTenants = tenantAssignments.map(t => t.tenant).filter(Boolean) as Tenant[];
+  user.isSuperAdmin = tenantAssignments.some(t => t.isSuperAdmin);
+  const defaultTenant = tenantAssignments.find(t => t.isDefault);
+  user.activeTenantId = defaultTenant?.tenantId || tenantAssignments[0]?.tenantId;
+
   const forcePasswordChange = dbUser.force_password_change === true;
   return { status: 200, user, forcePasswordChange };
 }

@@ -309,6 +309,24 @@ export async function setAuditContext(userId: string): Promise<void> {
 }
 
 /**
+ * Set session token hash for RLS policies
+ * This is required for tenant isolation policies to work correctly
+ */
+export async function setSessionContext(sessionTokenHash: string): Promise<void> {
+  if (hasSupabaseAdminConfig && supabaseAdmin) {
+    await supabaseAdmin.rpc('set_config', { p_key: 'app.session_token_hash', p_value: sessionTokenHash });
+  }
+}
+
+/**
+ * Set both audit context and session context for a request
+ */
+export async function setRequestContext(userId: string, sessionTokenHash: string): Promise<void> {
+  await setAuditContext(userId);
+  await setSessionContext(sessionTokenHash);
+}
+
+/**
  * Clear audit context (set to null)
  */
 export async function clearAuditContext(): Promise<void> {

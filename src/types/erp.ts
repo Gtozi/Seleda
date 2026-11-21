@@ -898,6 +898,13 @@ export interface GlobalHotelSettings {
   }[];
 }
 
+export interface Tenant {
+  id: string;
+  name: string;
+  code: string;
+  status: 'Active' | 'Inactive' | 'Suspended';
+}
+
 export interface User {
   id: string;
   name: string;
@@ -909,6 +916,11 @@ export interface User {
   lastLogin?: string;
   authUserId?: string; // UUID from auth.users table for POS and other auth-based references
   propertyId?: string; // system_users.property_id — the user's assigned property
+
+  // Multi-tenant fields
+  activeTenantId?: string; // The currently active tenant for this session
+  availableTenants?: Tenant[]; // All tenants the user has access to
+  isSuperAdmin?: boolean; // Whether user can access multiple tenants
 
   // Expanded RBAC & HR Fields
   employeeId?: string;

@@ -5,7 +5,7 @@ import { getRequestUser } from '../services/sessionService';
 import { enrichUserWithDerivedPermissions, writeAuditEvent, hasSupabaseAdminConfig, supabaseAdmin, mapSystemUserFromDb } from '../services/sharedServices';
 import {
   authenticateUser, createSession, revokeRequestSession, clearSessionCookie,
-  fetchPasswordPolicy, IS_FALLBACK_MODE,
+  fetchPasswordPolicy, IS_FALLBACK_MODE, switchTenant,
 } from '../services/sessionService';
 import { validatePassword } from '../../lib/passwordPolicy';
 import bcrypt from 'bcryptjs';
@@ -22,6 +22,30 @@ router.get('/verify', async (req, res) => {
   if (!user) return res.status(401).json({ error: 'Not authenticated' });
   const enriched = await enrichUserWithDerivedPermissions(user);
   res.json({ user: enriched });
+});
+
+// Switch tenant (super-admin only for cross-tenant access)
+router.post('/switch-tenant', authenticate, async (req, res) => {
+  const { tenantId } = req.body || {};
+  if (!tenantId) return res.status(400).json({ error: 'tenantId is required' });
+
+  if (IS_FALLBACK_MODE) {
+    return res.status(503).json({ error: 'Tenant switching not available in fallback mode' });
+  }
+
+  const result = await switchTenant(req.user!.id, tenantId, req);
+  if (!result.success) {
+    return res.status(403).json({ error: result.error });
+  }
+
+  // Return updated user with new tenant context
+  const updatedUser = await getRequestUser(req);
+  if (updatedUser) {
+    const enriched = await enrichUserWithDerivedPermissions(updatedUser);
+    res.json({ success: true, user: enriched });
+  } else {
+    res.json({ success: true });
+  }
 });
 
 // Validate permission

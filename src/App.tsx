@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.5
  */
 
-import React, { Suspense, lazy, useState } from 'react';
+import React, { Suspense, lazy, useState, useEffect } from 'react';
 import { Routes, Route, useLocation, Navigate, useNavigate } from 'react-router-dom';
 import { useERP } from './context/ERPContext';
 import { AppProviders } from './context/AppProviders';
@@ -22,11 +22,14 @@ import { SideNavigation } from './components/Shared/SideNavigation';
 import { ErpLayout, ErpIndexRedirect } from './components/Shared/ErpLayout';
 import { DepartmentRoute } from './components/Shared/DepartmentRoute';
 import { DepartmentSwitcher } from './components/Shared/DepartmentSwitcher';
+import { TenantSwitcher } from './components/Shared/TenantSwitcher';
+import { SuperAdminPortal } from './components/Admin/SuperAdminPortal';
 import { DEPARTMENT_BY_KEY, DEPARTMENT_BY_SEGMENT, getDefaultErpPath, getDeptAccentClass, type DepartmentKey } from './config/departments';
 import { isTabEnabledByToggles } from './config/departmentTabs';
 import { User } from './types/erp';
 import { supabase } from './lib/supabase';
 import { logout, verifySession } from './lib/auth';
+import { getSubdomainInfo, redirectToAppropriateSubdomain } from './lib/subdomain';
 import {
   LogOut,
   Users,
@@ -184,10 +187,22 @@ function MasterHotelERP() {
     properties
   } = useERP();
 
+  // Subdomain detection
+  const subdomainInfo = getSubdomainInfo();
+  const isAdminSubdomain = subdomainInfo.isAdmin;
+  const tenantCode = subdomainInfo.tenantCode;
+
   // User Authentication state
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [sessionChecked, setSessionChecked] = useState(false);
   const [mustChangePassword, setMustChangePassword] = useState(false);
+
+  // Redirect to appropriate subdomain based on user access
+  React.useEffect(() => {
+    if (sessionChecked && currentUser) {
+      redirectToAppropriateSubdomain(currentUser);
+    }
+  }, [sessionChecked, currentUser]);
 
   // POS Authentication state
   const [posUser, setPosUser] = useState<any>(null);
@@ -216,7 +231,8 @@ function MasterHotelERP() {
 
   // Routes that render without the ERP chrome (side nav + hover header).
   // Trailing-slash tolerant so `/login/` doesn't leak the nav.
-  const isChromelessRoute = ['/login', '/pos', '/booking', '/public-portal', '/guest', '/guest-portal', '/kds']
+  // Also chromeless on admin subdomain regardless of path.
+  const isChromelessRoute = isAdminSubdomain || ['/login', '/pos', '/booking', '/public-portal', '/guest', '/guest-portal', '/kds', '/admin', '/kds-management']
     .some(p => location.pathname === p || location.pathname.startsWith(`${p}/`));
   // Hide chrome until the session check resolves — otherwise an unauthenticated
   // user landing on /erp sees the nav flash during "Verifying secure session..."
@@ -389,8 +405,24 @@ function MasterHotelERP() {
     const redirect = new URLSearchParams(location.search).get('redirect');
     if (redirect && redirect.startsWith('/') && !redirect.startsWith('//')) {
       navigate(redirect);
+    } else if (user.isSuperAdmin && isAdminSubdomain) {
+      // Already on admin subdomain, stay there
+      navigate('/admin');
+    } else if (user.isSuperAdmin && !isAdminSubdomain) {
+      // Super-admin on main domain - redirect to admin subdomain
+      const adminUrl = `https://admin.${window.location.hostname.split('.').slice(-2).join('.')}/admin`;
+      window.location.href = adminUrl;
+    } else if (tenantCode && user.availableTenants) {
+      // On tenant subdomain - verify access and stay
+      const hasAccess = user.availableTenants.some(t => t.code === tenantCode);
+      if (!hasAccess) {
+        // Redirect to main domain if no access
+        window.location.href = `https://${window.location.hostname.split('.').slice(-2).join('.')}`;
+        return;
+      }
+      navigate(getDefaultErpPath(user));
     } else {
-      // Phase 3: navigate to the user's default department (URL-driven)
+      // Main domain - navigate to default ERP path
       navigate(getDefaultErpPath(user));
     }
 
@@ -900,7 +932,7 @@ function MasterHotelERP() {
   };
 
   return (
-    <div data-route={location.pathname} className={`min-h-screen bg-slate-50 dark:bg-slate-950 font-sans transition-colors duration-300 selection:bg-amber-400 selection:text-slate-900 ${location.pathname === '/public-portal' ? '' : 'flex'}`} id="erp-master-view">
+    <div data-route={location.pathname} className={`min-h-screen bg-slate-50 dark:bg-slate-950 font-sans transition-colors duration-300 selection:bg-amber-400 selection:text-slate-900 ${location.pathname === '/public-portal' || location.pathname === '/admin' ? '' : 'flex'}`} id="erp-master-view">
       
       {/* SIDE NAVIGATION - Hidden for public booking, login, and guest pages,
           and while the session is being verified (avoids a nav flash before the
@@ -983,6 +1015,19 @@ function MasterHotelERP() {
                 activeSegment={erpPathMatch?.dept.urlSegment}
                 moduleToggles={moduleToggles}
                 hasModuleAccess={hasModuleAccess}
+              />
+            )}
+
+            {/* Tenant Switcher — Super Admin Only */}
+            {currentUser?.isSuperAdmin && currentUser?.availableTenants && currentUser.availableTenants.length > 1 && (
+              <TenantSwitcher
+                currentUser={currentUser}
+                onTenantChange={(tenantId) => {
+                  // Refresh user data after tenant switch
+                  verifySession().then(updatedUser => {
+                    if (updatedUser) setCurrentUser(updatedUser);
+                  });
+                }}
               />
             )}
 
@@ -1114,6 +1159,21 @@ function MasterHotelERP() {
               )
             }
           />
+          {/* Super Admin Portal — accessible at /admin */}
+          <Route
+            path="/admin"
+            element={
+              !sessionChecked ? (
+                <div className="flex-1 flex items-center justify-center bg-slate-950 text-slate-300 text-sm">Verifying secure session...</div>
+              ) : !currentUser ? (
+                <Navigate to="/login?redirect=/admin" replace />
+              ) : !currentUser.isSuperAdmin ? (
+                <Navigate to="/erp" replace />
+              ) : (
+                <SuperAdminPortal currentUser={currentUser} onLogout={handleLogout} />
+              )
+            }
+          />
         </Routes>
         </Suspense>
 
@@ -1133,9 +1193,56 @@ export default function App() {
   return (
     <ErrorBoundary onError={(error, errorInfo) => console.error('App Error:', error, errorInfo)}>
       <AppProviders>
-        <MasterHotelERP />
+        <Routes>
+          {/* Admin Portal - standalone route without ERP chrome */}
+          <Route path="/admin" element={<AdminPortalWrapper />} />
+          {/* All other routes use the main ERP layout */}
+          <Route path="/*" element={<MasterHotelERP />} />
+        </Routes>
       </AppProviders>
     </ErrorBoundary>
   );
+}
+
+// Wrapper component for admin portal that handles auth and renders standalone
+function AdminPortalWrapper() {
+  const [sessionChecked, setSessionChecked] = useState(false);
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    const checkSession = async () => {
+      try {
+        const user = await verifySession();
+        setCurrentUser(user);
+      } catch (error) {
+        console.error('Session verification failed:', error);
+      } finally {
+        setSessionChecked(true);
+      }
+    };
+    checkSession();
+  }, []);
+
+  if (!sessionChecked) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-950 text-slate-300 text-sm">
+        Verifying secure session...
+      </div>
+    );
+  }
+
+  if (!currentUser) {
+    return <Navigate to="/login?redirect=/admin" replace />;
+  }
+
+  if (!currentUser.isSuperAdmin) {
+    return <Navigate to="/erp" replace />;
+  }
+
+  return <SuperAdminPortal currentUser={currentUser} onLogout={async () => {
+    await logout();
+    navigate('/login');
+  }} />;
 }
 

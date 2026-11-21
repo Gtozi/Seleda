@@ -7,6 +7,7 @@
  */
 
 import { User } from '../types/erp';
+import { getApiBaseUrl, getSubdomainInfo } from './subdomain';
 
 export interface AuthTokens {
   accessToken: string;
@@ -31,7 +32,8 @@ export const login = async (
   password: string
 ): Promise<AuthResponse> => {
   try {
-    const response = await fetch('/api/auth/login', {
+    const apiBase = getApiBaseUrl();
+    const response = await fetch(`${apiBase}/api/auth/login`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -71,7 +73,8 @@ export const login = async (
  */
 export const logout = async (): Promise<void> => {
   try {
-    await fetch('/api/auth/logout', {
+    const apiBase = getApiBaseUrl();
+    await fetch(`${apiBase}/api/auth/logout`, {
       method: 'POST',
       credentials: 'include',
     });
@@ -86,7 +89,8 @@ export const logout = async (): Promise<void> => {
  */
 export const refreshAccessToken = async (): Promise<boolean> => {
   try {
-    const response = await fetch('/api/auth/refresh', {
+    const apiBase = getApiBaseUrl();
+    const response = await fetch(`${apiBase}/api/auth/refresh`, {
       method: 'POST',
       credentials: 'include',
     });
@@ -108,7 +112,8 @@ export const refreshAccessToken = async (): Promise<boolean> => {
  */
 export const verifySession = async (): Promise<User | null> => {
   try {
-    const response = await fetch('/api/auth/verify', {
+    const apiBase = getApiBaseUrl();
+    const response = await fetch(`${apiBase}/api/auth/verify`, {
       method: 'GET',
       credentials: 'include',
     });
@@ -130,7 +135,8 @@ export const verifySession = async (): Promise<User | null> => {
  */
 export const verifyMFA = async (code: string): Promise<AuthResponse> => {
   try {
-    const response = await fetch('/api/auth/verify-mfa', {
+    const apiBase = getApiBaseUrl();
+    const response = await fetch(`${apiBase}/api/auth/verify-mfa`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -169,7 +175,8 @@ export const changePassword = async (
   newPassword: string
 ): Promise<{ success: boolean; error?: string }> => {
   try {
-    const response = await fetch('/api/auth/change-password', {
+    const apiBase = getApiBaseUrl();
+    const response = await fetch(`${apiBase}/api/auth/change-password`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -198,13 +205,41 @@ export const changePassword = async (
 };
 
 /**
+ * Switch active tenant (super-admin only)
+ */
+export const switchTenant = async (tenantId: string): Promise<boolean> => {
+  try {
+    const apiBase = getApiBaseUrl();
+    const response = await fetch(`${apiBase}/api/auth/switch-tenant`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      credentials: 'include',
+      body: JSON.stringify({ tenantId }),
+    });
+
+    if (!response.ok) {
+      const data = await response.json();
+      throw new Error(data.error || 'Failed to switch tenant');
+    }
+
+    return true;
+  } catch (error) {
+    console.error('Tenant switch error:', error);
+    return false;
+  }
+};
+
+/**
  * Request password reset
  */
 export const requestPasswordReset = async (
   email: string
 ): Promise<{ success: boolean; error?: string }> => {
   try {
-    const response = await fetch('/api/auth/request-reset', {
+    const apiBase = getApiBaseUrl();
+    const response = await fetch(`${apiBase}/api/auth/request-reset`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -239,7 +274,8 @@ export const resetPassword = async (
   newPassword: string
 ): Promise<{ success: boolean; error?: string }> => {
   try {
-    const response = await fetch('/api/auth/reset-password', {
+    const apiBase = getApiBaseUrl();
+    const response = await fetch(`${apiBase}/api/auth/reset-password`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

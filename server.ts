@@ -11,7 +11,12 @@ import {
   IS_FALLBACK_MODE,
   ensureAuditEventsTable,
   ensurePendingAdminChangesTable,
+  parseCookies,
+  hashToken,
+  SESSION_COOKIE,
 } from './src/server/services/sessionService';
+import { setSessionContext } from './src/server/authHelpers';
+import { tenantSubdomainMiddleware, isAdminSubdomain, getTenantCodeFromSubdomain } from './src/server/middleware/subdomain';
 
 if (typeof globalThis.DOMException === 'undefined') {
   // @ts-ignore
@@ -37,11 +42,32 @@ async function startServer() {
 
   app.use(express.json());
 
-  app.get('/api/health', (_req, res) => {
+  // Global middleware to set session context for RLS policies
+  app.use(async (req, res, next) => {
+    const token = parseCookies(req.headers.cookie)[SESSION_COOKIE];
+    if (token) {
+      await setSessionContext(hashToken(token));
+    }
+    next();
+  });
+
+  // Subdomain detection middleware for multi-tenant routing
+  app.use(tenantSubdomainMiddleware);
+
+  // Health check endpoint with subdomain info
+  app.get('/api/health', (req, res) => {
+    const isAdmin = isAdminSubdomain(req);
+    const tenantCode = getTenantCodeFromSubdomain(req);
+    
     res.json({
       status: 'operational',
       system: 'Hotel Management ERP Global Node',
       authStore: IS_FALLBACK_MODE ? 'development-fallback' : 'database',
+      subdomain: {
+        isAdmin,
+        tenantCode,
+        host: req.headers.host,
+      },
       timestamp: new Date().toISOString(),
     });
   });

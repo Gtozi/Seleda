@@ -8,8 +8,8 @@
 
 import { Request, Response, NextFunction } from 'express';
 import type { User } from '../../types/erp';
-import { userCan, PermissionContext, setAuditContext, clearAuditContext } from '../authHelpers';
-import { getRequestUser } from '../services/sessionService';
+import { userCan, PermissionContext, setAuditContext, setSessionContext, clearAuditContext } from '../authHelpers';
+import { getRequestUser, parseCookies, hashToken, SESSION_COOKIE } from '../services/sessionService';
 
 // Extend Express Request type to include user
 declare global {
@@ -28,7 +28,14 @@ export const authenticate = async (req: Request, res: Response, next: NextFuncti
   try {
     // Skip the session lookup when an upstream middleware already resolved
     // the user (e.g. router-level authenticate on portal routers).
-    if (req.user) return next();
+    if (req.user) {
+      // Set session context for RLS even if user was already set
+      const token = parseCookies(req.headers.cookie)[SESSION_COOKIE];
+      if (token) {
+        await setSessionContext(hashToken(token));
+      }
+      return next();
+    }
     const user = await getRequestUser(req);
     if (!user) {
       await clearAuditContext();
@@ -37,6 +44,11 @@ export const authenticate = async (req: Request, res: Response, next: NextFuncti
     req.user = user;
     // Set audit context for DB triggers (Step 3.3)
     await setAuditContext(user.id);
+    // Set session context for RLS policies
+    const token = parseCookies(req.headers.cookie)[SESSION_COOKIE];
+    if (token) {
+      await setSessionContext(hashToken(token));
+    }
     next();
   } catch (error) {
     console.error('Authentication middleware error:', error);

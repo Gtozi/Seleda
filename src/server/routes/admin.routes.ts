@@ -1,2114 +1,401 @@
+/**
+ * Admin Routes
+ * Super-admin only routes for platform management
+ */
+
 import { Router } from 'express';
-import { z } from 'zod';
-import bcrypt from 'bcryptjs';
-import crypto from 'crypto';
-import { authenticate, requirePermission } from '../middleware/auth';
+import { authenticate } from '../middleware/auth';
 import { hasSupabaseAdminConfig, supabaseAdmin } from '../supabaseAdmin';
-import { validatePassword } from '../../lib/passwordPolicy';
-import { enrichUserWithDerivedPermissions, fetchPasswordPolicy, writeAuditEvent, mapSystemUserFromDb, camelToSnakeRecord, snakeToCamelRecord, filterKnownColumns, ensurePendingAdminChangesTable } from '../services/sharedServices';
-import { getGlobalSettings, invalidateGlobalSettingsCache } from '../services/settingsService';
-import { processApiIntegrationsOnRead, processApiIntegrationsOnWrite } from '../services/sessionService';
-import { userApiSchema, roleApiSchema } from '../../schemas/userSchema';
-import { processBackupJob, startBackupWorker } from '../services/backupService';
+import { writeAuditEvent } from '../services/sessionService';
 
 const router = Router();
 
-startBackupWorker();
-
-// ── Users ──────────────────────────────────────────────────────
-
-router.get('/users', authenticate, requirePermission('users:manage'), async (req, res) => {
-  if (hasSupabaseAdminConfig && supabaseAdmin) {
-    const { data, error } = await supabaseAdmin.from('system_users').select('*').order('name');
-    if (error) return res.status(500).json({ error: error.message });
-    const mapped = (data || []).map(mapSystemUserFromDb);
-    const enriched = await Promise.all(mapped.map(u => enrichUserWithDerivedPermissions(u)));
-    return res.json({ users: enriched });
+// Middleware to ensure only super-admins can access
+const requireSuperAdmin = async (req: any, res: any, next: any) => {
+  if (!req.user?.isSuperAdmin) {
+    return res.status(403).json({ error: 'Super admin access required' });
   }
-  return res.status(503).json({ error: 'Database not configured' });
-});
-
-router.post('/users', authenticate, requirePermission('users:manage'), async (req, res) => {
-  const validation = userApiSchema.safeParse(req.body);
-  if (!validation.success) {
-    return res.status(400).json({ error: 'Validation failed', details: validation.error.flatten() });
-  }
-
-  const body = validation.data;
-  if (body.password) {
-    const policy = await fetchPasswordPolicy();
-    const passwordValidation = validatePassword(body.password, policy);
-    if (!passwordValidation.valid) return res.status(400).json({ error: passwordValidation.errors.join('; ') });
-  }
-  if (hasSupabaseAdminConfig && supabaseAdmin) {
-    const newId = body.id || `U-${Date.now()}`;
-    const password = body.password || 'ChangeMe123!';
-    const newHash = await bcrypt.hash(password, 10);
-
-    // 1. Create auth user via Supabase Auth Admin API (proper password hashing for GoTrue)
-    let authUserId: string | null = null;
-    const { data: authData, error: authError } = await supabaseAdmin.auth.admin.createUser({
-      email: String(body.email).toLowerCase(),
-      password,
-      email_confirm: true,
-      user_metadata: { name: body.full_name, role: body.role },
-    });
-
-    if (authError) {
-      // If user already exists, try to find them
-      if (authError.message.includes('already') || authError.message.includes('registered')) {
-        const { data: existingAuth } = await supabaseAdmin
-          .from('auth.users')
-          .select('id')
-          .eq('email', String(body.email).toLowerCase())
-          .maybeSingle();
-        authUserId = existingAuth?.id || null;
-      } else {
-        return res.status(400).json({ error: `Auth user creation failed: ${authError.message}` });
-      }
-    } else {
-      authUserId = authData.user.id;
-    }
-
-    // 2. Create system_users record with additional fields
-    let customRoleId = body.custom_role_id || null;
-    let roleDesc = body.role;
-    if (customRoleId) {
-      try {
-        const { data: roleData } = await supabaseAdmin.from('roles')
-          .select('display_name, role_label, name')
-          .eq('id', customRoleId)
-          .maybeSingle();
-        if (roleData) roleDesc = roleData.role_label || roleData.display_name || roleData.name;
-      } catch (e) { console.error('Failed to fetch custom role:', e); }
-    }
-    const { data, error } = await supabaseAdmin.from('system_users').upsert({
-      id: newId,
-      name: body.full_name,
-      email: String(body.email).toLowerCase(),
-      role: body.role,
-      role_description: roleDesc,
-      avatar_initials: body.full_name?.slice(0, 2).toUpperCase() || 'U',
-      status: body.is_active ? 'Active' : 'Inactive',
-      linked_employee_id: null,
-      username: body.username || null,
-      mobile_number: null,
-      department: body.department || null,
-      custom_role_id: customRoleId,
-      security_settings: {},
-      data_restrictions: {},
-      allowed_tabs: body.allowed_tabs || [],
-      allowed_settings: body.allowed_settings || {},
-      permission_matrix: {},
-      password_hash: newHash,
-      force_password_change: true,
-      auth_user_id: authUserId,
-    }).select().single();
-    if (error) return res.status(500).json({ error: error.message });
-    await writeAuditEvent({ req, user: req.user!, action: 'user.created', entityType: 'User', entityId: newId, module: 'admin', details: { name: body.full_name, email: body.email, role: body.role } });
-    return res.json({ success: true, user: mapSystemUserFromDb(data) });
-  }
-  return res.status(503).json({ error: 'Database not configured' });
-});
-
-router.patch('/users/:id', authenticate, requirePermission('users:manage'), async (req, res) => {
-  const targetId = req.params.id;
-  const partialUserSchema = userApiSchema.partial();
-  const validation = partialUserSchema.safeParse(req.body);
-  if (!validation.success) {
-    return res.status(400).json({ error: 'Validation failed', details: validation.error.flatten() });
-  }
-
-  const updates = validation.data;
-
-  if (req.user!.id === targetId) {
-    const privilegedFields: (keyof typeof updates)[] = ['role', 'custom_role_id', 'allowed_tabs', 'allowed_settings'];
-    const attemptedPrivilegeChange = privilegedFields.some(f => updates[f] !== undefined);
-    if (attemptedPrivilegeChange) {
-      await writeAuditEvent({
-        req, user: req.user!, action: 'privilege.escalation_blocked',
-        entityType: 'User', entityId: targetId, module: 'security', outcome: 'denied',
-        details: { attemptedFields: privilegedFields.filter(f => updates[f] !== undefined) }
-      });
-      for (const f of privilegedFields) delete updates[f];
-    }
-  }
-  if (updates.password) {
-    const policy = await fetchPasswordPolicy();
-    const validation = validatePassword(updates.password, policy);
-    if (!validation.valid) return res.status(400).json({ error: validation.errors.join('; ') });
-  }
-  if (hasSupabaseAdminConfig && supabaseAdmin) {
-    const payload: any = {};
-    if (updates.full_name !== undefined) payload.name = updates.full_name;
-    if (updates.email !== undefined) payload.email = String(updates.email).toLowerCase();
-    if (updates.role !== undefined) {
-      payload.role = updates.role;
-      payload.role_description = updates.role;
-    }
-    if (updates.custom_role_id !== undefined) {
-      payload.custom_role_id = updates.custom_role_id || null;
-      // If a custom role is assigned, use its display name as role_description
-      if (updates.custom_role_id) {
-        try {
-          const { data: roleData } = await supabaseAdmin.from('roles')
-            .select('display_name, role_label, name')
-            .eq('id', updates.custom_role_id)
-            .maybeSingle();
-          if (roleData) {
-            payload.role_description = roleData.role_label || roleData.display_name || roleData.name;
-          }
-        } catch (e) {
-          console.error('Failed to fetch custom role for role_description:', e);
-        }
-      }
-    }
-    if (updates.is_active !== undefined) payload.status = updates.is_active ? 'Active' : 'Inactive';
-    if (updates.username !== undefined) payload.username = updates.username || null;
-    if (updates.department !== undefined) payload.department = updates.department || null;
-    if (updates.allowed_tabs !== undefined) payload.allowed_tabs = updates.allowed_tabs;
-    if (updates.allowed_settings !== undefined) payload.allowed_settings = updates.allowed_settings;
-    if (updates.password) {
-      payload.password_hash = await bcrypt.hash(updates.password, 10);
-      payload.force_password_change = false;
-      payload.password_updated_at = new Date().toISOString();
-    }
-    const { data, error } = await supabaseAdmin.from('system_users').update(payload).eq('id', targetId).select().single();
-    if (error) return res.status(500).json({ error: error.message });
-
-    // Sync password to auth.users via Supabase Auth Admin API so POS login works
-    if (updates.password && data?.auth_user_id) {
-      const { error: authUpdateError } = await supabaseAdmin.auth.admin.updateUserById(
-        data.auth_user_id,
-        { password: updates.password }
-      );
-      if (authUpdateError) console.error('Failed to sync password to auth.users:', authUpdateError.message);
-    }
-
-    await writeAuditEvent({ req, user: req.user!, action: 'user.updated', entityType: 'User', entityId: targetId, module: 'admin', details: { updates: Object.keys(updates) } });
-    return res.json({ success: true, user: mapSystemUserFromDb(data) });
-  }
-  return res.status(503).json({ error: 'Database not configured' });
-});
-
-router.delete('/users/:id', authenticate, requirePermission('users:manage'), async (req, res) => {
-  const targetId = req.params.id;
-  if (req.user!.id === targetId) return res.status(403).json({ error: 'You cannot delete your own account' });
-  if (hasSupabaseAdminConfig && supabaseAdmin) {
-    const { error } = await supabaseAdmin.from('system_users').delete().eq('id', targetId);
-    if (error) return res.status(500).json({ error: error.message });
-    await writeAuditEvent({ req, user: req.user!, action: 'user.deleted', entityType: 'User', entityId: targetId, module: 'admin' });
-    return res.json({ success: true });
-  }
-  return res.status(503).json({ error: 'Database not configured' });
-});
-
-router.post('/users/:id/unlock', authenticate, requirePermission('users:manage'), async (req, res) => {
-  const targetId = req.params.id;
-  if (hasSupabaseAdminConfig && supabaseAdmin) {
-    const { error } = await supabaseAdmin.from('system_users')
-      .update({ failed_login_count: 0, locked_until: null, mfa_locked_until: null, failed_mfa_count: 0, status: 'Active' })
-      .eq('id', targetId);
-    if (error) return res.status(500).json({ error: error.message });
-    await writeAuditEvent({ req, user: req.user!, action: 'user.unlocked', entityType: 'User', entityId: targetId, module: 'admin' });
-    return res.json({ success: true });
-  }
-  return res.status(503).json({ error: 'Database not configured' });
-});
-
-// ── Roles ──────────────────────────────────────────────────────
-
-router.get('/roles', authenticate, requirePermission('roles:manage'), async (req, res) => {
-  if (hasSupabaseAdminConfig && supabaseAdmin) {
-    const { data, error } = await supabaseAdmin
-      .from('roles')
-      .select(`id, name, display_name, description, is_superuser, is_system, is_active, category, department, role_label, parent_role_id, module_access, permissions, role_permissions ( permissions ( code ) )`)
-      .order('name');
-    if (error) return res.status(500).json({ error: error.message });
-
-    const roles = (data || []).map((r: any) => ({
-      id: r.id, name: r.name, display_name: r.display_name || r.name,
-      description: r.description || '',
-      isSystem: r.is_system || false, isSuperuser: r.is_superuser || false,
-      isActive: r.is_active !== false, category: r.category || 'custom',
-      department: r.department || null, role_label: r.role_label || null,
-      parent_role_id: r.parent_role_id || null,
-      module_access: r.module_access || {}, permissions: r.permissions || {},
-      rbacPermissions: (r.role_permissions || []).map((rp: any) => {
-        const perm = Array.isArray(rp.permissions) ? rp.permissions[0] : rp.permissions;
-        return perm?.code || '';
-      }).filter(Boolean),
-      source: r.is_system ? 'server' : 'custom'
-    }));
-    console.log(`GET /roles: returning ${roles.length} roles`);
-    return res.json({ roles });
-  }
-  return res.status(503).json({ error: 'Database not configured' });
-});
-
-router.post('/roles', authenticate, requirePermission('roles:manage'), async (req, res) => {
-  const validation = roleApiSchema.safeParse(req.body);
-  if (!validation.success) {
-    return res.status(400).json({ error: 'Validation failed', details: validation.error.flatten() });
-  }
-
-  const body = validation.data;
-  if (hasSupabaseAdminConfig && supabaseAdmin) {
-    const roleId = body.id || `ROLE-${Date.now()}`;
-    const { data, error } = await supabaseAdmin.from('roles').upsert({
-      id: roleId,
-      name: body.name,
-      display_name: body.name,
-      description: body.description || '',
-      department: req.body.department || null,
-      role_label: req.body.roleLabel || null,
-      parent_role_id: req.body.parentRoleId || null,
-      category: req.body.category || 'custom',
-      module_access: req.body.moduleAccess || {},
-      permissions: req.body.permissions || {},
-      is_system: false,
-      is_superuser: false,
-      is_active: body.is_active !== false
-    }, { onConflict: 'id' }).select().single();
-    if (error) return res.status(500).json({ error: error.message });
-    // Sync permissions to role_permissions table
-    try {
-      let permCodes: string[];
-      if (req.body.rbacPermissionCodes !== undefined) {
-        permCodes = req.body.rbacPermissionCodes;
-      } else {
-        const permObj = req.body.permissions || {};
-        permCodes = Array.isArray(permObj) ? permObj : Object.values(permObj).flat();
-      }
-      await syncRolePermissions(data.id, permCodes, supabaseAdmin);
-    } catch (syncErr) { console.error('Role permission sync error:', syncErr); }
-    const isNew = body.id ? false : true;
-    await writeAuditEvent({ req, user: req.user!, action: isNew ? 'role.created' : 'role.updated', entityType: 'CustomRole', entityId: data.id, module: 'admin', details: { name: body.name, department: req.body.department } });
-    return res.json({ success: true, role: data });
-  }
-  return res.status(503).json({ error: 'Database not configured' });
-});
-
-router.patch('/roles/:id', authenticate, requirePermission('roles:manage'), async (req, res) => {
-  const roleId = req.params.id;
-  const partialRoleSchema = roleApiSchema.partial();
-  const validation = partialRoleSchema.safeParse(req.body);
-  if (!validation.success) {
-    return res.status(400).json({ error: 'Validation failed', details: validation.error.flatten() });
-  }
-
-  const updates = validation.data;
-  if (hasSupabaseAdminConfig && supabaseAdmin) {
-    const payload: any = {};
-    if (updates.name !== undefined) payload.name = updates.name;
-    if (updates.name !== undefined) payload.display_name = updates.name;
-    if (updates.description !== undefined) payload.description = updates.description;
-    if (req.body.department !== undefined) payload.department = req.body.department || null;
-    if (req.body.roleLabel !== undefined) payload.role_label = req.body.roleLabel || null;
-    if (req.body.parentRoleId !== undefined) payload.parent_role_id = req.body.parentRoleId || null;
-    if (req.body.category !== undefined) payload.category = req.body.category;
-    if (req.body.moduleAccess !== undefined) payload.module_access = req.body.moduleAccess;
-    if (req.body.permissions !== undefined) payload.permissions = req.body.permissions;
-    if (updates.is_superuser !== undefined) payload.is_superuser = updates.is_superuser;
-    if (updates.is_active !== undefined) payload.is_active = updates.is_active;
-    const { data, error } = await supabaseAdmin.from('roles').update(payload).eq('id', roleId).select().single();
-    if (error) return res.status(500).json({ error: error.message });
-    // Sync permissions to role_permissions
-    if (req.body.rbacPermissionCodes !== undefined || req.body.permissions !== undefined) {
-      try {
-        let permCodes: string[];
-        if (req.body.rbacPermissionCodes !== undefined) {
-          permCodes = req.body.rbacPermissionCodes;
-        } else {
-          const permObj = req.body.permissions || {};
-          permCodes = Array.isArray(permObj) ? permObj : Object.values(permObj).flat();
-        }
-        await syncRolePermissions(roleId, permCodes, supabaseAdmin);
-      } catch (syncErr) { console.error('Role permission sync error:', syncErr); }
-    }
-    await writeAuditEvent({ req, user: req.user!, action: 'role.updated', entityType: 'Role', entityId: roleId, module: 'admin', details: { updates: Object.keys(payload) } });
-    return res.json({ success: true, role: data });
-  }
-  return res.status(503).json({ error: 'Database not configured' });
-});
-
-router.delete('/roles/:id', authenticate, requirePermission('roles:manage'), async (req, res) => {
-  const roleId = req.params.id;
-  if (hasSupabaseAdminConfig && supabaseAdmin) {
-    // Also delete role_permissions for this role
-    await supabaseAdmin.from('role_permissions').delete().eq('role_id', roleId);
-    const { error } = await supabaseAdmin.from('roles').delete().eq('id', roleId);
-    if (error) return res.status(500).json({ error: error.message });
-    await writeAuditEvent({ req, user: req.user!, action: 'role.deleted', entityType: 'Role', entityId: roleId, module: 'admin' });
-    return res.json({ success: true });
-  }
-  return res.status(503).json({ error: 'Database not configured' });
-});
-
-// ── Permissions ──────────────────────────────────────────────
-
-router.get('/permissions', authenticate, requirePermission('roles:manage'), async (req, res) => {
-  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  const { data, error } = await supabaseAdmin.from('permissions').select('id, code, module, description').order('module').order('code');
-  if (error) return res.status(500).json({ error: error.message });
-  return res.json({ permissions: data || [] });
-});
-
-// Sync custom role permissions to the roles/role_permissions tables for RBAC
-async function syncRolePermissions(roleId: string, permissionCodes: string[], supabaseAdmin: any) {
-  // Always delete existing role_permissions first, even if new list is empty
-  await supabaseAdmin.from('role_permissions').delete().eq('role_id', roleId);
-  if (!permissionCodes || permissionCodes.length === 0) return;
-  // Find permission IDs by code
-  const { data: perms, error: permError } = await supabaseAdmin
-    .from('permissions')
-    .select('id, code')
-    .in('code', permissionCodes);
-  if (permError || !perms) return;
-  // Insert new role_permissions
-  const rpRows = perms.map((p: any) => ({ role_id: roleId, permission_id: p.id }));
-  if (rpRows.length > 0) {
-    await supabaseAdmin.from('role_permissions').insert(rpRows);
-  }
-}
-
-// ── Module Registry (dynamic modules & permission categories) ──
-
-// GET /api/admin/module-registry — returns all active modules, permission categories, department mappings
-router.get('/module-registry', authenticate, async (req, res) => {
-  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  try {
-    const { data, error } = await supabaseAdmin.rpc('get_module_registry');
-    if (error) return res.status(500).json({ error: error.message });
-    return res.json(data || {});
-  } catch (err: any) {
-    return res.status(500).json({ error: err.message });
-  }
-});
-
-// GET /api/admin/modules — list all modules (including inactive)
-router.get('/modules', authenticate, requirePermission('roles:manage'), async (req, res) => {
-  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  const { data, error } = await supabaseAdmin.from('modules').select('*').order('department').order('sort_order');
-  if (error) return res.status(500).json({ error: error.message });
-  return res.json({ modules: data || [] });
-});
-
-// POST /api/admin/modules — register a new module
-router.post('/modules', authenticate, requirePermission('roles:manage'), async (req, res) => {
-  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  const { id, department, label, icon, description, sortOrder } = req.body;
-  if (!id || !label) return res.status(400).json({ error: 'id and label are required' });
-  const { data, error } = await supabaseAdmin.from('modules').upsert({
-    id, department: department || 'general', label, icon: icon || '📦',
-    description: description || '', sort_order: sortOrder || 0, is_active: true,
-  }).select().single();
-  if (error) return res.status(500).json({ error: error.message });
-  await writeAuditEvent({ req, user: req.user!, action: 'module.created', entityType: 'Module', entityId: id, module: 'admin', details: { label, department } });
-  return res.json({ module: data });
-});
-
-// PATCH /api/admin/modules/:id — update a module (including deactivating)
-router.patch('/modules/:id', authenticate, requirePermission('roles:manage'), async (req, res) => {
-  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  const { label, icon, description, department, sortOrder, isActive } = req.body;
-  const updates: any = { updated_at: new Date().toISOString() };
-  if (label !== undefined) updates.label = label;
-  if (icon !== undefined) updates.icon = icon;
-  if (description !== undefined) updates.description = description;
-  if (department !== undefined) updates.department = department;
-  if (sortOrder !== undefined) updates.sort_order = sortOrder;
-  if (isActive !== undefined) updates.is_active = isActive;
-  const { data, error } = await supabaseAdmin.from('modules').update(updates).eq('id', req.params.id).select().single();
-  if (error) return res.status(500).json({ error: error.message });
-  await writeAuditEvent({ req, user: req.user!, action: 'module.updated', entityType: 'Module', entityId: req.params.id, module: 'admin', details: updates });
-  return res.json({ module: data });
-});
-
-// DELETE /api/admin/modules/:id — delete a module (triggers auto-cleanup of module_access)
-router.delete('/modules/:id', authenticate, requirePermission('roles:manage'), async (req, res) => {
-  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  const { error } = await supabaseAdmin.from('modules').delete().eq('id', req.params.id);
-  if (error) return res.status(500).json({ error: error.message });
-  await writeAuditEvent({ req, user: req.user!, action: 'module.deleted', entityType: 'Module', entityId: req.params.id, module: 'admin' });
-  return res.json({ success: true });
-});
-
-// GET /api/admin/permission-categories — list all permission categories
-router.get('/permission-categories', authenticate, requirePermission('roles:manage'), async (req, res) => {
-  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  const { data, error } = await supabaseAdmin.from('permission_categories').select('*').order('sort_order');
-  if (error) return res.status(500).json({ error: error.message });
-  return res.json({ categories: data || [] });
-});
-
-// POST /api/admin/permission-categories — create a new permission category
-router.post('/permission-categories', authenticate, requirePermission('roles:manage'), async (req, res) => {
-  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  const { id, label, icon, actions, sortOrder } = req.body;
-  if (!id || !label) return res.status(400).json({ error: 'id and label are required' });
-  const { data, error } = await supabaseAdmin.from('permission_categories').upsert({
-    id, label, icon: icon || '📋', actions: actions || [], sort_order: sortOrder || 0,
-  }).select().single();
-  if (error) return res.status(500).json({ error: error.message });
-  await writeAuditEvent({ req, user: req.user!, action: 'perm_category.created', entityType: 'PermissionCategory', entityId: id, module: 'admin', details: { label } });
-  return res.json({ category: data });
-});
-
-// PATCH /api/admin/permission-categories/:id — update a permission category
-router.patch('/permission-categories/:id', authenticate, requirePermission('roles:manage'), async (req, res) => {
-  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  const { label, icon, actions, sortOrder } = req.body;
-  const updates: any = { updated_at: new Date().toISOString() };
-  if (label !== undefined) updates.label = label;
-  if (icon !== undefined) updates.icon = icon;
-  if (actions !== undefined) updates.actions = actions;
-  if (sortOrder !== undefined) updates.sort_order = sortOrder;
-  const { data, error } = await supabaseAdmin.from('permission_categories').update(updates).eq('id', req.params.id).select().single();
-  if (error) return res.status(500).json({ error: error.message });
-  await writeAuditEvent({ req, user: req.user!, action: 'perm_category.updated', entityType: 'PermissionCategory', entityId: req.params.id, module: 'admin', details: updates });
-  return res.json({ category: data });
-});
-
-// DELETE /api/admin/permission-categories/:id — delete (triggers auto-cleanup of permissions JSONB)
-router.delete('/permission-categories/:id', authenticate, requirePermission('roles:manage'), async (req, res) => {
-  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  const { error } = await supabaseAdmin.from('permission_categories').delete().eq('id', req.params.id);
-  if (error) return res.status(500).json({ error: error.message });
-  await writeAuditEvent({ req, user: req.user!, action: 'perm_category.deleted', entityType: 'PermissionCategory', entityId: req.params.id, module: 'admin' });
-  return res.json({ success: true });
-});
-
-// POST /api/admin/department-permission-categories — map a department to a permission category
-router.post('/department-permission-categories', authenticate, requirePermission('roles:manage'), async (req, res) => {
-  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  const { department, categoryId, sortOrder } = req.body;
-  if (!department || !categoryId) return res.status(400).json({ error: 'department and categoryId are required' });
-  const { data, error } = await supabaseAdmin.from('department_permission_categories').upsert({
-    department, category_id: categoryId, sort_order: sortOrder || 0,
-  }).select().single();
-  if (error) return res.status(500).json({ error: error.message });
-  return res.json({ mapping: data });
-});
-
-// DELETE /api/admin/department-permission-categories — unmap a department from a permission category
-router.delete('/department-permission-categories', authenticate, requirePermission('roles:manage'), async (req, res) => {
-  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  const { department, categoryId } = req.body;
-  if (!department || !categoryId) return res.status(400).json({ error: 'department and categoryId are required' });
-  const { error } = await supabaseAdmin.from('department_permission_categories')
-    .delete().eq('department', department).eq('category_id', categoryId);
-  if (error) return res.status(500).json({ error: error.message });
-  return res.json({ success: true });
-});
-
-// ── Organizations ──────────────────────────────────────────────
-
-const pick = (...vals: any[]) => vals.find(v => v !== undefined);
-const nul = (v: any) => (v === '' ? null : v);
-
-const orgUpdates = (b: any) => {
-  const u: any = {};
-  const map: Record<string, any> = {
-    org_name: pick(b.orgName, b.name), org_code: pick(b.orgCode, b.code), description: b.description,
-    contact_email: pick(b.contactEmail, b.email), contact_phone: pick(b.contactPhone, b.phone),
-    billing_address: pick(b.billingAddress, typeof b.address === 'object' ? b.address : undefined),
-    is_active: pick(b.isActive, b.is_active), logo_url: pick(b.logoUrl, b.logo_url),
-  };
-  for (const [k, v] of Object.entries(map)) if (v !== undefined) u[k] = k === 'is_active' || k === 'billing_address' ? v : nul(v);
-  return u;
+  next();
 };
 
-const propertyUpdates = (b: any) => {
-  const u: any = {};
-  const map: Record<string, any> = {
-    organization_id: pick(b.organizationId, b.orgId, b.organization_id), property_name: pick(b.propertyName, b.name),
-    property_code: pick(b.propertyCode, b.code), property_type: pick(b.propertyType, b.property_type),
-    star_rating: b.starRating ?? b.star_rating, address: typeof b.address === 'object' ? b.address : undefined,
-    timezone: b.timezone, currency_code: pick(b.currencyCode, b.currency), contact_email: pick(b.contactEmail, b.email),
-    contact_phone: pick(b.contactPhone, b.phone), is_active: pick(b.isActive, b.is_active),
-    location_lat: b.locationLat, location_lng: b.locationLng,
-  };
-  for (const [k, v] of Object.entries(map)) if (v !== undefined) u[k] = k === 'is_active' || k === 'address' ? v : nul(v);
-  return u;
-};
-
-router.get('/organizations', authenticate, async (req, res) => {
-  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  const { data, error } = await supabaseAdmin.from('organizations').select('*').order('org_name');
-  if (error) return res.status(500).json({ error: error.message });
-  return res.json({ organizations: data || [] });
-});
-
-router.post('/organizations', authenticate, requirePermission('settings:manage'), async (req, res) => {
-  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  const u = orgUpdates(req.body);
-  if (!u.org_name || !u.org_code) return res.status(400).json({ error: 'name and code are required' });
-  const { data, error } = await supabaseAdmin.from('organizations').insert(u).select().single();
-  if (error) return res.status(500).json({ error: error.message });
-  await writeAuditEvent({ req, user: req.user!, action: 'org.created', entityType: 'Organization', entityId: data.id, module: 'admin' });
-  return res.json({ organization: data });
-});
-
-router.patch('/organizations/:id', authenticate, requirePermission('settings:manage'), async (req, res) => {
-  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  const updates = { ...orgUpdates(req.body), updated_at: new Date().toISOString() };
-  const { data, error } = await supabaseAdmin.from('organizations').update(updates).eq('id', req.params.id).select().single();
-  if (error) return res.status(500).json({ error: error.message });
-  await writeAuditEvent({ req, user: req.user!, action: 'org.updated', entityType: 'Organization', entityId: req.params.id, module: 'admin' });
-  return res.json({ organization: data });
-});
-
-// ── Properties ─────────────────────────────────────────────────
-
-router.get('/properties', authenticate, async (req, res) => {
-  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  const { data, error } = await supabaseAdmin.from('properties').select('*, organizations(*)').order('property_name');
-  if (error) return res.status(500).json({ error: error.message });
-  return res.json({ properties: data || [] });
-});
-
-router.post('/properties', authenticate, requirePermission('settings:manage'), async (req, res) => {
-  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  const u = propertyUpdates(req.body);
-  if (!u.property_name || !u.property_code || !u.organization_id) return res.status(400).json({ error: 'organization, name and code are required' });
-  const { data, error } = await supabaseAdmin.from('properties').insert(u).select().single();
-  if (error) return res.status(500).json({ error: error.message });
-  await writeAuditEvent({ req, user: req.user!, action: 'property.created', entityType: 'Property', entityId: data.id, module: 'admin' });
-  return res.json({ property: data });
-});
-
-router.patch('/properties/:id', authenticate, requirePermission('settings:manage'), async (req, res) => {
-  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  const updates = { ...propertyUpdates(req.body), updated_at: new Date().toISOString() };
-  const { data, error } = await supabaseAdmin.from('properties').update(updates).eq('id', req.params.id).select().single();
-  if (error) return res.status(500).json({ error: error.message });
-  await writeAuditEvent({ req, user: req.user!, action: 'property.updated', entityType: 'Property', entityId: req.params.id, module: 'admin' });
-  return res.json({ property: data });
-});
-
-// Live per-property footprint across every portal (row counts scoped by property_id).
-const PORTAL_FOOTPRINT: { portal: string; metric: string; table: string }[] = [
-  { portal: 'Front Office', metric: 'Rooms', table: 'rooms' },
-  { portal: 'Front Office', metric: 'Room Types', table: 'room_types' },
-  { portal: 'Front Office', metric: 'Reservations', table: 'reservations' },
-  { portal: 'Front Office', metric: 'Guests', table: 'guests' },
-  { portal: 'Front Office', metric: 'Guest Requests', table: 'guest_requests' },
-  { portal: 'Front Office', metric: 'Rate Plans', table: 'rate_plans' },
-  { portal: 'Front Office', metric: 'Packages', table: 'packages' },
-  { portal: 'Housekeeping', metric: 'Tasks', table: 'housekeeping_task_mgmt' },
-  { portal: 'Housekeeping', metric: 'Linen Stock', table: 'hk_linen_stock' },
-  { portal: 'Housekeeping', metric: 'Setup Areas', table: 'hk_property_setup' },
-  { portal: 'Food & Beverage', metric: 'Outlets', table: 'outlets' },
-  { portal: 'Food & Beverage', metric: 'Menu Items', table: 'menu_items' },
-  { portal: 'Food & Beverage', metric: 'Tables', table: 'fb_tables' },
-  { portal: 'Food & Beverage', metric: 'Staff', table: 'fb_staff' },
-  { portal: 'Food & Beverage', metric: 'Table Reservations', table: 'fb_table_reservations' },
-  { portal: 'Spa', metric: 'Treatment Rooms', table: 'spa_rooms' },
-  { portal: 'Spa', metric: 'Appointments', table: 'spa_appointments' },
-  { portal: 'Engineering', metric: 'Technicians', table: 'eng_technicians' },
-  { portal: 'Engineering', metric: 'Room Issues', table: 'eng_room_issues' },
-  { portal: 'Engineering', metric: 'Generators', table: 'eng_generators' },
-  { portal: 'Banquet', metric: 'Events', table: 'banquet_events' },
-  { portal: 'Finance', metric: 'Folios', table: 'folios' },
-  { portal: 'Finance', metric: 'Journal Entries', table: 'journal_entries' },
-  { portal: 'HR', metric: 'Employees', table: 'employees' },
-  { portal: 'Inventory', metric: 'Inventory Items', table: 'inventory_items' },
-];
-
-const propertyFootprint = (propertyId: string) => Promise.all(PORTAL_FOOTPRINT.map(async m => {
-  const { count, error } = await supabaseAdmin!.from(m.table).select('*', { count: 'exact', head: true }).eq('property_id', propertyId);
-  return { ...m, count: error ? null : (count ?? 0) };
-}));
-
-router.get('/properties/:id/footprint', authenticate, async (req, res) => {
-  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  return res.json({ footprint: await propertyFootprint(req.params.id) });
-});
-
-router.get('/tenant-overview', authenticate, async (req, res) => {
-  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  const [orgs, props] = await Promise.all([
-    supabaseAdmin.from('organizations').select('*').order('org_name'),
-    supabaseAdmin.from('properties').select('*').order('property_name'),
-  ]);
-  if (orgs.error) return res.status(500).json({ error: orgs.error.message });
-  if (props.error) return res.status(500).json({ error: props.error.message });
-  const footprints = await Promise.all((props.data || []).map(async p => [p.id, await propertyFootprint(p.id)] as const));
-  return res.json({ organizations: orgs.data || [], properties: props.data || [], footprints: Object.fromEntries(footprints) });
-});
-
-// ── Scheduler ──────────────────────────────────────────────────
-
-router.get('/scheduler/jobs', authenticate, async (req, res) => {
-  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  const since24h = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-  const [jobsRes, runs24h, failed24h] = await Promise.all([
-    supabaseAdmin.from('scheduled_jobs').select('*').order('name'),
-    supabaseAdmin.from('job_runs').select('*', { count: 'exact', head: true }).gte('created_at', since24h),
-    supabaseAdmin.from('job_runs').select('*', { count: 'exact', head: true }).eq('status', 'failed').gte('created_at', since24h),
-  ]);
-  if (jobsRes.error) return res.status(500).json({ error: jobsRes.error.message });
-  const jobs = jobsRes.data || [];
-  return res.json({
-    jobs,
-    stats: {
-      total: jobs.length,
-      active: jobs.filter(j => j.enabled).length,
-      disabled: jobs.filter(j => !j.enabled).length,
-      runs24h: runs24h.count || 0,
-      failed24h: failed24h.count || 0,
-    },
-  });
-});
-
-router.patch('/scheduler/jobs/:id', authenticate, requirePermission('settings:manage'), async (req, res) => {
-  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  const { name, scheduleCron, config, enabled } = req.body;
-  const updates: any = {};
-  if (name !== undefined) updates.name = name;
-  if (scheduleCron !== undefined) updates.schedule_cron = scheduleCron;
-  if (config !== undefined) updates.config = config;
-  if (enabled !== undefined) updates.enabled = enabled;
-  const { data, error } = await supabaseAdmin.from('scheduled_jobs').update(updates).eq('id', req.params.id).select().single();
-  if (error) return res.status(500).json({ error: error.message });
-  await writeAuditEvent({ req, user: req.user!, action: 'job.updated', entityType: 'ScheduledJob', entityId: req.params.id, module: 'admin' });
-  return res.json({ job: data });
-});
-
-router.post('/scheduler/jobs/:id/trigger', authenticate, requirePermission('settings:manage'), async (req, res) => {
-  try {
-    const { triggerJobManually } = require('../scheduler');
-    const result = await triggerJobManually(req.params.id);
-    await writeAuditEvent({ req, user: req.user!, action: 'job.triggered', entityType: 'ScheduledJob', entityId: req.params.id, module: 'admin' });
-    return res.json(result);
-  } catch (err: any) { return res.status(500).json({ error: err.message }); }
-});
-
-router.get('/scheduler/jobs/:id/runs', authenticate, async (req, res) => {
-  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  const { data, error } = await supabaseAdmin.from('job_runs').select('*').eq('job_id', req.params.id).order('created_at', { ascending: false }).limit(50);
-  if (error) return res.status(500).json({ error: error.message });
-  return res.json({ runs: data || [] });
-});
-
-// ── Compliance Center ──────────────────────────────────────────
-
-router.get('/compliance/consent-logs', authenticate, async (req, res) => {
-  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  const { data, error } = await supabaseAdmin.from('consent_logs').select('*').order('timestamp', { ascending: false }).limit(100);
-  if (error) return res.status(500).json({ error: error.message });
-  return res.json({ logs: data || [] });
-});
-
-router.get('/compliance/retention-policies', authenticate, async (req, res) => {
-  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  const { data, error } = await supabaseAdmin.from('data_retention_policies').select('*').order('table_name');
-  if (error) return res.status(500).json({ error: error.message });
-  return res.json({ policies: data || [] });
-});
-
-router.patch('/compliance/retention-policies/:id', authenticate, requirePermission('settings:manage'), async (req, res) => {
-  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  const { retentionDays, action, enabled } = req.body;
-  const updates: any = {};
-  if (retentionDays !== undefined) updates.retention_days = retentionDays;
-  if (action !== undefined) updates.action = action;
-  if (enabled !== undefined) updates.enabled = enabled;
-  const { data, error } = await supabaseAdmin.from('data_retention_policies').update(updates).eq('id', req.params.id).select().single();
-  if (error) return res.status(500).json({ error: error.message });
-  return res.json({ policy: data });
-});
-
-router.post('/compliance/pii-export', authenticate, requirePermission('settings:manage'), async (req, res) => {
-  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  const { targetEntity } = req.body;
-  if (!targetEntity) return res.status(400).json({ error: 'targetEntity is required' });
-
-  const [guests, reservations, folios, folioLines] = await Promise.all([
-    supabaseAdmin.from('guests').select('*').eq('id', targetEntity).single(),
-    supabaseAdmin.from('reservations').select('*').eq('guest_id', targetEntity),
-    supabaseAdmin.from('folios').select('*').eq('owner_id', targetEntity),
-    supabaseAdmin.from('folio_lines').select('*').eq('reservation_id', targetEntity),
-  ]);
-
-  const exportData = {
-    guest: guests.data,
-    reservations: reservations.data,
-    folios: folios.data,
-    folioLines: folioLines.data,
-    exportedAt: new Date().toISOString(),
-  };
-
-  await supabaseAdmin.from('pii_export_requests').insert({
-    requested_by: req.user?.id || null,
-    target_entity: targetEntity,
-    status: 'completed',
-    exported_at: new Date().toISOString(),
-  });
-
-  await writeAuditEvent({ req, user: req.user!, action: 'pii.exported', entityType: 'Guest', entityId: targetEntity, module: 'compliance' });
-  return res.json({ success: true, data: exportData });
-});
-
-router.post('/compliance/pii-erasure', authenticate, requirePermission('settings:manage'), async (req, res) => {
-  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  const { targetEntity } = req.body;
-  if (!targetEntity) return res.status(400).json({ error: 'targetEntity is required' });
-
-  // Anonymize PII fields in guests table (keep financial records for legal)
-  const { error: guestError } = await supabaseAdmin.from('guests').update({
-    first_name: '[ANONYMIZED]',
-    last_name: '[ANONYMIZED]',
-    email: null,
-    phone: null,
-    address: null,
-    passport_number: null,
-    nationality: null,
-  }).eq('id', targetEntity);
-
-  if (guestError) return res.status(500).json({ error: guestError.message });
-
-  await supabaseAdmin.from('pii_erasure_requests').insert({
-    requested_by: req.user?.id || null,
-    target_entity: targetEntity,
-    status: 'completed',
-    erased_at: new Date().toISOString(),
-  });
-
-  await writeAuditEvent({ req, user: req.user!, action: 'pii.erased', entityType: 'Guest', entityId: targetEntity, module: 'compliance' });
-  return res.json({ success: true });
-});
-
-router.get('/compliance/requests', authenticate, async (req, res) => {
-  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  const [exports, erasures] = await Promise.all([
-    supabaseAdmin.from('pii_export_requests').select('*').order('created_at', { ascending: false }).limit(50),
-    supabaseAdmin.from('pii_erasure_requests').select('*').order('created_at', { ascending: false }).limit(50),
-  ]);
-  return res.json({ exports: exports.data || [], erasures: erasures.data || [] });
-});
-
-// ── Health Monitoring ──────────────────────────────────────────
-
-router.get('/health/error-logs', authenticate, async (req, res) => {
-  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  const level = req.query.level as string || 'all';
-  let query = supabaseAdmin.from('error_logs').select('*').order('timestamp', { ascending: false }).limit(100);
-  if (level !== 'all') query = query.eq('level', level);
-  const { data, error } = await query;
-  if (error) return res.status(500).json({ error: error.message });
-  return res.json({ logs: data || [] });
-});
-
-// ── DB stats: live census of every relation exposed by PostgREST ──
-const DB_STATS_TTL_MS = 10 * 60_000;
-const DB_RELATIONS_TTL_MS = 5 * 60_000;
-const DB_STATS_DEADLINE_MS = 90_000;
-const DB_STATS_CONCURRENCY = 12;
-let dbStatsCache: { at: number; payload: any } | null = null;
-let dbRelationsCache: { at: number; names: string[] } | null = null;
-
-async function listPublicRelations(): Promise<string[]> {
-  const now = Date.now();
-  if (dbRelationsCache && now - dbRelationsCache.at < DB_RELATIONS_TTL_MS) return dbRelationsCache.names;
-  const supabaseUrl = (process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || '').replace(/\/$/, '');
-  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
-  const specRes = await fetch(`${supabaseUrl}/rest/v1/`, {
-    headers: { apikey: serviceKey, Authorization: `Bearer ${serviceKey}` },
-  });
-  if (!specRes.ok) throw new Error(`Schema spec request failed (${specRes.status})`);
-  const spec = await specRes.json();
-  const names = Object.keys(spec.paths || {})
-    .filter(p => !p.startsWith('/rpc/'))
-    .map(p => decodeURIComponent(p.slice(1)))
-    .filter(Boolean);
-  dbRelationsCache = { at: Date.now(), names };
-  return names;
-}
-
-router.get('/health/db-stats', authenticate, async (req, res) => {
-  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  if (dbStatsCache && Date.now() - dbStatsCache.at < DB_STATS_TTL_MS) {
-    return res.json(dbStatsCache.payload);
-  }
-  try {
-    const relations = await listPublicRelations();
-    const counts: Record<string, number> = {};
-    const deadline = Date.now() + DB_STATS_DEADLINE_MS;
-    let cursor = 0;
-    await Promise.all(Array.from({ length: DB_STATS_CONCURRENCY }, async () => {
-      while (cursor < relations.length && Date.now() < deadline) {
-        const name = relations[cursor++];
-        try {
-          const { count, error } = await supabaseAdmin!.from(name).select('*', { count: 'exact', head: true });
-          if (!error) counts[name] = count || 0;
-        } catch { /* relation not countable via PostgREST — skip */ }
-      }
-    }));
-    const counted = Object.keys(counts).length;
-    const payload = {
-      tableCounts: counts,
-      totalTables: relations.length,
-      countedTables: counted,
-      partial: counted < relations.length,
-      generatedAt: new Date().toISOString(),
-    };
-    dbStatsCache = { at: Date.now(), payload };
-    return res.json(payload);
-  } catch (err: any) {
-    return res.status(500).json({ error: err?.message || 'Failed to load database stats' });
-  }
-});
-
-router.get('/health/job-failures', authenticate, async (req, res) => {
-  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  const { data, error } = await supabaseAdmin.from('job_runs').select('*, scheduled_jobs(name)').eq('status', 'failed').order('created_at', { ascending: false }).limit(20);
-  if (error) return res.status(500).json({ error: error.message });
-  return res.json({ failedJobs: data || [] });
-});
-
-// ── Config Versioning ──────────────────────────────────────────
-
-router.get('/config-versions', authenticate, async (req, res) => {
-  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  const configKey = req.query.config_key as string;
-  const limit = parseInt(req.query.limit as string) || 50;
-  
-  if (configKey) {
-    const { data, error } = await supabaseAdmin.rpc('get_config_history', {
-      p_config_key: configKey,
-      p_limit: limit
-    });
-    if (error) return res.status(500).json({ error: error.message });
-    return res.json({ versions: data || [] });
-  }
-  
-  // Return all config keys if no specific key provided
-  const { data, error } = await supabaseAdmin
-    .from('config_versions')
-    .select('config_key, config_type, version, created_at')
-    .order('created_at', { ascending: false })
-    .limit(100);
-  if (error) return res.status(500).json({ error: error.message });
-  
-  // Group by config_key and get latest version
-  const configMap = new Map();
-  (data || []).forEach((v: any) => {
-    if (!configMap.has(v.config_key) || v.version > configMap.get(v.config_key).version) {
-      configMap.set(v.config_key, v);
-    }
-  });
-  
-  return res.json({ configs: Array.from(configMap.values()) });
-});
-
-router.post('/config-versions/create', authenticate, requirePermission('settings:manage'), async (req, res) => {
-  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  const { configKey, configType, configData, changeReason } = req.body;
-  if (!configKey || !configData) return res.status(400).json({ error: 'configKey and configData are required' });
-  
-  const { data, error } = await supabaseAdmin.rpc('create_config_version', {
-    p_config_key: configKey,
-    p_config_type: configType || 'manual',
-    p_config_data: configData,
-    p_changed_by: req.user?.id || null,
-    p_change_reason: changeReason || null
-  });
-  if (error) return res.status(500).json({ error: error.message });
-  
-  await writeAuditEvent({ 
-    req, 
-    user: req.user!, 
-    action: 'config.version_created', 
-    entityType: 'ConfigVersion', 
-    entityId: data, 
-    module: 'admin',
-    details: { configKey, configType } 
-  });
-  return res.json({ success: true, versionId: data });
-});
-
-router.post('/config-versions/rollback', authenticate, requirePermission('settings:manage'), async (req, res) => {
-  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  const { configKey, targetVersion, changeReason } = req.body;
-  if (!configKey || !targetVersion) return res.status(400).json({ error: 'configKey and targetVersion are required' });
-  
-  const { data, error } = await supabaseAdmin.rpc('rollback_config_version', {
-    p_config_key: configKey,
-    p_target_version: targetVersion,
-    p_changed_by: req.user?.id || null,
-    p_change_reason: changeReason || null
-  });
-  if (error) return res.status(500).json({ error: error.message });
-  
-  await writeAuditEvent({ 
-    req, 
-    user: req.user!, 
-    action: 'config.rollback', 
-    entityType: 'ConfigVersion', 
-    entityId: configKey, 
-    module: 'admin',
-    details: { configKey, targetVersion } 
-  });
-  return res.json({ success: true, rolledBackData: data });
-});
-
-// ── System Health Monitoring ───────────────────────────────────
-
-router.get('/health/status', authenticate, async (req, res) => {
-  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  const { data, error } = await supabaseAdmin.rpc('get_system_health');
-  if (error) return res.status(500).json({ error: error.message });
-  return res.json({ healthStatus: data || [] });
-});
-
-router.post('/health/check', authenticate, requirePermission('settings:manage'), async (req, res) => {
-  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  const { checkType, checkName, status, responseTimeMs, details } = req.body;
-  if (!checkType || !checkName || !status) return res.status(400).json({ error: 'checkType, checkName, and status are required' });
-  
-  const { data, error } = await supabaseAdmin.rpc('record_health_check', {
-    p_check_type: checkType,
-    p_check_name: checkName,
-    p_status: status,
-    p_response_time_ms: responseTimeMs || null,
-    p_details: details || null
-  });
-  if (error) return res.status(500).json({ error: error.message });
-  
-  return res.json({ success: true, checkId: data });
-});
-
-router.get('/health/alerts', authenticate, async (req, res) => {
-  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  const acknowledged = req.query.acknowledged === 'true';
-  const { data, error } = await supabaseAdmin
-    .from('health_alerts')
-    .select('*, health_alert_rules(*)')
-    .eq('acknowledged', acknowledged)
-    .order('created_at', { ascending: false })
-    .limit(50);
-  if (error) return res.status(500).json({ error: error.message });
-  return res.json({ alerts: data || [] });
-});
-
-router.patch('/health/alerts/:id/acknowledge', authenticate, requirePermission('settings:manage'), async (req, res) => {
-  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  const { error } = await supabaseAdmin
-    .from('health_alerts')
-    .update({ 
-      acknowledged: true, 
-      acknowledged_by: req.user?.id, 
-      acknowledged_at: new Date().toISOString() 
-    })
-    .eq('id', req.params.id);
-  if (error) return res.status(500).json({ error: error.message });
-  return res.json({ success: true });
-});
-
-router.get('/health/alert-rules', authenticate, async (req, res) => {
-  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  const { data, error } = await supabaseAdmin
-    .from('health_alert_rules')
-    .select('*')
-    .order('created_at', { ascending: false });
-  if (error) return res.status(500).json({ error: error.message });
-  return res.json({ rules: data || [] });
-});
-
-router.post('/health/alert-rules', authenticate, requirePermission('settings:manage'), async (req, res) => {
-  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  const { checkType, checkName, condition, thresholdValue, alertSeverity, notificationChannels } = req.body;
-  if (!checkType || !checkName || !condition) return res.status(400).json({ error: 'checkType, checkName, and condition are required' });
-  
-  const { data, error } = await supabaseAdmin.from('health_alert_rules').insert({
-    check_type: checkType,
-    check_name: checkName,
-    condition,
-    threshold_value: thresholdValue || null,
-    alert_severity: alertSeverity || 'warning',
-    notification_channels: notificationChannels || [],
-    is_active: true
-  }).select().single();
-  if (error) return res.status(500).json({ error: error.message });
-  return res.json({ rule: data });
-});
-
-router.patch('/health/alert-rules/:id', authenticate, requirePermission('settings:manage'), async (req, res) => {
-  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  const { condition, thresholdValue, alertSeverity, notificationChannels, isActive } = req.body;
-  const updates: any = {};
-  if (condition !== undefined) updates.condition = condition;
-  if (thresholdValue !== undefined) updates.threshold_value = thresholdValue;
-  if (alertSeverity !== undefined) updates.alert_severity = alertSeverity;
-  if (notificationChannels !== undefined) updates.notification_channels = notificationChannels;
-  if (isActive !== undefined) updates.is_active = isActive;
-  updates.updated_at = new Date().toISOString();
-  
-  const { data, error } = await supabaseAdmin
-    .from('health_alert_rules')
-    .update(updates)
-    .eq('id', req.params.id)
-    .select().single();
-  if (error) return res.status(500).json({ error: error.message });
-  return res.json({ rule: data });
-});
-
-// ── Enhanced User Management (New System) ────────────────────────
-
-router.post('/users/create', authenticate, requirePermission('users:manage'), async (req, res) => {
-  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  
-  const { email, password, name, role, department, phone, forcePasswordChange, customRoleId } = req.body;
-  
-  if (!email || !password || !name) {
-    return res.status(400).json({ error: 'email, password, and name are required' });
-  }
-  
-  // Validate password policy
-  const policy = await fetchPasswordPolicy();
-  const passwordValidation = validatePassword(password, policy);
-  if (!passwordValidation.valid) {
-    return res.status(400).json({ error: passwordValidation.errors.join('; ') });
-  }
-  
-  try {
-    const { data, error } = await supabaseAdmin.rpc('create_system_user', {
-      p_email: email.toLowerCase(),
-      p_password: password,
-      p_name: name,
-      p_role: role || 'member',
-      p_department: department || null,
-      p_phone: phone || null,
-      p_force_password_change: forcePasswordChange !== false
-    });
-    
-    if (error) return res.status(500).json({ error: error.message });
-
-    // If a custom role was selected, assign it and update role_description
-    if (customRoleId && data?.system_user_id) {
-      let roleDesc = role || 'member';
-      try {
-        const { data: roleData } = await supabaseAdmin.from('roles')
-          .select('display_name, role_label, name')
-          .eq('id', customRoleId)
-          .maybeSingle();
-        if (roleData) roleDesc = roleData.role_label || roleData.display_name || roleData.name;
-      } catch (e) { console.error('Failed to fetch custom role:', e); }
-
-      await supabaseAdmin.from('system_users')
-        .update({ custom_role_id: customRoleId, role_description: roleDesc })
-        .eq('id', data.system_user_id);
-
-      try {
-        await supabaseAdmin.from('user_roles')
-          .upsert({ user_id: data.system_user_id, role_id: customRoleId });
-      } catch (e) { console.error('Failed to assign user_roles:', e); }
-    }
-    
-    await writeAuditEvent({ 
-      req, 
-      user: req.user!, 
-      action: 'user.created', 
-      entityType: 'User', 
-      entityId: data?.system_user_id, 
-      module: 'admin', 
-      details: { name, email, role, customRoleId } 
-    });
-    
-    return res.json({ success: true, user: data });
-  } catch (err: any) {
-    return res.status(500).json({ error: err.message });
-  }
-});
-
-// ── Enhanced Role Management (New System) ────────────────────────
-
-router.get('/custom-roles', authenticate, async (req, res) => {
-  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  
-  const { data, error } = await supabaseAdmin
-    .from('roles')
-    .select('*')
-    .eq('is_system', false)
-    .order('name');
-    
-  if (error) return res.status(500).json({ error: error.message });
-  return res.json({ roles: data || [] });
-});
-
-router.post('/custom-roles', authenticate, requirePermission('roles:manage'), async (req, res) => {
-  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  
-  const { name, displayName, description, category, permissions, isSystemRole } = req.body;
-  
-  if (!name || !displayName) {
-    return res.status(400).json({ error: 'name and displayName are required' });
-  }
-  
-  try {
-    const roleId = `ROLE-${Date.now()}`;
-    const { data, error } = await supabaseAdmin.from('roles').insert({
-      id: roleId,
-      name,
-      display_name: displayName,
-      description: description || '',
-      category: category || 'custom',
-      permissions: permissions || {},
-      is_system: false,
-      is_superuser: false,
-      is_active: true,
-      created_by: req.user?.id || null
-    }).select().single();
-    
-    if (error) return res.status(500).json({ error: error.message });
-    
-    // Sync permissions to role_permissions
-    if (permissions) {
-      const permCodes: string[] = Array.isArray(permissions) ? permissions : Object.values(permissions).flat();
-      await syncRolePermissions(roleId, permCodes, supabaseAdmin);
-    }
-    
-    await writeAuditEvent({ 
-      req, 
-      user: req.user!, 
-      action: 'role.created', 
-      entityType: 'Role', 
-      entityId: roleId, 
-      module: 'admin', 
-      details: { name, displayName, category } 
-    });
-    
-    return res.json({ success: true, roleId });
-  } catch (err: any) {
-    return res.status(500).json({ error: err.message });
-  }
-});
-
-router.patch('/custom-roles/:id', authenticate, requirePermission('roles:manage'), async (req, res) => {
-  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  
-  const roleId = req.params.id;
-  const { displayName, description, category, permissions, isActive } = req.body;
-  
-  const updates: any = {};
-  if (displayName !== undefined) updates.display_name = displayName;
-  if (description !== undefined) updates.description = description;
-  if (category !== undefined) updates.category = category;
-  if (permissions !== undefined) updates.permissions = permissions;
-  if (isActive !== undefined) updates.is_active = isActive;
-  updates.updated_at = new Date().toISOString();
-  
-  const { data, error } = await supabaseAdmin
-    .from('roles')
-    .update(updates)
-    .eq('id', roleId)
-    .select()
-    .single();
-    
-  if (error) return res.status(500).json({ error: error.message });
-  
-  await writeAuditEvent({ 
-    req, 
-    user: req.user!, 
-    action: 'role.updated', 
-    entityType: 'Role', 
-    entityId: roleId, 
-    module: 'admin', 
-    details: { updates: Object.keys(updates) } 
-  });
-  
-  return res.json({ success: true, role: data });
-});
-
-router.delete('/custom-roles/:id', authenticate, requirePermission('roles:manage'), async (req, res) => {
-  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  
-  const roleId = req.params.id;
-  
-  // Check if it's a system role
-  const { data: roleData } = await supabaseAdmin
-    .from('roles')
-    .select('is_system')
-    .eq('id', roleId)
-    .single();
-    
-  if (roleData?.is_system) {
-    return res.status(403).json({ error: 'Cannot delete system roles' });
-  }
-  
-  // Delete role_permissions first
-  await supabaseAdmin.from('role_permissions').delete().eq('role_id', roleId);
-  const { error } = await supabaseAdmin
-    .from('roles')
-    .delete()
-    .eq('id', roleId);
-    
-  if (error) return res.status(500).json({ error: error.message });
-  
-  await writeAuditEvent({ 
-    req, 
-    user: req.user!, 
-    action: 'role.deleted', 
-    entityType: 'Role', 
-    entityId: roleId, 
-    module: 'admin' 
-  });
-  
-  return res.json({ success: true });
-});
-
-// ── User Role Assignments ─────────────────────────────────────────
-
-router.get('/users/:userId/roles', authenticate, async (req, res) => {
-  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  
-  const userId = req.params.userId;
-  
-  const { data, error } = await supabaseAdmin.rpc('get_user_roles', {
-    p_user_id: userId
-  });
-  
-  if (error) return res.status(500).json({ error: error.message });
-  return res.json({ roles: data || [] });
-});
-
-router.post('/users/:userId/roles', authenticate, requirePermission('roles:manage'), async (req, res) => {
-  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  
-  const userId = req.params.userId;
-  const { roleId, propertyId, organizationId, expiresAt } = req.body;
-  
-  if (!roleId) {
-    return res.status(400).json({ error: 'roleId is required' });
-  }
-  
-  try {
-    const { data, error } = await supabaseAdmin.rpc('assign_role_to_user', {
-      p_user_id: userId,
-      p_role_id: roleId,
-      p_property_id: propertyId || null,
-      p_organization_id: organizationId || null,
-      p_assigned_by: req.user?.id || null,
-      p_expires_at: expiresAt || null
-    });
-    
-    if (error) return res.status(500).json({ error: error.message });
-    
-    await writeAuditEvent({ 
-      req, 
-      user: req.user!, 
-      action: 'role.assigned', 
-      entityType: 'UserRoleAssignment', 
-      entityId: data, 
-      module: 'admin', 
-      details: { userId, roleId, propertyId, organizationId } 
-    });
-    
-    return res.json({ success: true, assignmentId: data });
-  } catch (err: any) {
-    return res.status(500).json({ error: err.message });
-  }
-});
-
-router.delete('/users/:userId/roles/:assignmentId', authenticate, requirePermission('roles:manage'), async (req, res) => {
-  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  
-  const assignmentId = req.params.assignmentId;
-  
-  const { error } = await supabaseAdmin
-    .from('user_role_assignments')
-    .update({ is_active: false })
-    .eq('id', assignmentId);
-    
-  if (error) return res.status(500).json({ error: error.message });
-  
-  await writeAuditEvent({ 
-    req, 
-    user: req.user!, 
-    action: 'role.unassigned', 
-    entityType: 'UserRoleAssignment', 
-    entityId: assignmentId, 
-    module: 'admin' 
-  });
-  
-  return res.json({ success: true });
-});
-
-// ── Backup & Recovery ───────────────────────────────────────────
-
-router.get('/backups', authenticate, async (req, res) => {
-  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  const status = req.query.status as string;
-  let query = supabaseAdmin.from('backup_jobs').select('*').order('initiated_at', { ascending: false }).limit(50);
-  if (status) query = query.eq('status', status);
-  const { data, error } = await query;
-  if (error) return res.status(500).json({ error: error.message });
-  return res.json({ backups: data || [] });
-});
-
-router.post('/backups/create', authenticate, requirePermission('settings:manage'), async (req, res) => {
-  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  const { backupType, storageLocation, metadata } = req.body;
-  if (!backupType) return res.status(400).json({ error: 'backupType is required' });
-  
-  const { data, error } = await supabaseAdmin.rpc('create_backup_job', {
-    p_backup_type: backupType,
-    p_storage_location: storageLocation || 'supabase',
-    // backup_jobs.initiated_by references auth.users(id) — system_users ids are not auth UUIDs
-    p_initiated_by: null,
-    p_metadata: { ...(metadata || {}), requestedBy: req.user?.id || null, requestedByName: (req.user as any)?.name || null }
-  });
-  if (error) return res.status(500).json({ error: error.message });
-  
-  await writeAuditEvent({ 
-    req, 
-    user: req.user!, 
-    action: 'backup.created', 
-    entityType: 'BackupJob', 
-    entityId: data, 
-    module: 'admin',
-    details: { backupType, storageLocation } 
-  });
-  // Kick off the async backup worker immediately (also scanned every 60s for stuck jobs)
-  processBackupJob(data).catch(e => console.error('[BackupWorker] immediate run failed:', e?.message));
-  return res.json({ success: true, backupId: data });
-});
-
-router.get('/backups/:id/download', authenticate, async (req, res) => {
-  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  const { data: job, error: jobErr } = await supabaseAdmin
-    .from('backup_jobs').select('id, status, storage_path').eq('id', req.params.id).maybeSingle();
-  if (jobErr) return res.status(500).json({ error: jobErr.message });
-  if (!job) return res.status(404).json({ error: 'Backup job not found' });
-  if (job.status !== 'completed' || !job.storage_path) {
-    return res.status(400).json({ error: 'Backup is not completed or has no stored artifact' });
-  }
-  const manifestPath = job.storage_path.endsWith('/') ? job.storage_path + 'manifest.json' : job.storage_path + '/manifest.json';
-  const { data: signed, error: signErr } = await supabaseAdmin.storage
-    .from('backups').createSignedUrl(manifestPath, 3600);
-  if (signErr || !signed) return res.status(500).json({ error: signErr?.message || 'Failed to create download URL' });
-  return res.json({ url: signed.signedUrl, path: manifestPath, expiresIn: 3600 });
-});
-
-router.get('/backups/statistics', authenticate, async (req, res) => {
-  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  // get_backup_statistics RPC has a broken return type; aggregate live rows instead
-  const { data, error } = await supabaseAdmin
-    .from('backup_jobs')
-    .select('status, backup_size_bytes, initiated_at')
-    .order('initiated_at', { ascending: false })
-    .limit(5000);
-  if (error) return res.status(500).json({ error: error.message });
-  const rows = data || [];
-  const completed = rows.filter(r => r.status === 'completed');
-  const sizes = completed.map(r => Number(r.backup_size_bytes) || 0);
-  const totalSize = sizes.reduce((a, b) => a + b, 0);
-  const statistics = {
-    total_backups: rows.length,
-    successful_backups: completed.length,
-    failed_backups: rows.filter(r => r.status === 'failed').length,
-    active_backups: rows.filter(r => r.status === 'running' || r.status === 'pending').length,
-    total_size_bytes: totalSize,
-    avg_backup_size_bytes: completed.length ? Math.round(totalSize / completed.length) : 0,
-    last_backup_time: rows[0]?.initiated_at || null,
-    last_backup_status: rows[0]?.status || null,
-  };
-  return res.json({ statistics });
-});
-
-router.get('/backups/restorations', authenticate, async (req, res) => {
-  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  const { data, error } = await supabaseAdmin
-    .from('backup_restorations')
-    .select('*, backup_jobs(backup_type, initiated_at)')
-    .order('initiated_at', { ascending: false })
-    .limit(50);
-  if (error) return res.status(500).json({ error: error.message });
-  return res.json({ restorations: data || [] });
-});
-
-router.post('/backups/:id/restore', authenticate, requirePermission('settings:manage'), async (req, res) => {
-  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  const { data: job, error: jobErr } = await supabaseAdmin
-    .from('backup_jobs').select('id, status, backup_type').eq('id', req.params.id).maybeSingle();
-  if (jobErr) return res.status(500).json({ error: jobErr.message });
-  if (!job) return res.status(404).json({ error: 'Backup job not found' });
-  if (job.status !== 'completed') return res.status(400).json({ error: 'Only completed backups can be restored' });
-  const { data, error } = await supabaseAdmin.from('backup_restorations').insert({
-    backup_job_id: job.id,
-    status: 'pending',
-    initiated_by: null,
-    metadata: { requestedBy: req.user?.id || null, backupType: job.backup_type, ...(req.body?.metadata || {}) },
-  }).select().single();
-  if (error) return res.status(500).json({ error: error.message });
-  await writeAuditEvent({
-    req, user: req.user!, action: 'backup.restore_requested',
-    entityType: 'BackupRestoration', entityId: data.id, module: 'admin',
-    details: { backupJobId: job.id, backupType: job.backup_type },
-  });
-  return res.json({ success: true, restoration: data });
-});
-
-router.get('/backup-schedules', authenticate, async (req, res) => {
-  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  const { data, error } = await supabaseAdmin.from('backup_schedules').select('*').order('created_at', { ascending: false });
-  if (error) return res.status(500).json({ error: error.message });
-  return res.json({ schedules: data || [] });
-});
-
-router.post('/backup-schedules', authenticate, requirePermission('settings:manage'), async (req, res) => {
-  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  const { scheduleName, backupType, cronSchedule, retentionDays, storageLocation } = req.body;
-  if (!scheduleName || !backupType || !cronSchedule) {
-    return res.status(400).json({ error: 'scheduleName, backupType, and cronSchedule are required' });
-  }
-  
-  const { data, error } = await supabaseAdmin.rpc('create_backup_schedule', {
-    p_schedule_name: scheduleName,
-    p_backup_type: backupType,
-    p_cron_schedule: cronSchedule,
-    p_retention_days: retentionDays || 30,
-    p_storage_location: storageLocation || 'supabase',
-    // backup_schedules.created_by references auth.users(id) — system_users ids are not auth UUIDs
-    p_created_by: null
-  });
-  if (error) return res.status(500).json({ error: error.message });
-  
-  await writeAuditEvent({ 
-    req, 
-    user: req.user!, 
-    action: 'backup_schedule.created', 
-    entityType: 'BackupSchedule', 
-    entityId: data, 
-    module: 'admin',
-    details: { scheduleName, backupType, cronSchedule } 
-  });
-  return res.json({ success: true, scheduleId: data });
-});
-
-router.patch('/backup-schedules/:id', authenticate, requirePermission('settings:manage'), async (req, res) => {
-  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  const { cronSchedule, retentionDays, storageLocation, isActive } = req.body;
-  const updates: any = {};
-  if (cronSchedule !== undefined) updates.cron_schedule = cronSchedule;
-  if (retentionDays !== undefined) updates.retention_days = retentionDays;
-  if (storageLocation !== undefined) updates.storage_location = storageLocation;
-  if (isActive !== undefined) updates.is_active = isActive;
-  updates.updated_at = new Date().toISOString();
-  
-  const { data, error } = await supabaseAdmin
-    .from('backup_schedules')
-    .update(updates)
-    .eq('id', req.params.id)
-    .select().single();
-  if (error) return res.status(500).json({ error: error.message });
-  return res.json({ schedule: data });
-});
-
-router.delete('/backup-schedules/:id', authenticate, requirePermission('settings:manage'), async (req, res) => {
-  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  const { error } = await supabaseAdmin.from('backup_schedules').delete().eq('id', req.params.id);
-  if (error) return res.status(500).json({ error: error.message });
-  return res.json({ success: true });
-});
-
-router.post('/backups/cleanup', authenticate, requirePermission('settings:manage'), async (req, res) => {
-  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  const { retentionDays } = req.body;
-  const { data, error } = await supabaseAdmin.rpc('cleanup_old_backups', {
-    p_retention_days: retentionDays || 30
-  });
-  if (error) return res.status(500).json({ error: error.message });
-  return res.json({ success: true, deletedCount: data });
-});
-
-// ── Data Exports (live table dumps for admin data management) ──
-
-const EXPORT_DATASETS: Record<string, { table: string; label: string }> = {
-  guests: { table: 'guests', label: 'Guest Profiles' },
-  rooms: { table: 'rooms', label: 'Rooms' },
-  room_types: { table: 'room_types', label: 'Room Types' },
-  reservations: { table: 'reservations', label: 'Reservations' },
-  inventory: { table: 'inventory_items', label: 'Inventory Items' },
-  folios: { table: 'folios', label: 'Folios' },
-  audit_events: { table: 'audit_events', label: 'Audit Events' },
-};
-
-router.get('/exports/summary', authenticate, async (req, res) => {
-  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  const entries = await Promise.all(Object.entries(EXPORT_DATASETS).map(async ([key, ds]) => {
-    try {
-      const { count, error } = await supabaseAdmin!.from(ds.table).select('*', { count: 'exact', head: true });
-      return [key, { label: ds.label, table: ds.table, count: error ? 0 : (count || 0) }] as const;
-    } catch { return [key, { label: ds.label, table: ds.table, count: 0 }] as const; }
-  }));
-  return res.json({ datasets: Object.fromEntries(entries) });
-});
-
-router.get('/exports/:dataset', authenticate, async (req, res) => {
-  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  const ds = EXPORT_DATASETS[req.params.dataset];
-  if (!ds) return res.status(404).json({ error: 'Unknown export dataset' });
-  const limit = Math.min(Math.max(parseInt(req.query.limit as string) || 5000, 1), 20000);
-  const { data, error, count } = await supabaseAdmin
-    .from(ds.table)
-    .select('*', { count: 'exact' })
-    .limit(limit);
-  if (error) return res.status(500).json({ error: error.message });
-  const total = count ?? (data || []).length;
-  return res.json({
-    dataset: req.params.dataset,
-    label: ds.label,
-    table: ds.table,
-    rows: data || [],
-    count: total,
-    returned: (data || []).length,
-    truncated: total > (data || []).length,
-    exportedAt: new Date().toISOString(),
-  });
-});
-
-// ── Enhanced Scheduler Engine ─────────────────────────────────────
-
-router.get('/scheduler/jobs-enhanced', authenticate, async (req, res) => {
-  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  const { data, error } = await supabaseAdmin
-    .from('scheduled_jobs_enhanced')
-    .select('*')
-    .order('next_run_at', { ascending: true, nullsFirst: false });
-  if (error) return res.status(500).json({ error: error.message });
-  return res.json({ jobs: data || [] });
-});
-
-router.post('/scheduler/jobs', authenticate, requirePermission('settings:manage'), async (req, res) => {
-  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  const { jobName, jobType, jobHandler, scheduleCron, config, priority, timeoutSeconds, retryPolicy } = req.body;
-  if (!jobName || !jobType || !jobHandler || !scheduleCron) {
-    return res.status(400).json({ error: 'jobName, jobType, jobHandler, and scheduleCron are required' });
-  }
-  
-  const { data, error } = await supabaseAdmin.from('scheduled_jobs_enhanced').insert({
-    job_name: jobName,
-    job_type: jobType,
-    job_handler: jobHandler,
-    schedule_cron: scheduleCron,
-    config: config || {},
-    priority: priority || 5,
-    timeout_seconds: timeoutSeconds || 300,
-    retry_policy: retryPolicy || { max_retries: 3, retry_delay_seconds: 60 },
-    enabled: true,
-    created_by: req.user?.id || null,
-    next_run_at: null // Will be calculated by enqueue_due_jobs
-  }).select().single();
-  
-  if (error) return res.status(500).json({ error: error.message });
-  
-  await writeAuditEvent({ 
-    req, 
-    user: req.user!, 
-    action: 'scheduled_job.created', 
-    entityType: 'ScheduledJob', 
-    entityId: data.id, 
-    module: 'admin',
-    details: { jobName, jobType, scheduleCron } 
-  });
-  return res.json({ job: data });
-});
-
-router.patch('/scheduler/jobs-enhanced/:id', authenticate, requirePermission('settings:manage'), async (req, res) => {
-  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  const { jobName, jobHandler, scheduleCron, config, enabled, priority, timeoutSeconds, retryPolicy } = req.body;
-  const updates: any = {};
-  if (jobName !== undefined) updates.job_name = jobName;
-  if (jobHandler !== undefined) updates.job_handler = jobHandler;
-  if (scheduleCron !== undefined) updates.schedule_cron = scheduleCron;
-  if (config !== undefined) updates.config = config;
-  if (enabled !== undefined) updates.enabled = enabled;
-  if (priority !== undefined) updates.priority = priority;
-  if (timeoutSeconds !== undefined) updates.timeout_seconds = timeoutSeconds;
-  if (retryPolicy !== undefined) updates.retry_policy = retryPolicy;
-  updates.updated_at = new Date().toISOString();
-  
-  const { data, error } = await supabaseAdmin
-    .from('scheduled_jobs_enhanced')
-    .update(updates)
-    .eq('id', req.params.id)
-    .select().single();
-  if (error) return res.status(500).json({ error: error.message });
-  return res.json({ job: data });
-});
-
-router.delete('/scheduler/jobs/:id', authenticate, requirePermission('settings:manage'), async (req, res) => {
-  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  const { error } = await supabaseAdmin.from('scheduled_jobs_enhanced').delete().eq('id', req.params.id);
-  if (error) return res.status(500).json({ error: error.message });
-  return res.json({ success: true });
-});
-
-router.post('/scheduler/jobs-enhanced/:id/trigger', authenticate, requirePermission('settings:manage'), async (req, res) => {
-  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  const { priority } = req.body;
-  
-  const { data, error } = await supabaseAdmin.rpc('enqueue_job', {
-    p_job_id: req.params.id,
-    p_priority: priority || 5,
-    p_scheduled_for: new Date().toISOString()
-  });
-  
-  if (error) return res.status(500).json({ error: error.message });
-  
-  await writeAuditEvent({ 
-    req, 
-    user: req.user!, 
-    action: 'scheduled_job.triggered', 
-    entityType: 'ScheduledJob', 
-    entityId: req.params.id, 
-    module: 'admin' 
-  });
-  return res.json({ success: true, queueId: data });
-});
-
-router.get('/scheduler/jobs-enhanced/:id/runs', authenticate, async (req, res) => {
-  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  const { data, error } = await supabaseAdmin
-    .from('job_runs_enhanced')
-    .select('*')
-    .eq('job_id', req.params.id)
-    .order('started_at', { ascending: false })
-    .limit(50);
-  if (error) return res.status(500).json({ error: error.message });
-  return res.json({ runs: data || [] });
-});
-
-router.get('/scheduler/queue', authenticate, async (req, res) => {
-  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  const { data, error } = await supabaseAdmin
-    .from('job_execution_queue')
-    .select('*, scheduled_jobs_enhanced(job_name, job_type)')
-    .order('priority', { ascending: true })
-    .limit(100);
-  if (error) return res.status(500).json({ error: error.message });
-  return res.json({ queue: data || [] });
-});
-
-router.post('/scheduler/enqueue-due', authenticate, requirePermission('settings:manage'), async (req, res) => {
-  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  const { data, error } = await supabaseAdmin.rpc('enqueue_due_jobs');
-  if (error) return res.status(500).json({ error: error.message });
-  return res.json({ success: true, enqueuedCount: data });
-});
-
-router.get('/scheduler/statistics', authenticate, async (req, res) => {
-  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  const { data, error } = await supabaseAdmin.rpc('get_job_statistics');
-  if (error) return res.status(500).json({ error: error.message });
-  return res.json({ statistics: data });
-});
-
-// ── API Key Management ─────────────────────────────────────────
-
-router.get('/api-keys', authenticate, async (req, res) => {
-  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  const { data, error } = await supabaseAdmin.from('api_keys').select('id, key_prefix, name, scopes, rate_limit, created_by, created_at, expires_at, last_used, disabled').order('created_at', { ascending: false });
-  if (error) return res.status(500).json({ error: error.message });
-  return res.json({ keys: data || [] });
-});
-
-router.post('/api-keys', authenticate, requirePermission('settings:manage'), async (req, res) => {
-  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  const { name, scopes, rateLimit, expiresAt } = req.body;
-  if (!name) return res.status(400).json({ error: 'name is required' });
-
-  const rawKey = `seleda_${crypto.randomUUID().replace(/-/g, '')}${crypto.randomUUID().replace(/-/g, '').slice(0, 16)}`;
-  const keyHash = crypto.createHash('sha256').update(rawKey).digest('hex');
-  const keyPrefix = rawKey.slice(0, 12);
-
-  const { data, error } = await supabaseAdmin.from('api_keys').insert({
-    key_hash: keyHash,
-    key_prefix: keyPrefix,
-    name,
-    scopes: scopes || [],
-    rate_limit: rateLimit || 100,
-    created_by: req.user?.id || null,
-    expires_at: expiresAt || null,
-  }).select('id, key_prefix, name, scopes, rate_limit, created_at, expires_at, disabled').single();
-
-  if (error) return res.status(500).json({ error: error.message });
-  await writeAuditEvent({ req, user: req.user!, action: 'apikey.created', entityType: 'ApiKey', entityId: data.id, module: 'admin' });
-  return res.json({ key: data, rawKey });
-});
-
-router.patch('/api-keys/:id', authenticate, requirePermission('settings:manage'), async (req, res) => {
-  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-  const { name, scopes, rateLimit, disabled, expiresAt } = req.body;
-  const updates: any = {};
-  if (name !== undefined) updates.name = name;
-  if (scopes !== undefined) updates.scopes = scopes;
-  if (rateLimit !== undefined) updates.rate_limit = rateLimit;
-  if (disabled !== undefined) updates.disabled = disabled;
-  if (expiresAt !== undefined) updates.expires_at = expiresAt;
-  const { data, error } = await supabaseAdmin.from('api_keys').update(updates).eq('id', req.params.id).select('id, key_prefix, name, scopes, rate_limit, created_at, expires_at, last_used, disabled').single();
-  if (error) return res.status(500).json({ error: error.message });
-  await writeAuditEvent({ req, user: req.user!, action: 'apikey.updated', entityType: 'ApiKey', entityId: req.params.id, module: 'admin' });
-  return res.json({ key: data });
-});
-
-// ── Settings ───────────────────────────────────────────────────
-
-router.get('/settings', authenticate, requirePermission('settings:update'), async (_req, res) => {
-  if (hasSupabaseAdminConfig && supabaseAdmin) {
-    const data = await getGlobalSettings();
-    if (data) {
-      // Mask API keys on read
-      const encryptedIntegrations = data.encrypted_api_integrations || data.api_integrations;
-      data.api_integrations = processApiIntegrationsOnRead(encryptedIntegrations);
-      if (data.encrypted_api_integrations) data.encrypted_api_integrations = undefined;
-    }
-    return res.json({ settings: data ? snakeToCamelRecord(data) : {} });
-  }
-  return res.status(503).json({ error: 'Database not configured' });
-});
-
-router.patch('/settings', authenticate, requirePermission('settings:update'), async (req, res) => {
-  const updates = await filterKnownColumns(camelToSnakeRecord(req.body || {}));
-
-  // Encrypt API integration keys before storing
-  if (updates.api_integrations) {
-    try {
-      const encrypted = processApiIntegrationsOnWrite(updates.api_integrations);
-      updates.encrypted_api_integrations = encrypted;
-      updates.api_integrations = [];
-    } catch (e) {
-      console.error('[CRYPTO] Failed to encrypt API integrations on write:', e);
-    }
-  }
-
-  if (hasSupabaseAdminConfig && supabaseAdmin) {
-    const { data: existing } = await supabaseAdmin.from('global_settings').select('id').maybeSingle();
-    if (existing) {
-      const { data, error } = await supabaseAdmin.from('global_settings').update({
-        ...updates,
-        updated_at: new Date().toISOString(),
-        updated_by: req.user!.id
-      }).eq('id', existing.id).select().single();
-      if (error) return res.status(500).json({ error: error.message });
-      invalidateGlobalSettingsCache();
-      await writeAuditEvent({ req, user: req.user!, action: 'settings.updated', entityType: 'GlobalSettings', entityId: existing.id, module: 'admin', details: { updates: Object.keys(updates) } });
-      return res.json({ success: true, settings: data ? snakeToCamelRecord(data) : {} });
-    } else {
-      const newId = crypto.randomUUID();
-      const { data, error } = await supabaseAdmin.from('global_settings').insert({
-        id: newId,
-        ...filterKnownColumns(updates),
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-        created_by: req.user!.id,
-        updated_by: req.user!.id
-      }).select().single();
-      if (error) return res.status(500).json({ error: error.message });
-      invalidateGlobalSettingsCache();
-      await writeAuditEvent({ req, user: req.user!, action: 'settings.created', entityType: 'GlobalSettings', entityId: newId, module: 'admin', details: { updates: Object.keys(updates) } });
-      return res.json({ success: true, settings: data ? snakeToCamelRecord(data) : {} });
-    }
-  }
-  return res.status(503).json({ error: 'Database not configured' });
-});
-
-// ── Bookings ───────────────────────────────────────────────────
-
-// Admin atomic booking endpoint — mirrors /api/public/bookings but allows
-// the front desk to specify channel/status (e.g. Walk-In → Confirmed).
-router.post('/bookings', authenticate, requirePermission('reservation:create'), async (req, res) => {
+// Get all tenants (super-admin only)
+router.get('/tenants', authenticate, requireSuperAdmin, async (req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) {
     return res.status(503).json({ error: 'Database not configured' });
   }
 
-  const payload = req.body || {};
-  const required = ['p_guest_name', 'p_guest_email', 'p_check_in', 'p_check_out', 'p_items'];
-  const missing = required.filter(k => !payload[k]);
-  if (missing.length > 0) {
-    return res.status(400).json({ error: `Missing required fields: ${missing.join(', ')}` });
-  }
-
-  if (!Array.isArray(payload.p_items) || payload.p_items.length === 0) {
-    return res.status(400).json({ error: 'p_items must be a non-empty array' });
-  }
-
-  // create_booking_atomic does not know about voucher or billing-routing
-  // fields; strip them and apply them as a follow-up update once the
-  // reservation(s) exist (billing_mode/corporate_account_id drive folio
-  // hierarchy — see ensureFolio() in reservations.routes.ts).
-  const { p_voucher_code, p_voucher_discount, p_corporate_account_id, p_billing_mode, ...rpcPayload } = payload;
-  const operatorId = payload.p_operator_id || null;
-
-  const { data: rpcResult, error: rpcError } = await supabaseAdmin.rpc('create_booking_atomic', rpcPayload);
-
-  if (rpcError) {
-    const msg: string = rpcError.message || '';
-    console.error('Admin atomic booking RPC error:', { message: msg, details: rpcError.details, hint: rpcError.hint, code: rpcError.code, payload });
-    if (msg.includes('AVAILABILITY_ERROR:')) {
-      return res.status(409).json({ error: msg.replace('AVAILABILITY_ERROR:', '').trim() });
-    }
-    return res.status(500).json({ error: 'Booking failed. Please try again.', details: msg });
-  }
-
-  const result = rpcResult as any;
-  const reservationIds = result.reservationIds || [];
-  const groupId = result.groupId || null;
-  const firstReservationId = reservationIds[0];
-
-  // Apply billing-routing fields the atomic RPC doesn't accept directly.
-  if (reservationIds.length > 0 && (p_corporate_account_id || p_billing_mode)) {
-    const billingUpdate: Record<string, unknown> = {};
-    if (p_corporate_account_id) billingUpdate.corporate_account_id = p_corporate_account_id;
-    if (p_billing_mode) billingUpdate.billing_mode = p_billing_mode;
-    const { error: billingUpdateError } = await supabaseAdmin
-      .from('reservations')
-      .update(billingUpdate)
-      .in('id', reservationIds);
-    if (billingUpdateError) {
-      console.error('Admin atomic booking: failed to apply billing_mode/corporate_account_id:', billingUpdateError.message);
-      // Non-fatal — the reservation(s) were created successfully; billing_mode
-      // will just fall back to inference from corporate_account_id/booking_group_id.
-    }
-  }
-
-  // Apply voucher discount and mark voucher as redeemed.
-  if (firstReservationId && p_voucher_code) {
-    try {
-      const { data: redeemData, error: redeemError } = await supabaseAdmin.rpc('redeem_voucher', {
-        p_voucher_no: p_voucher_code,
-        p_reservation_id: firstReservationId,
-        p_redeemed_by: req.user!.name || req.user!.email || 'staff'
-      });
-      if (!redeemError && redeemData) {
-        const redeemResult = redeemData as any;
-        const voucherDiscount = Number(redeemResult.net_value || p_voucher_discount || 0);
-        const { data: firstRes } = await supabaseAdmin
-          .from('reservations')
-          .select('total_amount, charges')
-          .eq('id', firstReservationId)
-          .single();
-        if (firstRes) {
-          const newTotal = Math.max(0, Number(firstRes.total_amount) - voucherDiscount);
-          const newCharges = Array.isArray(firstRes.charges) ? [...firstRes.charges] : [];
-          newCharges.push({
-            description: 'Voucher discount',
-            amount: -voucherDiscount,
-            date: new Date().toISOString()
-          });
-          await supabaseAdmin
-            .from('reservations')
-            .update({ total_amount: newTotal, charges: newCharges })
-            .eq('id', firstReservationId);
-        }
-      } else if (redeemError) {
-        console.error('Admin voucher redeem failed:', redeemError);
-      }
-    } catch (e) {
-      console.error('Voucher redemption error:', e);
-    }
-  }
-
-  // Record operator allotment pickup for each item/day.
-  if (firstReservationId && operatorId) {
-    try {
-      const { data: allotments } = await supabaseAdmin
-        .from('allotments')
-        .select('*')
-        .eq('operator_id', operatorId)
-        .gte('stay_date', payload.p_check_in)
-        .lt('stay_date', payload.p_check_out);
-
-      if (allotments && allotments.length > 0) {
-        const checkIn = new Date(payload.p_check_in);
-        const checkOut = new Date(payload.p_check_out);
-        const current = new Date(checkIn);
-        while (current < checkOut) {
-          const dateStr = current.toISOString().split('T')[0];
-          for (const item of payload.p_items) {
-            const roomTypeId = item.roomTypeId;
-            const qty = item.qty || 1;
-            const allotment = (allotments as any[]).find((a: any) =>
-              a.room_type_id === roomTypeId && a.stay_date === dateStr
-            );
-            if (allotment) {
-              await supabaseAdmin.from('allotment_pickup_log').insert({
-                allotment_id: allotment.id,
-                reservation_id: firstReservationId,
-                pickup_date: dateStr,
-                quantity: qty,
-                picked_up_by: req.user!.name || req.user!.email || 'staff',
-                notes: 'Admin group booking'
-              });
-              await supabaseAdmin.from('allotments')
-                .update({ picked_up_qty: (allotment.picked_up_qty || 0) + qty })
-                .eq('id', allotment.id);
-            }
-          }
-          current.setDate(current.getDate() + 1);
-        }
-      }
-    } catch (e) {
-      console.error('Allotment pickup error:', e);
-    }
-  }
-
-  return res.status(201).json({
-    reservationIds: reservationIds,
-    guestIds: result.guestIds || [],
-    groupId: groupId,
-  });
-});
-
-// ── Public Booking Content ─────────────────────────────────────
-
-// Endpoint specifically for updating public page content
-router.patch('/public-booking-content', authenticate, requirePermission('settings:update'), async (req, res) => {
-
-  console.log('User attempting to update public content:', req.user!.id, req.user!.role, req.user!.username);
-
-  const { publicPageContent } = req.body || {};
-  console.log('Received publicPageContent:', JSON.stringify(publicPageContent, null, 2));
-
-  if (!publicPageContent) {
-    return res.status(400).json({ error: 'publicPageContent is required' });
-  }
-
-  // Convert camelCase to snake_case for database
-  const convertedContent = camelToSnakeRecord(publicPageContent);
-  console.log('Converted content for database:', JSON.stringify(convertedContent, null, 2));
-
-  if (hasSupabaseAdminConfig && supabaseAdmin) {
-    const { data: existing } = await supabaseAdmin.from('global_settings').select('id').maybeSingle();
-    if (existing) {
-      const { data, error } = await supabaseAdmin.from('global_settings').update({
-        public_page_content: convertedContent,
-        updated_at: new Date().toISOString(),
-        updated_by: req.user!.id
-      }).eq('id', existing.id).select().single();
-      if (error) {
-        console.error('Error updating public content:', error);
-        return res.status(500).json({ error: error.message });
-      }
-      console.log('Successfully updated public content. Result:', JSON.stringify(data, null, 2));
-      invalidateGlobalSettingsCache();
-      await writeAuditEvent({ req, user: req.user!, action: 'public_content.updated', entityType: 'GlobalSettings', entityId: existing.id, module: 'admin', details: { updates: 'publicPageContent' } });
-      return res.json({ success: true, settings: data ? snakeToCamelRecord(data) : {} });
-    } else {
-      const { data, error } = await supabaseAdmin.from('global_settings').insert({
-        public_page_content: convertedContent,
-        updated_at: new Date().toISOString(),
-        updated_by: req.user!.id
-      }).select().single();
-      if (error) {
-        console.error('Error inserting public content:', error);
-        return res.status(500).json({ error: error.message });
-      }
-      console.log('Successfully inserted public content. Result:', JSON.stringify(data, null, 2));
-      invalidateGlobalSettingsCache();
-      await writeAuditEvent({ req, user: req.user!, action: 'public_content.updated', entityType: 'GlobalSettings', entityId: data.id, module: 'admin', details: { updates: 'publicPageContent' } });
-      return res.json({ success: true, settings: data ? snakeToCamelRecord(data) : {} });
-    }
-  }
-  return res.status(503).json({ error: 'Database not configured' });
-});
-
-// ── Pending Admin Changes — Executive Governance Approval Queue ──
-
-router.get('/pending-changes', authenticate, async (_req, res) => {
-  if (hasSupabaseAdminConfig && supabaseAdmin) {
-    let { data, error } = await supabaseAdmin
-      .from('pending_admin_changes')
+  try {
+    const { data: tenants, error } = await supabaseAdmin
+      .from('tenants')
       .select('*')
-      .order('submitted_at', { ascending: false });
-    if (error && error.code === '42P01') {
-      // Table missing — attempt to create it inline
-      await ensurePendingAdminChangesTable();
-      const result = await supabaseAdmin
-        .from('pending_admin_changes')
-        .select('*')
-        .order('submitted_at', { ascending: false });
-      data = result.data;
-      error = result.error;
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      return res.status(500).json({ error: error.message });
     }
-    if (error) return res.status(500).json({ error: error.message });
-    const mapped = (data || []).map((r: any) => ({
-      id: r.id,
-      title: r.title,
-      description: r.description,
-      changeType: r.change_type,
-      submittedAt: r.submitted_at,
-      submittedBy: r.submitted_by,
-      status: r.status,
-      payload: r.payload,
-    }));
-    return res.json(mapped);
+
+    res.json({ tenants: tenants || [] });
+  } catch (error) {
+    console.error('Error fetching tenants:', error);
+    res.status(500).json({ error: 'Failed to fetch tenants' });
   }
-  return res.status(503).json({ error: 'Database not configured' });
 });
 
-router.post('/pending-changes', authenticate, async (req, res) => {
-  const body = req.body || {};
-  if (!body.id || !body.title || !body.changeType || !body.payload) {
-    return res.status(400).json({ error: 'id, title, changeType, and payload are required' });
+// Create new tenant (super-admin only)
+router.post('/tenants', authenticate, requireSuperAdmin, async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) {
+    return res.status(503).json({ error: 'Database not configured' });
   }
-  if (hasSupabaseAdminConfig && supabaseAdmin) {
-    let result = await supabaseAdmin.from('pending_admin_changes').insert({
-      id: body.id,
-      title: body.title,
-      description: body.description || '',
-      change_type: body.changeType,
-      submitted_at: body.submittedAt || new Date().toISOString(),
-      submitted_by: body.submittedBy || req.user!.name || req.user!.email,
-      status: 'Pending',
-      payload: body.payload,
+
+  const { name, code, legalName, email, phone } = req.body || {};
+
+  if (!name || !code) {
+    return res.status(400).json({ error: 'Name and code are required' });
+  }
+
+  try {
+    const { data: tenant, error } = await supabaseAdmin
+      .from('tenants')
+      .insert({
+        name,
+        code: code.toLowerCase(),
+        legal_name: legalName || null,
+        email: email || null,
+        phone: phone || null,
+        status: 'Active',
+        settings: {},
+      })
+      .select()
+      .single();
+
+    if (error) {
+      if (error.code === '23505') { // Unique violation
+        return res.status(409).json({ error: 'Tenant code already exists' });
+      }
+      return res.status(500).json({ error: error.message });
+    }
+
+    await writeAuditEvent({
+      req,
+      user: req.user,
+      action: 'tenant.create',
+      entityType: 'tenant',
+      entityId: tenant.id,
+      module: 'admin',
+      details: { name, code },
     });
-    if (result.error && result.error.code === '42P01') {
-      await ensurePendingAdminChangesTable();
-      result = await supabaseAdmin.from('pending_admin_changes').insert({
-        id: body.id,
-        title: body.title,
-        description: body.description || '',
-        change_type: body.changeType,
-        submitted_at: body.submittedAt || new Date().toISOString(),
-        submitted_by: body.submittedBy || req.user!.name || req.user!.email,
-        status: 'Pending',
-        payload: body.payload,
+
+    res.status(201).json({ tenant });
+  } catch (error) {
+    console.error('Error creating tenant:', error);
+    res.status(500).json({ error: 'Failed to create tenant' });
+  }
+});
+
+// Get tenant details (super-admin only)
+router.get('/tenants/:tenantId', authenticate, requireSuperAdmin, async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) {
+    return res.status(503).json({ error: 'Database not configured' });
+  }
+
+  const { tenantId } = req.params;
+
+  try {
+    const { data: tenant, error } = await supabaseAdmin
+      .from('tenants')
+      .select('*')
+      .eq('id', tenantId)
+      .single();
+
+    if (error || !tenant) {
+      return res.status(404).json({ error: 'Tenant not found' });
+    }
+
+    // Get user count for this tenant
+    const { count: userCount } = await supabaseAdmin
+      .from('tenant_user_assignments')
+      .select('*', { count: 'exact', head: true })
+      .eq('tenant_id', tenantId);
+
+    // Get property count for this tenant
+    const { count: propertyCount } = await supabaseAdmin
+      .from('properties')
+      .select('*', { count: 'exact', head: true })
+      .eq('tenant_id', tenantId);
+
+    res.json({
+      tenant,
+      stats: {
+        userCount: userCount || 0,
+        propertyCount: propertyCount || 0,
+      },
+    });
+  } catch (error) {
+    console.error('Error fetching tenant:', error);
+    res.status(500).json({ error: 'Failed to fetch tenant' });
+  }
+});
+
+// Update tenant (super-admin only)
+router.patch('/tenants/:tenantId', authenticate, requireSuperAdmin, async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) {
+    return res.status(503).json({ error: 'Database not configured' });
+  }
+
+  const { tenantId } = req.params;
+  const { name, legalName, email, phone, status, settings } = req.body || {};
+
+  try {
+    const updates: any = { updated_at: new Date().toISOString() };
+    if (name !== undefined) updates.name = name;
+    if (legalName !== undefined) updates.legal_name = legalName;
+    if (email !== undefined) updates.email = email;
+    if (phone !== undefined) updates.phone = phone;
+    if (status !== undefined) updates.status = status;
+    if (settings !== undefined) updates.settings = settings;
+
+    const { data: tenant, error } = await supabaseAdmin
+      .from('tenants')
+      .update(updates)
+      .eq('id', tenantId)
+      .select()
+      .single();
+
+    if (error) {
+      return res.status(500).json({ error: error.message });
+    }
+
+    await writeAuditEvent({
+      req,
+      user: req.user,
+      action: 'tenant.update',
+      entityType: 'tenant',
+      entityId: tenantId,
+      module: 'admin',
+      details: { updates },
+    });
+
+    res.json({ tenant });
+  } catch (error) {
+    console.error('Error updating tenant:', error);
+    res.status(500).json({ error: 'Failed to update tenant' });
+  }
+});
+
+// Delete tenant (super-admin only)
+router.delete('/tenants/:tenantId', authenticate, requireSuperAdmin, async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) {
+    return res.status(503).json({ error: 'Database not configured' });
+  }
+
+  const { tenantId } = req.params;
+
+  try {
+    // Check if tenant has any data
+    const { count: userCount } = await supabaseAdmin
+      .from('tenant_user_assignments')
+      .select('*', { count: 'exact', head: true })
+      .eq('tenant_id', tenantId);
+
+    const { count: propertyCount } = await supabaseAdmin
+      .from('properties')
+      .select('*', { count: 'exact', head: true })
+      .eq('tenant_id', tenantId);
+
+    if ((userCount || 0) > 0 || (propertyCount || 0) > 0) {
+      return res.status(400).json({ 
+        error: 'Cannot delete tenant with existing users or properties. Please migrate data first.' 
       });
     }
-    if (result.error) return res.status(500).json({ error: result.error.message });
-    await writeAuditEvent({ req, user: req.user, action: 'admin_change.submitted', module: 'governance', details: { changeId: body.id, title: body.title, changeType: body.changeType } });
-    return res.json({ success: true });
+
+    const { error } = await supabaseAdmin
+      .from('tenants')
+      .delete()
+      .eq('id', tenantId);
+
+    if (error) {
+      return res.status(500).json({ error: error.message });
+    }
+
+    await writeAuditEvent({
+      req,
+      user: req.user,
+      action: 'tenant.delete',
+      entityType: 'tenant',
+      entityId: tenantId,
+      module: 'admin',
+    });
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Error deleting tenant:', error);
+    res.status(500).json({ error: 'Failed to delete tenant' });
   }
-  return res.status(503).json({ error: 'Database not configured' });
 });
 
-router.patch('/pending-changes/:id', authenticate, requirePermission('settings:update'), async (req, res) => {
-  const changeId = req.params.id;
-  const { status } = req.body || {};
-  if (status !== 'Approved' && status !== 'Declined') {
-    return res.status(400).json({ error: 'status must be Approved or Declined' });
+// Get users for a specific tenant (super-admin only)
+router.get('/tenants/:tenantId/users', authenticate, requireSuperAdmin, async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) {
+    return res.status(503).json({ error: 'Database not configured' });
   }
-  if (hasSupabaseAdminConfig && supabaseAdmin) {
-    let result = await supabaseAdmin
-      .from('pending_admin_changes')
-      .update({ status })
-      .eq('id', changeId);
-    if (result.error && result.error.code === '42P01') {
-      await ensurePendingAdminChangesTable();
-      result = await supabaseAdmin
-        .from('pending_admin_changes')
-        .update({ status })
-        .eq('id', changeId);
+
+  const { tenantId } = req.params;
+
+  try {
+    const { data: assignments, error } = await supabaseAdmin
+      .from('tenant_user_assignments')
+      .select('user_id, is_default, is_super_admin, system_users (id, name, email, role, status)')
+      .eq('tenant_id', tenantId);
+
+    if (error) {
+      return res.status(500).json({ error: error.message });
     }
-    if (result.error) return res.status(500).json({ error: result.error.message });
-    await writeAuditEvent({ req, user: req.user, action: `admin_change.${status.toLowerCase()}`, module: 'governance', details: { changeId, status } });
-    return res.json({ success: true });
+
+    const users = (assignments || []).map((a: any) => ({
+      ...a.system_users,
+      isDefault: a.is_default,
+      isSuperAdmin: a.is_super_admin,
+    }));
+
+    res.json({ users });
+  } catch (error) {
+    console.error('Error fetching tenant users:', error);
+    res.status(500).json({ error: 'Failed to fetch users' });
   }
-  return res.status(503).json({ error: 'Database not configured' });
+});
+
+// Assign user to tenant (super-admin only)
+router.post('/tenants/:tenantId/users', authenticate, requireSuperAdmin, async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) {
+    return res.status(503).json({ error: 'Database not configured' });
+  }
+
+  const { tenantId } = req.params;
+  const { userId, isDefault = false, isSuperAdmin = false } = req.body || {};
+
+  if (!userId) {
+    return res.status(400).json({ error: 'userId is required' });
+  }
+
+  try {
+    // If setting as default, unset other defaults for this user
+    if (isDefault) {
+      await supabaseAdmin
+        .from('tenant_user_assignments')
+        .update({ is_default: false })
+        .eq('user_id', userId);
+    }
+
+    const { data: assignment, error } = await supabaseAdmin
+      .from('tenant_user_assignments')
+      .upsert({
+        user_id: userId,
+        tenant_id: tenantId,
+        is_default: isDefault,
+        is_super_admin: isSuperAdmin,
+      }, {
+        onConflict: 'user_id,tenant_id',
+      })
+      .select()
+      .single();
+
+    if (error) {
+      return res.status(500).json({ error: error.message });
+    }
+
+    await writeAuditEvent({
+      req,
+      user: req.user,
+      action: 'tenant.user_assign',
+      entityType: 'tenant_user_assignment',
+      entityId: assignment.id,
+      module: 'admin',
+      details: { tenantId, userId, isDefault, isSuperAdmin },
+    });
+
+    res.status(201).json({ assignment });
+  } catch (error) {
+    console.error('Error assigning user to tenant:', error);
+    res.status(500).json({ error: 'Failed to assign user' });
+  }
+});
+
+// Remove user from tenant (super-admin only)
+router.delete('/tenants/:tenantId/users/:userId', authenticate, requireSuperAdmin, async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) {
+    return res.status(503).json({ error: 'Database not configured' });
+  }
+
+  const { tenantId, userId } = req.params;
+
+  try {
+    const { error } = await supabaseAdmin
+      .from('tenant_user_assignments')
+      .delete()
+      .eq('tenant_id', tenantId)
+      .eq('user_id', userId);
+
+    if (error) {
+      return res.status(500).json({ error: error.message });
+    }
+
+    await writeAuditEvent({
+      req,
+      user: req.user,
+      action: 'tenant.user_remove',
+      entityType: 'tenant_user_assignment',
+      entityId: `${tenantId}:${userId}`,
+      module: 'admin',
+      details: { tenantId, userId },
+    });
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Error removing user from tenant:', error);
+    res.status(500).json({ error: 'Failed to remove user' });
+  }
+});
+
+// Get platform statistics (super-admin only)
+router.get('/stats', authenticate, requireSuperAdmin, async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) {
+    return res.status(503).json({ error: 'Database not configured' });
+  }
+
+  try {
+    // Get tenant count
+    const { count: tenantCount } = await supabaseAdmin
+      .from('tenants')
+      .select('*', { count: 'exact', head: true });
+
+    // Get active tenant count
+    const { count: activeTenantCount } = await supabaseAdmin
+      .from('tenants')
+      .select('*', { count: 'exact', head: true })
+      .eq('status', 'Active');
+
+    // Get total user count
+    const { count: userCount } = await supabaseAdmin
+      .from('system_users')
+      .select('*', { count: 'exact', head: true });
+
+    // Get total property count
+    const { count: propertyCount } = await supabaseAdmin
+      .from('properties')
+      .select('*', { count: 'exact', head: true });
+
+    res.json({
+      stats: {
+        totalTenants: tenantCount || 0,
+        activeTenants: activeTenantCount || 0,
+        totalUsers: userCount || 0,
+        totalProperties: propertyCount || 0,
+      },
+    });
+  } catch (error) {
+    console.error('Error fetching platform stats:', error);
+    res.status(500).json({ error: 'Failed to fetch statistics' });
+  }
 });
 
 export default router;
