@@ -29,7 +29,9 @@ const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 
 async function startServer() {
   const app = express();
-  const PORT = Number(process.env.PORT || 3000);
+  // In production with Caddy proxy, use port 3001 for Express
+  // Caddy listens on $PORT (3000) and proxies to Express on 3001
+  const PORT = Number(process.env.EXPRESS_PORT || process.env.PORT || 3000);
 
   // Production guard: refuse to start if Supabase env vars are missing
   if (IS_PRODUCTION && (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY)) {
