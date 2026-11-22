@@ -1,0 +1,4 @@
+# Supabase self-host secrets — NEVER commit
+contabo/.env
+scripts/.storage-env
+*.dump
