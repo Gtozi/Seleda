@@ -6,6 +6,7 @@
 const BASE_DOMAIN = import.meta.env.VITE_BASE_DOMAIN || 'hotel.com';
 const ADMIN_SUBDOMAIN = 'admin';
 const WWW_SUBDOMAIN = 'www';
+const IS_DEV = import.meta.env.DEV;
 
 export interface SubdomainInfo {
   subdomain: string | null;
@@ -110,15 +111,20 @@ export function getTenantCode(): string | null {
  */
 export function getApiBaseUrl(): string {
   const info = getSubdomainInfo();
-  
+
+  // Development: use same origin (localhost:3000)
+  if (IS_DEV || window.location.hostname.includes('localhost') || window.location.hostname.includes('127.0.0.1')) {
+    return window.location.origin;
+  }
+
   if (info.isAdmin) {
     return `https://admin.${BASE_DOMAIN}`;
   }
-  
+
   if (info.tenantCode) {
     return `https://${info.tenantCode}.${BASE_DOMAIN}`;
   }
-  
+
   // Main domain
   return `https://${BASE_DOMAIN}`;
 }
