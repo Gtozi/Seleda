@@ -78,6 +78,15 @@ services:
         aliases:
           - envoy
           - kong
+      # Attached to Dokploy's Traefik network for HTTPS routing
+      dokploy-network: {}
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=dokploy-network
+      - traefik.http.routers.supabase-api.rule=Host(`supabase.seledabet.com`)
+      - traefik.http.routers.supabase-api.entrypoints=websecure
+      - traefik.http.routers.supabase-api.tls.certresolver=letsencrypt
+      - traefik.http.services.supabase-api.loadbalancer.server.port=8000
     healthcheck:
       # Using a TCP port check because this image does not include curl or wget.
       test: ["CMD-SHELL", "timeout 1 bash -c '</dev/tcp/127.0.0.1/8000'"]
@@ -87,8 +96,11 @@ services:
     depends_on:
       studio:
         condition: service_healthy
-    ports:
-      - ${API_GW_HTTP_PORT:-${KONG_HTTP_PORT:-8000}}:8000/tcp
+    # Ports are NOT published publicly — Traefik (dokploy-network) routes
+    # https://supabase.seledabet.com -> api-gw:8000 with automatic TLS.
+    # For local debugging only, uncomment:
+    # ports:
+    #   - "127.0.0.1:${API_GW_HTTP_PORT:-8000}:8000/tcp"
     volumes:
       - ./volumes/api/envoy/envoy.yaml:/etc/envoy/envoy.yaml:ro
       - ./volumes/api/envoy/cds.yaml:/etc/envoy/cds.yaml:ro
@@ -555,9 +567,10 @@ services:
     container_name: supabase-pooler
     image: supabase/supavisor:2.9.13
     restart: unless-stopped
+    # Bound to localhost only — never expose Postgres publicly.
     ports:
-      - ${POSTGRES_PORT}:5432
-      - ${POOLER_PROXY_PORT_TRANSACTION}:6543
+      - "127.0.0.1:${POSTGRES_PORT}:5432"
+      - "127.0.0.1:${POOLER_PROXY_PORT_TRANSACTION}:6543"
     volumes:
       - ./volumes/pooler/pooler.exs:/etc/pooler/pooler.exs:ro,z
     healthcheck:
@@ -607,3 +620,7 @@ services:
 volumes:
   db-config:
   deno-cache:
+
+networks:
+  dokploy-network:
+    external: true
