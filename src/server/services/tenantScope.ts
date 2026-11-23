@@ -92,13 +92,15 @@ export async function setResolvedTenantScope(tenantId: string): Promise<void> {
 
 /**
  * Populate the ALS scope for authenticated staff requests on non-tenant
- * hosts (main domain). No-op when a scope already exists (tenant subdomain),
- * when there is no store, or for super-admins (platform-wide visibility).
+ * hosts (main domain / admin subdomain). No-op when a scope already exists
+ * (tenant subdomain). Everyone — including super-admins — is confined to
+ * their active tenant here; cross-tenant visibility is only available on
+ * tenant subdomains (where the URL picks the tenant) or for accounts with
+ * no tenant assignment at all.
  */
 export async function ensureStaffTenantScope(req: Request): Promise<void> {
   const store = tenantALS.getStore();
   if (!store || store.scope || !req.user) return;
-  if (req.user.isSuperAdmin) return;
   const tenantId = req.user.activeTenantId || null;
   if (tenantId) store.scope = await buildTenantScope(tenantId);
 }
