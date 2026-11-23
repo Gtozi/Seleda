@@ -204,6 +204,13 @@ function MasterHotelERP() {
     }
   }, [sessionChecked, currentUser]);
 
+  // If on admin subdomain, redirect to /admin route (super admin portal)
+  React.useEffect(() => {
+    if (sessionChecked && currentUser && isAdminSubdomain && !location.pathname.startsWith('/admin')) {
+      navigate('/admin', { replace: true });
+    }
+  }, [sessionChecked, currentUser, isAdminSubdomain, location.pathname, navigate]);
+
   // POS Authentication state
   const [posUser, setPosUser] = useState<any>(null);
   const [posSessionChecked, setPosSessionChecked] = useState(false);

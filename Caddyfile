@@ -11,8 +11,19 @@
 	}
 }
 
-# site block, listens on the $PORT environment variable
-:{$PORT:3000} {
+# Admin subdomain - routes to admin portal
+admin.seledabet.com {
+	log {
+		format json
+	}
+
+	rewrite /health /*
+
+	reverse_proxy localhost:3001
+}
+
+# Main domain - handles all other requests
+seledabet.com, www.seledabet.com, *.seledabet.com {
 	log {
 		format json
 	}
