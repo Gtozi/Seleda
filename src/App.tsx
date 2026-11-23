@@ -1048,6 +1048,17 @@ function MasterHotelERP() {
               </div>
             )}
 
+            {/* Settings */}
+            {currentUser && (
+              <button
+                onClick={() => navigate('/erp/settings')}
+                className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg text-slate-500 dark:text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 transition-all cursor-pointer smooth-transition"
+                title="Settings"
+              >
+                <Settings size={13} />
+              </button>
+            )}
+
             {/* Logout */}
             {currentUser && (
               <button
