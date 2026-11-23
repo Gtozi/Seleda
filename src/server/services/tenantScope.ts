@@ -130,6 +130,8 @@ const TENANT_TABLES = new Set([
   'housekeeping_task_mgmt', 'ingredients', 'inventory_grns', 'inventory_items',
   'inventory_requisitions', 'inventory_stock_movements', 'inventory_stores',
   'inventory_suppliers', 'journal_entries', 'journal_lines', 'lost_found', 'menu_items',
+  'allotments', 'allotment_pickup_log', 'pre_registrations', 'vouchers',
+  'work_requests', 'guest_communications', 'guest_feedback',
   'metric_history', 'mobile_check_ins', 'orders', 'outlets', 'packages', 'pm_schedules',
   'properties', 'rate_plans', 'recipes', 'reconciliation_batches', 'report_schedules',
   'reporting_snapshots', 'requisitions', 'reservations', 'rooms', 'sales_contracts',
@@ -158,13 +160,11 @@ const OUTLET_TABLES = new Set([
 ]);
 
 // Tables deliberately NOT auto-filtered: auth/session stores, platform
-// registries, tenant management, and tables keyed by other parents
-// (allotments→room_type_id, pre_registrations→reservation_id, vouchers, …).
+// registries, and tenant management. (Parent-keyed tables gained tenant_id
+// via migration 705 and are filtered normally.)
 const SKIP_TABLES = new Set([
   'system_users', 'user_sessions', 'guest_sessions', 'tenants',
   'tenant_user_assignments', 'modules', 'global_settings', 'custom_roles',
-  'allotments', 'allotment_pickup_log', 'pre_registrations', 'vouchers',
-  'work_requests', 'guest_communications', 'guest_feedback',
 ]);
 
 function specForTable(table: string): ScopeSpec | null {
