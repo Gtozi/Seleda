@@ -11,6 +11,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { getTenantCodeFromSubdomain } from './subdomain';
 import { hasSupabaseAdminConfig, supabaseAdmin } from '../supabaseAdmin';
+import { runWithTenantStore, setResolvedTenantScope } from '../services/tenantScope';
 
 export interface RequestTenant {
   id: string;
@@ -81,22 +82,28 @@ async function lookupTenantByCode(code: string): Promise<RequestTenant | null> {
  * Unknown tenant codes get a 404 so typos/inactive tenants fail loudly.
  */
 export async function resolveTenant(req: Request, res: Response, next: NextFunction) {
-  try {
-    const tenantCode = getTenantCodeFromSubdomain(req);
-    if (!tenantCode) {
-      req.tenant = null;
-      return next();
-    }
+  // Every API request runs inside a tenant ALS store so the supabaseAdmin
+  // interceptor can scope queries. The store starts empty; tenant subdomains
+  // populate it here, staff sessions populate it in `authenticate`.
+  return runWithTenantStore(async () => {
+    try {
+      const tenantCode = getTenantCodeFromSubdomain(req);
+      if (!tenantCode) {
+        req.tenant = null;
+        return next();
+      }
 
-    const tenant = await lookupTenantByCode(tenantCode);
-    if (!tenant || tenant.status !== 'Active') {
-      return res.status(404).json({ error: 'Unknown or inactive tenant' });
-    }
+      const tenant = await lookupTenantByCode(tenantCode);
+      if (!tenant || tenant.status !== 'Active') {
+        return res.status(404).json({ error: 'Unknown or inactive tenant' });
+      }
 
-    req.tenant = tenant;
-    next();
-  } catch (error) {
-    console.error('[tenant] subdomain resolution failed:', error);
-    next();
-  }
+      req.tenant = tenant;
+      await setResolvedTenantScope(tenant.id);
+      next();
+    } catch (error) {
+      console.error('[tenant] subdomain resolution failed:', error);
+      next();
+    }
+  });
 }

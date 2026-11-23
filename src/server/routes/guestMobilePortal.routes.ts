@@ -40,6 +40,7 @@ import {
   wakeupWindowError,
 } from '../services/conciergeSettings';
 import { canAccommodateBookings } from '../services/fbTableAllocation';
+import { ensureStaffTenantScope } from '../services/tenantScope';
 
 const router = Router();
 
@@ -110,10 +111,14 @@ function guestSessionUser(guest: any) {
 
 async function authenticateGuestOrStaff(req: any, res: any, next: any) {
   try {
-    if (req.user) return next();
+    if (req.user) {
+      await ensureStaffTenantScope(req);
+      return next();
+    }
     const user = await getRequestUser(req);
     if (user) {
       req.user = user;
+      await ensureStaffTenantScope(req);
       return next();
     }
 

@@ -15,6 +15,11 @@
 
 import { Router } from 'express';
 import { resolveTenant } from '../middleware/tenant';
+import { installTenantScopeFilter } from '../services/tenantScope';
+
+// Auto-scope every service-role query to the request's tenant (ALS context
+// populated by resolveTenant/authenticate). No-op without tenant context.
+installTenantScopeFilter();
 
 import b2bRoutes from './b2b.routes';
 import financeRoutes from './finance.routes';

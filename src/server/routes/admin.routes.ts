@@ -9,6 +9,7 @@ import { hasSupabaseAdminConfig, supabaseAdmin } from '../supabaseAdmin';
 import { writeAuditEvent } from '../services/sessionService';
 import { getGlobalSettings } from '../services/settingsService';
 import { isValidTenantCode, invalidateTenantCache } from '../middleware/tenant';
+import { invalidateTenantScopeCache } from '../services/tenantScope';
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 
@@ -197,6 +198,7 @@ router.patch('/tenants/:tenantId', authenticate, requireSuperAdmin, async (req, 
     });
 
     invalidateTenantCache();
+    invalidateTenantScopeCache();
     res.json({ tenant });
   } catch (error) {
     console.error('Error updating tenant:', error);
@@ -249,6 +251,7 @@ router.delete('/tenants/:tenantId', authenticate, requireSuperAdmin, async (req,
     });
 
     invalidateTenantCache();
+    invalidateTenantScopeCache();
     res.json({ success: true });
   } catch (error) {
     console.error('Error deleting tenant:', error);
@@ -678,6 +681,7 @@ router.patch('/tenants/:tenantId/module-toggles', authenticate, requireSuperAdmi
     });
 
     invalidateTenantCache();
+    invalidateTenantScopeCache();
     res.json({ tenant: updatedTenant, moduleToggles });
   } catch (error) {
     console.error('Error updating module toggles:', error);
