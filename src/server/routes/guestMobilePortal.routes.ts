@@ -144,11 +144,20 @@ async function authenticateGuestOrStaff(req: any, res: any, next: any) {
     }
     const { data: resv } = await supabaseAdmin
       .from('reservations')
-      .select('guest_id, status')
+      .select('guest_id, status, tenant_id, property_id')
       .eq('id', reservationId)
       .maybeSingle();
     if (!resv || !GUEST_BEARER_STATUSES.has(String(resv.status))) {
       return res.status(401).json({ error: 'Not authenticated' });
+    }
+    // Tenant subdomain: bearer credentials only work for this tenant's stays.
+    if (req.tenant) {
+      let owned = resv.tenant_id === req.tenant.id;
+      if (!owned && resv.property_id) {
+        const { data: prop } = await supabaseAdmin.from('properties').select('tenant_id').eq('id', resv.property_id).maybeSingle();
+        owned = prop?.tenant_id === req.tenant.id;
+      }
+      if (!owned) return res.status(403).json({ error: 'Not authenticated' });
     }
     if (typeof guestId === 'string' && guestId && resv.guest_id !== guestId) {
       return res.status(403).json({ error: 'Reservation does not belong to this guest' });
@@ -177,11 +186,20 @@ router.post('/auth/login', guestLoginLimiter, async (req, res) => {
   }
 
   // Several guests may share a name — the password disambiguates.
-  const { data: candidates, error } = await supabaseAdmin
+  // On a tenant subdomain only that tenant's guests may sign in.
+  let candidatesQuery = supabaseAdmin
     .from('guests')
-    .select('id, name, email, password_hash, force_password_change')
+    .select('id, name, email, password_hash, force_password_change, tenant_id, property_id')
     .ilike('name', name)
     .limit(10);
+  if (req.tenant) {
+    const { data: tenantProps } = await supabaseAdmin.from('properties').select('id').eq('tenant_id', req.tenant.id);
+    const propIds = (tenantProps || []).map((p: any) => p.id);
+    const clauses = [`tenant_id.eq.${req.tenant.id}`];
+    if (propIds.length) clauses.push(`property_id.in.(${propIds.join(',')})`);
+    candidatesQuery = candidatesQuery.or(clauses.join(','));
+  }
+  const { data: candidates, error } = await candidatesQuery;
   if (error) return res.status(500).json({ error: error.message });
 
   let guest: any = null;

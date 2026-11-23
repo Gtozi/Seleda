@@ -261,9 +261,10 @@ export async function createSession(user: User, req: express.Request, res: expre
   const { timeoutMs, maxConcurrent } = await fetchSessionSettings();
   const expiresAt = new Date(Date.now() + timeoutMs);
 
-  // Get user's default tenant
-  let activeTenantId: string | null = null;
-  if (!IS_FALLBACK_MODE && hasSupabaseAdminConfig && supabaseAdmin) {
+  // Get user's default tenant — on a tenant subdomain the session is pinned
+  // to that tenant so RLS/session context matches the URL.
+  let activeTenantId: string | null = req.tenant?.id || null;
+  if (!activeTenantId && !IS_FALLBACK_MODE && hasSupabaseAdminConfig && supabaseAdmin) {
     activeTenantId = await getUserDefaultTenantId(user.id);
   }
 
@@ -487,6 +488,20 @@ export async function authenticateUser(
   user.isSuperAdmin = tenantAssignments.some(t => t.isSuperAdmin);
   const defaultTenant = tenantAssignments.find(t => t.isDefault);
   user.activeTenantId = defaultTenant?.tenantId || tenantAssignments[0]?.tenantId;
+
+  // Tenant subdomain (<code>.seledabet.com): the subdomain is the tenant
+  // context. Non-super-admins must belong to that tenant; everyone who logs
+  // in here starts with it as the active tenant.
+  const subdomainTenant = req.tenant;
+  if (subdomainTenant) {
+    const hasAccess = user.isSuperAdmin ||
+      tenantAssignments.some(t => t.tenantId === subdomainTenant.id || t.tenant?.code === subdomainTenant.code);
+    if (!hasAccess) {
+      await writeAuditEvent({ req, user, action: 'login.tenant_denied', outcome: 'denied', module: 'auth', details: { tenant: subdomainTenant.code } });
+      return { status: 403, error: 'No access to this tenant' };
+    }
+    user.activeTenantId = subdomainTenant.id;
+  }
 
   const forcePasswordChange = dbUser.force_password_change === true;
   return { status: 200, user, forcePasswordChange };

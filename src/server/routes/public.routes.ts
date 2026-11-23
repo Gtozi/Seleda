@@ -5,6 +5,7 @@ import { hasSupabaseAdminConfig, supabaseAdmin } from '../supabaseAdmin';
 import { getTypeAvailability, getRoomImageUrl, autoAssignRoomsForPublicBookings, writeAuditEvent } from '../services/sharedServices';
 import { computeFees, getSeasonMultiplier, getRatePlanModifier, getEffectiveNightlyRate, type FeeComponent, type SeasonRow, type RatePlanRow } from '../../utils/pricing';
 import { getGlobalSettings } from '../services/settingsService';
+import { getRequestTenantId, getTenantPropertyIds, getTenantRoomTypeIds, scopeTenant, scopeProperty, tenantOwnsProperty } from '../services/tenantScope';
 import { nextSpaId, timeToMin } from '../services/spaService';
 import { rateLimit } from '../middleware/rateLimit';
 import { getTaxRates, evaluateBusinessRules } from '../services/adminConfigService';
@@ -121,10 +122,11 @@ const avgNightlyBase = (roomTypeId: string, basePrice: number, checkIn: string, 
 
 // Website inquiries land in the Sales CRM pipeline (sales_leads, source 'Website')
 // so the sales team sees them — the legacy inquiry tables never existed.
-const createWebsiteLead = async (l: { leadName: string; company?: string; contactPerson?: string; contactEmail?: string; contactPhone?: string; expectedCloseDate?: string; notes?: string; priority?: string }): Promise<{ ok: true; id: string } | { ok: false }> => {
+const createWebsiteLead = async (l: { leadName: string; company?: string; contactPerson?: string; contactEmail?: string; contactPhone?: string; expectedCloseDate?: string; notes?: string; priority?: string; tenantId?: string | null }): Promise<{ ok: true; id: string } | { ok: false }> => {
   const id = randomUUID();
   const { error } = await supabaseAdmin!.from('sales_leads').insert({
     id,
+    tenant_id: l.tenantId || null,
     lead_number: `LEAD-${Date.now().toString().slice(-6)}`,
     lead_name: l.leadName,
     company: l.company || null,
@@ -245,16 +247,30 @@ router.get('/rooms', async (req, res) => {
     return res.status(503).json({ error: 'Database not configured' });
   }
 
+  // Tenant scoping: on <tenant>.seledabet.com every catalogue query is
+  // constrained to that tenant's properties / tenant_id.
+  const tid = getRequestTenantId(req);
+  const propIds = await getTenantPropertyIds(req);
+  const roomTypeIds = await getTenantRoomTypeIds(req);
+
+  // Allotments key by room_type_id (no property/tenant column) — scope via the
+  // tenant's room types; empty list must match nothing, not everything.
+  const allotmentsQ = supabaseAdmin.from('allotments')
+    .select('room_type_id, stay_date, blocked_qty, picked_up_qty, is_released')
+    .gte('stay_date', checkIn).lt('stay_date', checkOut).eq('is_released', false);
+  if (roomTypeIds !== null) {
+    allotmentsQ.in('room_type_id', roomTypeIds.length ? roomTypeIds : ['00000000-0000-0000-0000-000000000000']);
+  }
+
   const [{ data: roomTypes, error: rtError }, { data: rooms, error: roomsError }, { data: reservations, error: resError }, { data: seasons }, allotmentsResult, overridesResult] = await Promise.all([
-    supabaseAdmin.from('room_types').select('*').eq('is_active', true),
-    supabaseAdmin.from('rooms').select('*'),
-    supabaseAdmin.from('reservations').select('*').lt('check_in_date', checkOut).gt('check_out_date', checkIn),
-    supabaseAdmin.from('seasons').select('*'),
-    // Allotments reduce sellable inventory for operators. is_released allotments
-    // no longer block. Table may not exist on older schemas — tolerate the error.
-    supabaseAdmin.from('allotments').select('room_type_id, stay_date, blocked_qty, picked_up_qty, is_released').gte('stay_date', checkIn).lt('stay_date', checkOut).eq('is_released', false),
-    // RMS daily rate overrides — tolerate error on older schemas.
-    supabaseAdmin.from('rms_daily_rate_overrides').select('room_type_id, rate_date, rate, property_id').gte('rate_date', checkIn).lt('rate_date', checkOut)
+    scopeProperty(supabaseAdmin.from('room_types').select('*').eq('is_active', true), propIds),
+    scopeTenant(supabaseAdmin.from('rooms').select('*'), tid),
+    scopeTenant(supabaseAdmin.from('reservations').select('*').lt('check_in_date', checkOut).gt('check_out_date', checkIn), tid),
+    scopeTenant(supabaseAdmin.from('seasons').select('*'), tid),
+    allotmentsQ,
+    // RMS daily rate overrides — tolerate error on older schemas. NULL
+    // property_id rows are global defaults and stay visible to all tenants.
+    scopeProperty(supabaseAdmin.from('rms_daily_rate_overrides').select('room_type_id, rate_date, rate, property_id').gte('rate_date', checkIn).lt('rate_date', checkOut), propIds, { allowNull: true })
   ]);
   if (rtError) return res.status(500).json({ error: rtError.message });
   if (roomsError) return res.status(500).json({ error: roomsError.message });
@@ -302,11 +318,11 @@ router.get('/rooms', async (req, res) => {
 });
 
 // Public rate plans (no auth)
-router.get('/rate-plans', async (_req, res) => {
+router.get('/rate-plans', async (req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) {
     return res.status(503).json({ error: 'Database not configured' });
   }
-  const { data, error } = await supabaseAdmin.from('rate_plans').select('*').eq('active', true);
+  const { data, error } = await scopeTenant(supabaseAdmin.from('rate_plans').select('*').eq('active', true), getRequestTenantId(req));
   if (error) return res.status(500).json({ error: error.message });
   const seen = new Set<string>();
   const ratePlans = (data || [])
@@ -330,11 +346,11 @@ router.get('/rate-plans', async (_req, res) => {
 });
 
 // Public packages (no auth)
-router.get('/packages', async (_req, res) => {
+router.get('/packages', async (req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) {
     return res.status(503).json({ error: 'Database not configured' });
   }
-  const { data, error } = await supabaseAdmin.from('packages').select('*');
+  const { data, error } = await scopeTenant(supabaseAdmin.from('packages').select('*'), getRequestTenantId(req));
   if (error) return res.status(500).json({ error: error.message });
   return res.json({
     packages: (data || []).map((p: any) => ({
@@ -348,11 +364,11 @@ router.get('/packages', async (_req, res) => {
 });
 
 // Public guest services (no auth)
-router.get('/guest-services', async (_req, res) => {
+router.get('/guest-services', async (req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) {
     return res.status(503).json({ error: 'Database not configured' });
   }
-  const { data, error } = await supabaseAdmin.from('guest_services').select('*').eq('available', true);
+  const { data, error } = await scopeTenant(supabaseAdmin.from('guest_services').select('*').eq('available', true), getRequestTenantId(req));
   if (error) return res.status(500).json({ error: error.message });
   return res.json({
     guestServices: (data || []).map((gs: any) => ({
@@ -378,20 +394,27 @@ const GUEST_LINK_STATUSES = new Set([
   'CheckedIn', 'Checked In', 'InHouse', 'In House',
 ]);
 
-async function verifyGuestLink(res: any, reservationId: unknown, guestId: unknown) {
+async function verifyGuestLink(res: any, req: any, reservationId: unknown, guestId: unknown) {
   if (typeof reservationId !== 'string' || typeof guestId !== 'string' || !reservationId || !guestId) {
     res.status(401).json({ error: 'reservationId and guestId are required' });
     return null;
   }
   const { data, error } = await supabaseAdmin!
     .from('reservations')
-    .select('id, guest_id, guest_name, room_number, property_id, status')
+    .select('id, guest_id, guest_name, room_number, property_id, status, tenant_id')
     .eq('id', reservationId)
     .maybeSingle();
   if (error) { res.status(500).json({ error: error.message }); return null; }
   if (!data || data.guest_id !== guestId || !GUEST_LINK_STATUSES.has(String(data.status))) {
     res.status(403).json({ error: 'Invalid guest credentials' });
     return null;
+  }
+  // Tenant subdomain: the reservation must belong to this tenant.
+  const tid = getRequestTenantId(req);
+  if (tid) {
+    const propIds = await getTenantPropertyIds(req);
+    const owned = data.tenant_id === tid || (propIds !== null && data.property_id && propIds.includes(data.property_id));
+    if (!owned) { res.status(403).json({ error: 'Invalid guest credentials' }); return null; }
   }
   return data;
 }
@@ -405,7 +428,7 @@ router.post('/guest-requests', publicInquiryLimiter, async (req, res) => {
   if (!reservationId || !requestType) {
     return res.status(400).json({ error: 'reservationId and requestType are required' });
   }
-  const resv = await verifyGuestLink(res, reservationId, guestId);
+  const resv = await verifyGuestLink(res, req, reservationId, guestId);
   if (!resv) return;
 
   const deptMap: Record<string, string> = {
@@ -420,6 +443,7 @@ router.post('/guest-requests', publicInquiryLimiter, async (req, res) => {
   // Room/guest identity resolved server-side — never trusted from the client.
   const { data, error } = await supabaseAdmin.from('guest_requests').insert({
     request_number: reqNum,
+    tenant_id: resv.tenant_id || getRequestTenantId(req) || null,
     property_id: resv.property_id || null,
     reservation_id: reservationId,
     room_number: resv.room_number || null,
@@ -440,7 +464,7 @@ router.get('/guest-requests/:reservationId', async (req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) {
     return res.status(503).json({ error: 'Database not configured' });
   }
-  const resv = await verifyGuestLink(res, req.params.reservationId, req.query.guestId);
+  const resv = await verifyGuestLink(res, req, req.params.reservationId, req.query.guestId);
   if (!resv) return;
   const { data, error } = await supabaseAdmin.from('guest_requests')
     .select('*').eq('reservation_id', req.params.reservationId).order('created_at', { ascending: false });
@@ -453,7 +477,7 @@ router.get('/guest-folio/:reservationId', async (req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) {
     return res.status(503).json({ error: 'Database not configured' });
   }
-  const resv = await verifyGuestLink(res, req.params.reservationId, req.query.guestId);
+  const resv = await verifyGuestLink(res, req, req.params.reservationId, req.query.guestId);
   if (!resv) return;
   const { data: folios, error: folioError } = await supabaseAdmin.from('folios')
     .select('*').eq('reservation_id', req.params.reservationId).order('opened_at', { ascending: false });
@@ -481,15 +505,17 @@ router.get('/guest-folio/:reservationId', async (req, res) => {
 // =====================
 
 // Public properties (no auth)
-router.get('/properties', async (_req, res) => {
+router.get('/properties', async (req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) {
     return res.status(503).json({ error: 'Database not configured' });
   }
+  const tid = getRequestTenantId(req);
+  const propIds = await getTenantPropertyIds(req);
   const [{ data, error }, { data: roomTypes }, { data: rooms }, { data: testimonials }] = await Promise.all([
-    supabaseAdmin.from('properties').select('*').eq('is_active', true).order('created_at'),
-    supabaseAdmin.from('room_types').select('property_id, base_price').eq('is_active', true),
-    supabaseAdmin.from('rooms').select('property_id'),
-    supabaseAdmin.from('public_testimonials').select('property_id, rating').eq('status', 'approved'),
+    scopeTenant(supabaseAdmin.from('properties').select('*').eq('is_active', true).order('created_at'), tid),
+    scopeProperty(supabaseAdmin.from('room_types').select('property_id, base_price').eq('is_active', true), propIds),
+    scopeTenant(supabaseAdmin.from('rooms').select('property_id'), tid),
+    scopeProperty(supabaseAdmin.from('public_testimonials').select('property_id, rating').eq('status', 'approved'), propIds),
   ]);
   if (error) return res.status(500).json({ error: error.message });
   const addr = (a: any) => (a && typeof a === 'object' ? [a.street || a.line1, a.city, a.country].filter(Boolean).join(', ') : typeof a === 'string' ? a : '');
@@ -520,13 +546,15 @@ router.get('/properties', async (_req, res) => {
 });
 
 // Public restaurants (no auth)
-router.get('/restaurants', async (_req, res) => {
+router.get('/restaurants', async (req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) {
     return res.status(503).json({ error: 'Database not configured' });
   }
   // Dining outlets managed by F&B (restaurants and bars only — not minibar/room service/banquet).
-  const { data, error } = await supabaseAdmin.from('outlets').select('id, name, type, operating_hours, property_id')
-    .eq('is_active', true).in('type', ['Restaurant', 'Bar']).order('name');
+  const { data, error } = await scopeTenant(
+    supabaseAdmin.from('outlets').select('id, name, type, operating_hours, property_id')
+      .eq('is_active', true).in('type', ['Restaurant', 'Bar']).order('name'),
+    getRequestTenantId(req));
   if (error) return res.status(500).json({ error: error.message });
   const today = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'][new Date().getDay()];
   const hoursText = (h: any): string => {
@@ -554,12 +582,23 @@ router.get('/spa-treatments', async (req, res) => {
     return res.status(503).json({ error: 'Database not configured' });
   }
   const propId = isUuid(req.query.propertyId) ? String(req.query.propertyId) : null;
+  const propIds = await getTenantPropertyIds(req);
+
+  // Tenant subdomain: a requested propertyId outside the tenant shows nothing.
+  if (propIds !== null && propId && !propIds.includes(propId)) {
+    return res.json({ treatments: [] });
+  }
 
   let q = supabaseAdmin
     .from('spa_treatments')
     .select('id, name, category, description, duration_minutes, price, is_popular')
     .eq('is_active', true);
-  q = propId ? q.or(`property_id.is.null,property_id.eq.${propId}`) : q.is('property_id', null);
+  if (propIds !== null) {
+    // Shared rows (property_id NULL) plus this tenant's own properties.
+    q = q.or(`property_id.is.null,property_id.in.(${propIds.length ? propIds.join(',') : '00000000-0000-0000-0000-000000000000'})`);
+  } else {
+    q = propId ? q.or(`property_id.is.null,property_id.eq.${propId}`) : q.is('property_id', null);
+  }
 
   const { data, error } = await q.order('is_popular', { ascending: false }).order('name');
   if (error) return res.status(500).json({ error: error.message });
@@ -615,12 +654,22 @@ router.post('/spa-booking-requests', publicInquiryLimiter, async (req, res) => {
 
   const propId = isUuid(propertyId) ? propertyId : null;
 
+  // Tenant scoping: property must belong to this tenant; treatment must be
+  // shared (null property) or owned by the tenant.
+  if (!(await tenantOwnsProperty(req, propId))) {
+    return res.status(403).json({ error: 'Unknown property' });
+  }
+  const propIds = await getTenantPropertyIds(req);
+
   const { data: treatment } = await supabaseAdmin
     .from('spa_treatments')
-    .select('id, name, duration_minutes, price, is_active')
+    .select('id, name, duration_minutes, price, is_active, property_id')
     .eq('id', treatment_id)
     .maybeSingle();
   if (!treatment || !treatment.is_active) {
+    return res.status(400).json({ error: 'Unknown or unavailable treatment' });
+  }
+  if (propIds !== null && treatment.property_id && !propIds.includes(treatment.property_id)) {
     return res.status(400).json({ error: 'Unknown or unavailable treatment' });
   }
 
@@ -647,6 +696,7 @@ router.post('/spa-booking-requests', publicInquiryLimiter, async (req, res) => {
       amount: treatment.price,
       notes: contactNote,
       property_id: propId,
+      tenant_id: getRequestTenantId(req),
     })
     .select('id, treatment, appointment_date, start_time, status, amount')
     .single();
@@ -656,13 +706,13 @@ router.post('/spa-booking-requests', publicInquiryLimiter, async (req, res) => {
 });
 
 // Public experiences (no auth)
-router.get('/experiences', async (_req, res) => {
+router.get('/experiences', async (req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) {
     return res.status(503).json({ error: 'Database not configured' });
   }
   // No dedicated experiences catalog exists yet — surface bookable guest services
   // in the experience-style categories so the page reflects real, priced offerings.
-  const { data, error } = await supabaseAdmin.from('guest_services').select('*');
+  const { data, error } = await scopeTenant(supabaseAdmin.from('guest_services').select('*'), getRequestTenantId(req));
   if (error) return res.status(500).json({ error: error.message });
   const EXP = /tour|safari|excursion|activity|trip|hike|cultural|coffee|guide|spa|yoga|cooking/i;
   return res.json({
@@ -688,9 +738,16 @@ router.get('/transportation', async (req, res) => {
   }
 
   let propId = isUuid(req.query.propertyId) ? String(req.query.propertyId) : null;
+  const propIds = await getTenantPropertyIds(req);
+  // Tenant subdomain: requested property must belong to the tenant; the
+  // fallback "first property" must be one of the tenant's own.
+  if (propIds !== null && propId && !propIds.includes(propId)) {
+    return res.json({ services: [] });
+  }
   if (!propId) {
-    const { data: firstProp } = await supabaseAdmin
-      .from('properties').select('id').order('created_at').limit(1).maybeSingle();
+    let q = supabaseAdmin.from('properties').select('id').order('created_at').limit(1);
+    if (propIds !== null) q = propIds.length ? q.in('id', propIds) : q.in('id', ['00000000-0000-0000-0000-000000000000']);
+    const { data: firstProp } = await q.maybeSingle();
     propId = firstProp?.id || null;
   }
   if (!propId) return res.json({ services: [] });
@@ -743,20 +800,22 @@ router.post('/transportation/book', publicInquiryLimiter, async (req, res) => {
   }
 
   // Resolve the service → transport request type + rate + property.
+  // Tenant scoping: only services belonging to this tenant's properties.
+  const propIds = await getTenantPropertyIds(req);
   let service: any = null;
   if (isUuid(serviceId)) {
-    const { data } = await supabaseAdmin
+    const { data } = await scopeProperty(supabaseAdmin
       .from('transport_config_items')
       .select('id, property_id, name, base_rate, active')
-      .eq('id', serviceId).eq('item_group', 'transport_type')
+      .eq('id', serviceId).eq('item_group', 'transport_type'), propIds)
       .maybeSingle();
     if (data?.active) service = data;
   }
   if (!service && serviceName) {
-    const { data } = await supabaseAdmin
+    const { data } = await scopeProperty(supabaseAdmin
       .from('transport_config_items')
       .select('id, property_id, name, base_rate, active')
-      .eq('name', serviceName).eq('item_group', 'transport_type').eq('active', true)
+      .eq('name', serviceName).eq('item_group', 'transport_type').eq('active', true), propIds)
       .limit(1).maybeSingle();
     if (data) service = data;
   }
@@ -775,6 +834,7 @@ router.post('/transportation/book', publicInquiryLimiter, async (req, res) => {
   ].filter(Boolean).join(' | ') || null;
 
   const { data, error } = await supabaseAdmin.from('transport_requests').insert({
+    tenant_id: getRequestTenantId(req),
     property_id: propId,
     request_number: requestNumber,
     guest_name: String(guestName).slice(0, 200),
@@ -794,13 +854,15 @@ router.post('/transportation/book', publicInquiryLimiter, async (req, res) => {
 });
 
 // Public special offers (no auth)
-router.get('/special-offers', async (_req, res) => {
+router.get('/special-offers', async (req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) {
     return res.status(503).json({ error: 'Database not configured' });
   }
   // Active RMS promotions inside their date window (managed in Revenue Management).
   const today = new Date().toISOString().slice(0, 10);
-  const { data, error } = await supabaseAdmin.from('rms_promotions').select('*').eq('status', 'active');
+  const { data, error } = await scopeProperty(
+    supabaseAdmin.from('rms_promotions').select('*').eq('status', 'active'),
+    await getTenantPropertyIds(req), { allowNull: true });
   if (error) return res.status(500).json({ error: error.message });
   return res.json({
     offers: (data || [])
@@ -819,13 +881,15 @@ router.get('/special-offers', async (_req, res) => {
 });
 
 // Public photo gallery (no auth) — room photos managed in room type setup, plus property photos.
-router.get('/gallery', async (_req, res) => {
+router.get('/gallery', async (req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) {
     return res.status(503).json({ error: 'Database not configured' });
   }
+  const tid = getRequestTenantId(req);
+  const propIds = await getTenantPropertyIds(req);
   const [{ data: roomTypes, error }, { data: props }] = await Promise.all([
-    supabaseAdmin.from('room_types').select('name, image_url_1, image_url_2, image_url_3, display_order').eq('is_active', true).order('display_order'),
-    supabaseAdmin.from('properties').select('property_name, metadata').eq('is_active', true),
+    scopeProperty(supabaseAdmin.from('room_types').select('name, image_url_1, image_url_2, image_url_3, display_order').eq('is_active', true).order('display_order'), propIds),
+    scopeTenant(supabaseAdmin.from('properties').select('property_name, metadata').eq('is_active', true), tid),
   ]);
   if (error) return res.status(500).json({ error: error.message });
   const ok = (u: unknown): u is string => typeof u === 'string' && /^(https?:)?\/\//.test(u);
@@ -843,11 +907,13 @@ router.get('/gallery', async (_req, res) => {
 });
 
 // Public meeting/banquet venues (no auth) — managed in the Banquet & Events portal.
-router.get('/venues', async (_req, res) => {
+router.get('/venues', async (req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) {
     return res.status(503).json({ error: 'Database not configured' });
   }
-  const { data, error } = await supabaseAdmin.from('banquet_venues').select('id, venue_name, venue_type, capacity, features').eq('is_active', true).order('capacity', { ascending: false });
+  const { data, error } = await scopeProperty(
+    supabaseAdmin.from('banquet_venues').select('id, venue_name, venue_type, capacity, features').eq('is_active', true).order('capacity', { ascending: false }),
+    await getTenantPropertyIds(req));
   if (error) return res.status(500).json({ error: error.message });
   return res.json({
     venues: (data || []).map((v: any) => ({
@@ -861,11 +927,13 @@ router.get('/venues', async (_req, res) => {
 });
 
 // Public reviews (no auth)
-router.get('/reviews', async (_req, res) => {
+router.get('/reviews', async (req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) {
     return res.status(503).json({ error: 'Database not configured' });
   }
-  const { data, error } = await supabaseAdmin.from('public_testimonials').select('*').eq('status', 'approved').order('created_at', { ascending: false }).limit(20);
+  const { data, error } = await scopeProperty(
+    supabaseAdmin.from('public_testimonials').select('*').eq('status', 'approved').order('created_at', { ascending: false }).limit(20),
+    await getTenantPropertyIds(req));
   if (error) return res.status(500).json({ error: error.message });
   return res.json({
     reviews: (data || []).map((review: any) => ({
@@ -909,6 +977,7 @@ router.post('/meeting-inquiry', publicInquiryLimiter, async (req, res) => {
     company: d.company, contactPerson: d.contactName, contactEmail: d.contactEmail, contactPhone: d.contactPhone,
     expectedCloseDate: d.startDate,
     notes: [`Meeting/Event inquiry (website)`, `Type: ${d.eventType}`, `Attendees: ${d.attendees}`, `Dates: ${d.startDate}${d.endDate ? ` → ${d.endDate}` : ''}`, d.requirements && `Requirements: ${d.requirements}`].filter(Boolean).join('\n'),
+    tenantId: getRequestTenantId(req),
   });
   if (!result.ok) return res.status(500).json({ error: 'Could not submit your inquiry. Please try again or call us.' });
   return res.json({ success: true, inquiryId: result.id });
@@ -941,6 +1010,7 @@ router.post('/wedding-inquiry', publicInquiryLimiter, async (req, res) => {
     contactPerson: d.contactName, contactEmail: d.contactEmail, contactPhone: d.contactPhone,
     expectedCloseDate: d.weddingDate,
     notes: [`Wedding inquiry (website)`, `Date: ${d.weddingDate}`, `Guests: ${d.guestCount}`, d.package && `Package: ${d.package}`, d.message && `Message: ${d.message}`].filter(Boolean).join('\n'),
+    tenantId: getRequestTenantId(req),
   });
   if (!result.ok) return res.status(500).json({ error: 'Could not submit your inquiry. Please try again or call us.' });
   return res.json({ success: true, inquiryId: result.id });
@@ -970,6 +1040,7 @@ router.post('/contact', publicInquiryLimiter, async (req, res) => {
     contactPerson: d.name, contactEmail: d.email,
     notes: `Contact form (website)\nSubject: ${d.subject}\n\n${d.message}`,
     priority: 'Low',
+    tenantId: getRequestTenantId(req),
   });
   if (!result.ok) return res.status(500).json({ error: 'Could not send your message. Please try again or call us.' });
   return res.json({ success: true, submissionId: result.id });
@@ -1038,17 +1109,29 @@ router.post('/bookings', publicBookingLimiter, async (req, res) => {
       return res.status(503).json({ error: settings.maintenance_message || 'System is under maintenance. Please try again later.' });
     }
 
+    // Tenant scoping for the whole booking catalogue.
+    const tid = getRequestTenantId(req);
+    const propIds = await getTenantPropertyIds(req);
+    const roomTypeIds = await getTenantRoomTypeIds(req);
+
+    const allotmentsQ = operator_id
+      ? supabaseAdmin.from('allotments').select('*').eq('operator_id', operator_id).gte('stay_date', checkIn).lte('stay_date', checkOut).eq('is_released', false)
+      : null;
+    if (allotmentsQ && roomTypeIds !== null) {
+      allotmentsQ.in('room_type_id', roomTypeIds.length ? roomTypeIds : ['00000000-0000-0000-0000-000000000000']);
+    }
+
     const [{ data: roomTypes }, { data: rooms }, { data: reservations }, { data: packages }, { data: guestServices }, { data: allotments }, { data: seasons }, { data: ratePlans }, { data: rateOverrideRows }] = await Promise.all([
-      supabaseAdmin.from('room_types').select('*'),
-      supabaseAdmin.from('rooms').select('*'),
-      supabaseAdmin.from('reservations').select('*').lt('check_in_date', checkOut).gt('check_out_date', checkIn),
-      supabaseAdmin.from('packages').select('*'),
-      supabaseAdmin.from('guest_services').select('*'),
-      operator_id ? supabaseAdmin.from('allotments').select('*').eq('operator_id', operator_id).gte('stay_date', checkIn).lte('stay_date', checkOut).eq('is_released', false) : Promise.resolve({ data: [] }),
-      supabaseAdmin.from('seasons').select('*'),
-      supabaseAdmin.from('rate_plans').select('*'),
+      scopeProperty(supabaseAdmin.from('room_types').select('*'), propIds),
+      scopeTenant(supabaseAdmin.from('rooms').select('*'), tid),
+      scopeTenant(supabaseAdmin.from('reservations').select('*').lt('check_in_date', checkOut).gt('check_out_date', checkIn), tid),
+      scopeTenant(supabaseAdmin.from('packages').select('*'), tid),
+      scopeTenant(supabaseAdmin.from('guest_services').select('*'), tid),
+      allotmentsQ ? allotmentsQ : Promise.resolve({ data: [] }),
+      scopeTenant(supabaseAdmin.from('seasons').select('*'), tid),
+      scopeTenant(supabaseAdmin.from('rate_plans').select('*'), tid),
       // RMS daily rate overrides — tolerate error on older schemas.
-      supabaseAdmin.from('rms_daily_rate_overrides').select('room_type_id, rate_date, rate, property_id').gte('rate_date', checkIn).lt('rate_date', checkOut).then(r => r, () => ({ data: [] }))
+      scopeProperty(supabaseAdmin.from('rms_daily_rate_overrides').select('room_type_id, rate_date, rate, property_id').gte('rate_date', checkIn).lt('rate_date', checkOut), propIds, { allowNull: true }).then(r => r, () => ({ data: [] }))
     ]);
 
     const rateOverrides = buildRateOverrideMap(rateOverrideRows as RateOverrideRow[] | undefined);
@@ -1248,15 +1331,26 @@ router.post('/bookings', publicBookingLimiter, async (req, res) => {
 
     // ── Scope the reservations to their property (create_booking_atomic doesn't set it).
     // Without this, property-scoped ERP views (Front Office, Housekeeping, reports) hide web bookings.
+    // Also stamp tenant_id — the RPC predates multi-tenancy.
     try {
-      const { data: created } = await supabaseAdmin.from('reservations').select('id, room_type_id, property_id').in('id', reservationIds);
+      const { data: created } = await supabaseAdmin.from('reservations').select('id, room_type_id, property_id, tenant_id').in('id', reservationIds);
       for (const r of created || []) {
-        if (r.property_id) continue;
-        const propertyId = roomTypesList.find((rt: any) => rt.id === r.room_type_id)?.property_id;
-        if (propertyId) await supabaseAdmin.from('reservations').update({ property_id: propertyId }).eq('id', r.id);
+        const propertyId = r.property_id || roomTypesList.find((rt: any) => rt.id === r.room_type_id)?.property_id || null;
+        const patch: Record<string, any> = {};
+        if (!r.property_id && propertyId) patch.property_id = propertyId;
+        if (tid && !r.tenant_id) patch.tenant_id = tid;
+        if (Object.keys(patch).length) {
+          await supabaseAdmin.from('reservations').update(patch).eq('id', r.id);
+        }
+      }
+      if (tid && guestIds.length) {
+        await supabaseAdmin.from('guests').update({ tenant_id: tid }).in('id', guestIds).is('tenant_id', null);
+      }
+      if (tid && groupBookingId) {
+        await supabaseAdmin.from('group_bookings').update({ tenant_id: tid }).eq('id', groupBookingId).is('tenant_id', null);
       }
     } catch (e) {
-      console.error('Failed to scope public reservations to property:', e);
+      console.error('Failed to scope public reservations to property/tenant:', e);
     }
 
     // ── Auto-assign rooms to the new public reservations (individual or group) ──
@@ -1403,10 +1497,12 @@ router.post('/bookings/confirm-payment', publicBookingLimiter, async (req, res) 
     }
     try {
       // 1. Only the booking's own guest may confirm, and only for pending web bookings.
-      const { data: reservations, error: fetchError } = await supabaseAdmin
-        .from('reservations')
-        .select('id, total_amount, payments, notes, guest_email, status, channel, payment_status')
-        .in('id', reservationIds);
+      const { data: reservations, error: fetchError } = await scopeTenant(
+        supabaseAdmin
+          .from('reservations')
+          .select('id, total_amount, payments, notes, guest_email, status, channel, payment_status')
+          .in('id', reservationIds),
+        getRequestTenantId(req));
 
       if (fetchError) throw fetchError;
       if (!reservations || reservations.length !== reservationIds.length) {
@@ -1512,11 +1608,13 @@ router.post('/pre-registration', publicInquiryLimiter, async (req, res) => {
       return res.status(400).json({ error: 'reservation_id, guest_email, and guest_name are required' });
     }
 
-    // Verify the reservation exists and email matches
-    const { data: resData, error: resError } = await supabaseAdmin
-      .from('reservations')
-      .select('id, guest_email, guest_name, status')
-      .eq('id', body.reservation_id)
+    // Verify the reservation exists, belongs to this tenant, and email matches
+    const { data: resData, error: resError } = await scopeTenant(
+      supabaseAdmin
+        .from('reservations')
+        .select('id, guest_email, guest_name, status, tenant_id, property_id')
+        .eq('id', body.reservation_id),
+      getRequestTenantId(req))
       .single();
     if (resError || !resData) {
       return res.status(404).json({ error: 'Reservation not found' });
@@ -1574,6 +1672,12 @@ router.get('/pre-registration/:reservationId', async (req, res) => {
     const email = typeof req.query.email === 'string' ? req.query.email.trim() : '';
     // Pre-registrations hold ID documents — never return them on reservationId alone.
     if (!email) return res.status(400).json({ error: 'email is required' });
+    // Pre-registrations hold ID documents — verify the parent reservation
+    // belongs to this tenant before returning anything.
+    const { data: parentRes } = await scopeTenant(
+      supabaseAdmin.from('reservations').select('id').eq('id', reservationId),
+      getRequestTenantId(req)).maybeSingle();
+    if (!parentRes) return res.json({ preRegistration: null });
     const { data, error } = await supabaseAdmin.from('pre_registrations').select('*')
       .eq('reservation_id', reservationId).ilike('guest_email', email.replace(/[%_\\]/g, '\\$&')).maybeSingle();
     if (error || !data) return res.json({ preRegistration: null });

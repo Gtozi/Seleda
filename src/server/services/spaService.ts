@@ -77,7 +77,7 @@ const RESERVATION_ACCESSIBLE_STATUSES = new Set([
  *      bearer credential used across the public guest surfaces.
  * Never trusts a client-supplied guest_id on its own.
  */
-export async function canActForGuest(req: any, guestId: unknown): Promise<boolean> {
+async function checkGuestAccess(req: any, guestId: unknown): Promise<boolean> {
   if (typeof guestId !== 'string' || !guestId) return false;
   const role = req.user?.role as string | undefined;
   if (role && (isFullAccessRole(role) || SPA_GUEST_PROXY_ROLES.has(role))) return true;
@@ -96,6 +96,42 @@ export async function canActForGuest(req: any, guestId: unknown): Promise<boolea
     .eq('id', reservationId)
     .maybeSingle();
   return !!data && data.guest_id === guestId && RESERVATION_ACCESSIBLE_STATUSES.has(String(data.status));
+}
+
+/**
+ * Tenant check layered on top of guest access: on a tenant subdomain
+ * (<code>.seledabet.com) the guest must belong to that tenant — verified via
+ * guests.tenant_id, falling back to the guest's home property.
+ */
+async function guestInRequestTenant(req: any, guestId: string): Promise<boolean> {
+  const tenantId = req.tenant?.id;
+  if (!tenantId) return true; // main domain / admin — platform-wide
+
+  const db = ensureDb();
+  const { data: guest } = await db
+    .from('guests')
+    .select('tenant_id, property_id')
+    .eq('id', guestId)
+    .maybeSingle();
+  if (!guest) return false;
+  if (guest.tenant_id) return guest.tenant_id === tenantId;
+
+  // Legacy guests without tenant_id: fall back to property ownership.
+  if (guest.property_id) {
+    const { data: prop } = await db
+      .from('properties')
+      .select('tenant_id')
+      .eq('id', guest.property_id)
+      .maybeSingle();
+    if (prop?.tenant_id) return prop.tenant_id === tenantId;
+  }
+  return false;
+}
+
+export async function canActForGuest(req: any, guestId: unknown): Promise<boolean> {
+  if (typeof guestId !== 'string' || !guestId) return false;
+  if (!(await checkGuestAccess(req, guestId))) return false;
+  return guestInRequestTenant(req, guestId);
 }
 
 /**

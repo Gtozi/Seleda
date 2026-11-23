@@ -26,6 +26,11 @@ router.get('/verify', async (req, res) => {
 
 // Switch tenant (super-admin only for cross-tenant access)
 router.post('/switch-tenant', authenticate, async (req, res) => {
+  // On a tenant subdomain the URL is the tenant context — switching would
+  // desync the session from the subdomain, so it's not allowed here.
+  if (req.tenant) {
+    return res.status(403).json({ error: 'Tenant switching is not available on tenant subdomains' });
+  }
   const { tenantId } = req.body || {};
   if (!tenantId) return res.status(400).json({ error: 'tenantId is required' });
 
