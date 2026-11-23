@@ -205,12 +205,14 @@ function MasterHotelERP() {
   }, [sessionChecked, currentUser]);
 
   // If on admin subdomain, redirect to /admin route (super admin portal)
-  // Only redirect once per session to prevent loops
-  const adminRedirectRef = React.useRef(false);
+  // Use sessionStorage to prevent loops across page reloads
   React.useEffect(() => {
-    if (isAdminSubdomain && !location.pathname.startsWith('/admin') && !adminRedirectRef.current) {
-      adminRedirectRef.current = true;
-      navigate('/admin', { replace: true });
+    if (isAdminSubdomain && !location.pathname.startsWith('/admin')) {
+      const redirectKey = 'admin_redirect_done';
+      if (!sessionStorage.getItem(redirectKey)) {
+        sessionStorage.setItem(redirectKey, '1');
+        navigate('/admin', { replace: true });
+      }
     }
   }, [isAdminSubdomain, location.pathname, navigate]);
 
