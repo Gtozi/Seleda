@@ -34,7 +34,8 @@ async function startServer() {
   const PORT = Number(process.env.EXPRESS_PORT || process.env.PORT || 3000);
 
   // Production guard: refuse to start if Supabase env vars are missing
-  if (IS_PRODUCTION && (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY)) {
+  const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
+  if (IS_PRODUCTION && (!supabaseUrl || !process.env.SUPABASE_SERVICE_ROLE_KEY)) {
     console.error('[FATAL] SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required in production. Refusing to start.');
     process.exit(1);
   }
