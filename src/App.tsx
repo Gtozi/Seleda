@@ -205,9 +205,11 @@ function MasterHotelERP() {
   }, [sessionChecked, currentUser]);
 
   // If on admin subdomain, redirect to /admin route (super admin portal)
-  // This works even before login - users will be redirected to /admin/login if needed
+  // Only redirect once per session to prevent loops
+  const adminRedirectRef = React.useRef(false);
   React.useEffect(() => {
-    if (isAdminSubdomain && !location.pathname.startsWith('/admin')) {
+    if (isAdminSubdomain && !location.pathname.startsWith('/admin') && !adminRedirectRef.current) {
+      adminRedirectRef.current = true;
       navigate('/admin', { replace: true });
     }
   }, [isAdminSubdomain, location.pathname, navigate]);
