@@ -65,7 +65,9 @@ async function lookupTenantByCode(code: string): Promise<RequestTenant | null> {
   const { data, error } = await supabaseAdmin
     .from('tenants')
     .select('id, name, code, status, settings')
-    .eq('code', code)
+    // ilike for case-insensitive match (legacy rows had uppercase codes);
+    // escape LIKE wildcards since hostname labels could contain '_'.
+    .ilike('code', code.replace(/[%_\\]/g, '\\$&'))
     .maybeSingle();
 
   const tenant = (!error && data)
