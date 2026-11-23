@@ -2,16 +2,23 @@ import { Router } from 'express';
 import crypto from 'crypto';
 import { authenticate } from '../middleware/auth';
 import { hasSupabaseAdminConfig, supabaseAdmin } from '../supabaseAdmin';
-import { getGlobalSettings } from '../services/settingsService';
+import { getGlobalSettings, getTenantModuleToggles } from '../services/settingsService';
 import { processApiIntegrationsOnRead } from '../services/sessionService';
 
 const router = Router();
 
 // Single settings read endpoint with a lightweight checksum for stale-context detection
-router.get('/', authenticate, async (_req, res) => {
+router.get('/', authenticate, async (req, res) => {
   if (hasSupabaseAdminConfig && supabaseAdmin) {
     const data = await getGlobalSettings();
     if (!data) return res.json({ settings: null, checksum: null });
+
+    // Merge per-tenant portal/module toggles over the global map so
+    // super-admin portal management is enforced for the active tenant.
+    const tenantToggles = await getTenantModuleToggles(req.user?.activeTenantId || '');
+    if (tenantToggles) {
+      data.module_toggles = { ...(data.module_toggles || {}), ...tenantToggles };
+    }
 
     // Mask API keys on read — use encrypted_api_integrations if available, fall back to api_integrations
     const encryptedIntegrations = data.encrypted_api_integrations || data.api_integrations;

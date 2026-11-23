@@ -4,7 +4,8 @@ import { z } from 'zod';
 import { hasSupabaseAdminConfig, supabaseAdmin } from '../supabaseAdmin';
 import { getTypeAvailability, getRoomImageUrl, autoAssignRoomsForPublicBookings, writeAuditEvent } from '../services/sharedServices';
 import { computeFees, getSeasonMultiplier, getRatePlanModifier, getEffectiveNightlyRate, type FeeComponent, type SeasonRow, type RatePlanRow } from '../../utils/pricing';
-import { getGlobalSettings } from '../services/settingsService';
+import { getGlobalSettings, getTenantModuleToggles } from '../services/settingsService';
+import { getTenantCodeFromSubdomain } from '../middleware/subdomain';
 import { nextSpaId, timeToMin } from '../services/spaService';
 import { rateLimit } from '../middleware/rateLimit';
 import { getTaxRates, evaluateBusinessRules } from '../services/adminConfigService';
@@ -142,12 +143,29 @@ const createWebsiteLead = async (l: { leadName: string; company?: string; contac
 };
 
 // Public settings (no auth)
-router.get('/settings', async (_req, res) => {
+router.get('/settings', async (req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) {
     return res.status(503).json({ error: 'Database not configured' });
   }
   const data = await getGlobalSettings();
   if (!data) return res.json({ settings: {} });
+
+  // Tenant subdomains (<tenant>.seledabet.com) get that tenant's portal/module
+  // toggles merged over the global map.
+  const tenantCode = getTenantCodeFromSubdomain(req);
+  if (tenantCode) {
+    const { data: tenant } = await supabaseAdmin
+      .from('tenants')
+      .select('id')
+      .eq('code', tenantCode)
+      .maybeSingle();
+    if (tenant?.id) {
+      const tenantToggles = await getTenantModuleToggles(tenant.id);
+      if (tenantToggles) {
+        data.module_toggles = { ...(data.module_toggles || {}), ...tenantToggles };
+      }
+    }
+  }
 
   const feeComponents = data.fee_components || [];
   const vatFee = feeComponents.find((f: any) => f.name.toLowerCase().includes('vat') && f.isEnabled);

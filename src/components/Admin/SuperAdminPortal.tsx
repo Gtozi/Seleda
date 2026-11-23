@@ -5,11 +5,13 @@
 
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Building2, Users, Settings, BarChart3, Shield, LogOut, ChevronRight, Plus, Edit, Trash2, UserPlus, X } from 'lucide-react';
+import { Building2, Users, Settings, BarChart3, Shield, LogOut, ChevronRight, ChevronDown, Plus, Edit, Trash2, X, Save, Loader2 } from 'lucide-react';
 import { User } from '../../types/erp';
-import { useERP } from '../../context/ERPContext';
-import { verifySession } from '../../lib/auth';
 import { getSubdomainInfo } from '../../lib/subdomain';
+import { DEPARTMENTS } from '../../config/departments';
+import { getTabsForDepartment } from '../../config/departmentTabs';
+import { CORE_ADMIN_MODULES } from './adminModules';
+import { PUBLIC_PORTAL_MODULES, GUEST_PORTAL_MODULES } from '../../config/portalModules';
 
 interface Tenant {
   id: string;
@@ -39,7 +41,6 @@ interface AdminPortalProps {
 
 export const SuperAdminPortal: React.FC<AdminPortalProps> = ({ currentUser, onLogout }) => {
   const navigate = useNavigate();
-  const { formatAmount } = useERP();
   const [tenants, setTenants] = useState<Tenant[]>([]);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<'overview' | 'tenants' | 'users' | 'portal' | 'settings'>('overview');
@@ -402,7 +403,7 @@ const TenantsTab: React.FC<{ tenants: Tenant[]; loading: boolean; onRefresh: () 
         </table>
       </div>
 
-      {showCreateModal && <CreateTenantModal onClose={() => setShowCreateModal(false)} onSuccess={onRefresh} />}
+      {showCreateModal && <CreateTenantModal onClose={() => setShowCreateModal(false)} />}
       {showEditModal && selectedTenant && <EditTenantModal tenant={selectedTenant} onClose={() => setShowEditModal(false)} onSuccess={onRefresh} />}
       {showDeleteModal && selectedTenant && (
         <DeleteTenantModal
@@ -926,202 +927,276 @@ const UsersTab: React.FC<{ tenants: Tenant[] }> = ({ tenants }) => {
   );
 };
 
-// Portal Management Tab - Manage tenant portals
+// Portal Management Tab - Manage tenant portals and modules
 const PortalManagementTab: React.FC<{ tenants: Tenant[] }> = ({ tenants }) => {
-  const [portalSettings, setPortalSettings] = useState<Record<string, any>>({});
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState<string | null>(null);
+  const [selectedTenant, setSelectedTenant] = useState<string>('');
+  const [moduleToggles, setModuleToggles] = useState<Record<string, boolean>>({});
+  const [globalToggles, setGlobalToggles] = useState<Record<string, boolean>>({});
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [expandedDepartments, setExpandedDepartments] = useState<Set<string>>(new Set());
+  const [dirty, setDirty] = useState(false);
 
+  // Get modules for a department
+  const modulesForDepartment = (deptKey: string) => {
+    if (deptKey === 'admin') {
+      return CORE_ADMIN_MODULES.map(m => ({ tabId: m.id, modId: m.id, label: m.label }));
+    }
+    if (deptKey === 'public') {
+      return PUBLIC_PORTAL_MODULES.map(m => ({ tabId: m.id, modId: `public_${m.id}`, label: m.label }));
+    }
+    if (deptKey === 'guest') {
+      return GUEST_PORTAL_MODULES.map(m => ({ tabId: m.id, modId: `guest_${m.id}`, label: m.label }));
+    }
+    return getTabsForDepartment(deptKey).map(t => ({ tabId: t.id, modId: t.modId, label: t.label }));
+  };
+
+  // All manageable portals: ERP departments + public & guest portals
+  const portalEntries = [
+    ...DEPARTMENTS.map(d => ({ key: d.key, label: d.label, url: `/erp/${d.urlSegment}`, modules: modulesForDepartment(d.key), locked: ['admin', 'settings'].includes(d.key) })),
+    { key: 'public', label: 'Public Portal', url: '/public-portal', modules: modulesForDepartment('public'), locked: false },
+    { key: 'guest', label: 'Guest Portal', url: '/guest', modules: modulesForDepartment('guest'), locked: false },
+  ];
+
+  // Load module toggles for selected tenant
   useEffect(() => {
-    const fetchPortalSettings = async () => {
+    if (!selectedTenant) {
+      setModuleToggles({});
+      setDirty(false);
+      return;
+    }
+
+    const loadModuleToggles = async () => {
+      setLoading(true);
       try {
         const apiBase = getSubdomainInfo().isAdmin ? `https://admin.${window.location.hostname.split('.').slice(-2).join('.')}` : '';
-        
-        // Fetch portal settings for all tenants
-        const promises = tenants.map(tenant => 
-          fetch(`${apiBase}/api/admin/tenants/${tenant.id}/portal-settings`, { credentials: 'include' })
-            .then(res => res.ok ? res.json() : { settings: {} })
-            .then(data => ({ tenantId: tenant.id, settings: data.settings || {} }))
-        );
-
-        const results = await Promise.all(promises);
-        const settingsMap = results.reduce((acc, { tenantId, settings }) => {
-          acc[tenantId] = settings;
-          return acc;
-        }, {} as Record<string, any>);
-        
-        setPortalSettings(settingsMap);
+        const response = await fetch(`${apiBase}/api/admin/tenants/${selectedTenant}/module-toggles`, {
+          credentials: 'include',
+        });
+        if (response.ok) {
+          const data = await response.json();
+          setModuleToggles(data.moduleToggles || {});
+          setGlobalToggles(data.globalToggles || {});
+          setDirty(false);
+        }
       } catch (error) {
-        console.error('Failed to fetch portal settings:', error);
+        console.error('Failed to fetch module toggles:', error);
       } finally {
         setLoading(false);
       }
     };
 
-    if (tenants.length > 0) {
-      fetchPortalSettings();
-    }
-  }, [tenants]);
+    loadModuleToggles();
+  }, [selectedTenant]);
 
-  const handleTogglePortal = async (tenantId: string, enabled: boolean) => {
-    setSaving(tenantId);
+  // Effective state: tenant override wins, otherwise fall back to the global toggle.
+  const globalEnabled = (key: string) => globalToggles[key] !== false;
+  const enabled = (key: string) =>
+    moduleToggles[key] !== undefined ? moduleToggles[key] !== false : globalEnabled(key);
+
+  // When the chosen value matches the global default, drop the override so the
+  // tenant inherits future global changes instead of pinning a stale value.
+  const setOverride = (key: string, next: boolean) => {
+    setModuleToggles(prev => {
+      const copy = { ...prev };
+      if (next === globalEnabled(key)) delete copy[key];
+      else copy[key] = next;
+      return copy;
+    });
+    setDirty(true);
+  };
+
+  const togglePortal = (key: string) => setOverride(key, !enabled(key));
+
+  const toggleModule = (deptKey: string, tabId: string) =>
+    setOverride(`${deptKey}_${tabId}`, !enabled(`${deptKey}_${tabId}`));
+
+  const toggleDepartment = (deptKey: string) => {
+    setExpandedDepartments(prev => {
+      const next = new Set(prev);
+      if (next.has(deptKey)) next.delete(deptKey);
+      else next.add(deptKey);
+      return next;
+    });
+  };
+
+  const saveModuleToggles = async () => {
+    if (!selectedTenant) return;
+    setSaving(true);
     try {
       const apiBase = getSubdomainInfo().isAdmin ? `https://admin.${window.location.hostname.split('.').slice(-2).join('.')}` : '';
-      
-      const response = await fetch(`${apiBase}/api/admin/tenants/${tenantId}/portal-settings`, {
+      const response = await fetch(`${apiBase}/api/admin/tenants/${selectedTenant}/module-toggles`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({ enabled }),
+        body: JSON.stringify({ moduleToggles }),
       });
 
       if (response.ok) {
-        setPortalSettings(prev => ({
-          ...prev,
-          [tenantId]: { ...prev[tenantId], enabled }
-        }));
+        setDirty(false);
+        alert('Module toggles saved successfully');
       } else {
         const data = await response.json();
-        alert(data.error || 'Failed to update portal settings');
+        alert(data.error || 'Failed to save module toggles');
       }
     } catch (error) {
-      console.error('Failed to update portal settings:', error);
-      alert('Failed to update portal settings');
+      console.error('Failed to save module toggles:', error);
+      alert('Failed to save module toggles');
     } finally {
-      setSaving(null);
+      setSaving(false);
     }
   };
 
+  const selectedTenantData = tenants.find(t => t.id === selectedTenant);
+
   return (
     <div className="space-y-6">
-      <h2 className="text-2xl font-bold text-slate-900 dark:text-white">Portal Management</h2>
-      <p className="text-slate-600 dark:text-slate-400">
-        Manage tenant portal access and settings
-      </p>
-
-      <div className="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700">
-        <table className="w-full">
-          <thead className="bg-slate-50 dark:bg-slate-900/50 border-b border-slate-200 dark:border-slate-700">
-            <tr>
-              <th className="px-6 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wider">
-                Tenant
-              </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wider">
-                Portal Status
-              </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wider">
-                Custom Domain
-              </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wider">
-                Features
-              </th>
-              <th className="px-6 py-3 text-right text-xs font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wider">
-                Actions
-              </th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-slate-100 dark:divide-slate-700">
-            {loading ? (
-              <tr>
-                <td colSpan={5} className="px-6 py-8 text-center text-slate-500">
-                  Loading portal settings...
-                </td>
-              </tr>
-            ) : tenants.length === 0 ? (
-              <tr>
-                <td colSpan={5} className="px-6 py-8 text-center text-slate-500">
-                  No tenants found
-                </td>
-              </tr>
-            ) : (
-              tenants.map((tenant) => {
-                const settings = portalSettings[tenant.id] || {};
-                const isEnabled = settings.enabled !== false;
-                const customDomain = settings.customDomain || '';
-                const features = settings.features || {};
-
-                return (
-                  <tr key={tenant.id} className="hover:bg-slate-50 dark:hover:bg-slate-700/50">
-                    <td className="px-6 py-4">
-                      <div className="flex items-center gap-3">
-                        <div className="w-10 h-10 rounded-lg bg-indigo-100 dark:bg-indigo-900/30 flex items-center justify-center">
-                          <Building2 className="text-indigo-600" size={20} />
-                        </div>
-                        <div>
-                          <p className="font-medium text-slate-900 dark:text-white">{tenant.name}</p>
-                          <p className="text-sm text-slate-500 dark:text-slate-400">{tenant.code}</p>
-                        </div>
-                      </div>
-                    </td>
-                    <td className="px-6 py-4">
-                      <button
-                        onClick={() => handleTogglePortal(tenant.id, !isEnabled)}
-                        disabled={saving === tenant.id}
-                        className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-                          isEnabled ? 'bg-emerald-600' : 'bg-slate-300 dark:bg-slate-600'
-                        } ${saving === tenant.id ? 'opacity-50' : ''}`}
-                      >
-                        <span
-                          className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                            isEnabled ? 'translate-x-6' : 'translate-x-1'
-                          }`}
-                        />
-                      </button>
-                      <span className={`ml-2 text-sm ${
-                        isEnabled ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-500 dark:text-slate-400'
-                      }`}>
-                        {isEnabled ? 'Enabled' : 'Disabled'}
-                      </span>
-                    </td>
-                    <td className="px-6 py-4">
-                      {customDomain ? (
-                        <span className="text-sm text-slate-600 dark:text-slate-300 font-mono">
-                          {customDomain}
-                        </span>
-                      ) : (
-                        <span className="text-sm text-slate-400 dark:text-slate-500">
-                          {tenant.code}.seledabet.com
-                        </span>
-                      )}
-                    </td>
-                    <td className="px-6 py-4">
-                      <div className="flex flex-wrap gap-1">
-                        {features.guestPortal && (
-                          <span className="px-2 py-1 bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400 text-xs rounded-full">
-                            Guest
-                          </span>
-                        )}
-                        {features.booking && (
-                          <span className="px-2 py-1 bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400 text-xs rounded-full">
-                            Booking
-                          </span>
-                        )}
-                        {features.pos && (
-                          <span className="px-2 py-1 bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400 text-xs rounded-full">
-                            POS
-                          </span>
-                        )}
-                        {!features.guestPortal && !features.booking && !features.pos && (
-                          <span className="text-sm text-slate-400 dark:text-slate-500">Default</span>
-                        )}
-                      </div>
-                    </td>
-                    <td className="px-6 py-4 text-right">
-                      <button
-                        onClick={() => handleTogglePortal(tenant.id, !isEnabled)}
-                        disabled={saving === tenant.id}
-                        className="px-3 py-1 bg-indigo-600 text-white text-sm rounded-lg hover:bg-indigo-700 transition-colors disabled:opacity-50"
-                      >
-                        {saving === tenant.id ? 'Saving...' : 'Configure'}
-                      </button>
-                    </td>
-                  </tr>
-                );
-              })
-            )}
-          </tbody>
-        </table>
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-2xl font-bold text-slate-900 dark:text-white">Portal & Module Management</h2>
+          <p className="text-slate-600 dark:text-slate-400">
+            Enable or disable portals and modules for each tenant
+          </p>
+        </div>
+        {selectedTenant && (
+          <button
+            onClick={saveModuleToggles}
+            disabled={!dirty || saving || loading}
+            className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors flex items-center gap-2 disabled:opacity-50"
+          >
+            {saving ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
+            {saving ? 'Saving...' : 'Save Changes'}
+          </button>
+        )}
       </div>
+
+      {/* Tenant Selector */}
+      <div className="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 p-4">
+        <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
+          Select Tenant
+        </label>
+        <select
+          value={selectedTenant}
+          onChange={(e) => setSelectedTenant(e.target.value)}
+          className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-700 text-slate-900 dark:text-white"
+        >
+          <option value="">-- Select a tenant --</option>
+          {tenants.map(tenant => (
+            <option key={tenant.id} value={tenant.id}>{tenant.name} ({tenant.code})</option>
+          ))}
+        </select>
+      </div>
+
+      {/* Module Toggles */}
+      {selectedTenant && (
+        <div className="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700">
+          <div className="px-6 py-4 border-b border-slate-200 dark:border-slate-700">
+            <h3 className="font-semibold text-slate-900 dark:text-white">
+              {selectedTenantData?.name} - Portal & Module Settings
+            </h3>
+            {loading && <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">Loading...</p>}
+          </div>
+
+          <div className="divide-y divide-slate-100 dark:divide-slate-700">
+            {portalEntries.map(entry => {
+              const locked = entry.locked;
+              const on = locked || enabled(entry.key);
+              const isExpanded = expandedDepartments.has(entry.key);
+
+              return (
+                <div key={entry.key} className="bg-white dark:bg-slate-800">
+                  {/* Portal Row */}
+                  <div className="flex items-center justify-between p-4 hover:bg-slate-50 dark:hover:bg-slate-700/30 transition">
+                    <button
+                      onClick={() => toggleDepartment(entry.key)}
+                      className="flex items-center gap-3 flex-1 text-left"
+                    >
+                      {isExpanded ? (
+                        <ChevronDown size={16} className="text-slate-400" />
+                      ) : (
+                        <ChevronRight size={16} className="text-slate-400" />
+                      )}
+                      <Building2 size={18} className="text-slate-400 shrink-0" />
+                      <div className="flex-1">
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-bold text-slate-900 dark:text-white">{entry.label}</span>
+                          {locked && (
+                            <span className="px-2 py-0.5 bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400 text-xs rounded-full">
+                              Protected
+                            </span>
+                          )}
+                          {on && !locked && (
+                            <span className="px-2 py-0.5 bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400 text-xs rounded-full">
+                              Enabled
+                            </span>
+                          )}
+                          {!on && !locked && (
+                            <span className="px-2 py-0.5 bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400 text-xs rounded-full">
+                              Disabled
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-xs text-slate-500 dark:text-slate-400 mt-0.5 font-mono">
+                          {entry.url} · {entry.modules.length} modules
+                        </div>
+                      </div>
+                    </button>
+                    <button
+                      disabled={locked}
+                      onClick={() => togglePortal(entry.key)}
+                      className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors disabled:opacity-50 ${
+                        on ? 'bg-emerald-500' : 'bg-slate-300 dark:bg-slate-600'
+                      }`}
+                    >
+                      <span className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform ${
+                        on ? 'translate-x-5' : 'translate-x-0.5'
+                      }`} />
+                    </button>
+                  </div>
+
+                  {/* Module Rows */}
+                  {isExpanded && entry.modules.length > 0 && (
+                    <div className="px-4 pb-4 pl-12">
+                      <div className="space-y-2">
+                        {entry.modules.map(module => {
+                          const moduleKey = `${entry.key}_${module.tabId}`;
+                          const moduleOn = enabled(moduleKey);
+                          const moduleLocked = entry.locked;
+
+                          return (
+                            <div
+                              key={module.tabId}
+                              className="flex items-center justify-between gap-3 p-2.5 bg-slate-50 dark:bg-slate-900/40 rounded-lg border border-slate-100 dark:border-slate-700"
+                            >
+                              <div className="flex-1 min-w-0">
+                                <div className="text-xs font-bold text-slate-900 dark:text-white truncate">{module.label}</div>
+                                <div className="text-[10px] text-slate-500 dark:text-slate-400 font-mono mt-0.5">
+                                  {module.modId}
+                                </div>
+                              </div>
+                              <button
+                                disabled={moduleLocked}
+                                onClick={() => toggleModule(entry.key, module.tabId)}
+                                className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors disabled:opacity-50 ${
+                                  moduleOn ? 'bg-emerald-500' : 'bg-slate-300 dark:bg-slate-600'
+                                }`}
+                              >
+                                <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                                  moduleOn ? 'translate-x-4' : 'translate-x-0.5'
+                                }`} />
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
     </div>
   );
 };

@@ -18,7 +18,7 @@ END $$;
 -- Step 2: Create super-admin user with your password hash
 DO $$
 DECLARE
-  v_user_id UUID;
+  v_user_id TEXT;
   v_tenant_id UUID;
   v_password_hash TEXT := '$2b$10$ANPnBrTwDLhbTX0gd85y7eSeAxLw4jynevEvss13Vy2mTr4jY9OOK';
 BEGIN
@@ -32,7 +32,7 @@ BEGIN
       avatar_initials, force_password_change, created_at, updated_at
     )
     VALUES (
-      gen_random_uuid(),
+      gen_random_uuid()::text,
       'Super Administrator',
       'superadmin@hotel.com',
       'superadmin',

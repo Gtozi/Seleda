@@ -7,6 +7,7 @@ import { Router } from 'express';
 import { authenticate } from '../middleware/auth';
 import { hasSupabaseAdminConfig, supabaseAdmin } from '../supabaseAdmin';
 import { writeAuditEvent } from '../services/sessionService';
+import { getGlobalSettings } from '../services/settingsService';
 
 const router = Router();
 
@@ -19,7 +20,7 @@ const requireSuperAdmin = async (req: any, res: any, next: any) => {
 };
 
 // Get all tenants (super-admin only)
-router.get('/tenants', authenticate, requireSuperAdmin, async (req, res) => {
+router.get('/tenants', authenticate, requireSuperAdmin, async (_req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) {
     return res.status(503).json({ error: 'Database not configured' });
   }
@@ -451,8 +452,102 @@ router.patch('/tenants/:tenantId/portal-settings', authenticate, requireSuperAdm
   }
 });
 
+// Get module toggles for a tenant (super-admin only)
+router.get('/tenants/:tenantId/module-toggles', authenticate, requireSuperAdmin, async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) {
+    return res.status(503).json({ error: 'Database not configured' });
+  }
+
+  const { tenantId } = req.params;
+
+  try {
+    const { data: tenant, error } = await supabaseAdmin
+      .from('tenants')
+      .select('settings')
+      .eq('id', tenantId)
+      .single();
+
+    if (error || !tenant) {
+      return res.status(404).json({ error: 'Tenant not found' });
+    }
+
+    const moduleToggles = tenant.settings?.moduleToggles || {};
+    const globalSettings = await getGlobalSettings();
+    res.json({
+      moduleToggles,
+      globalToggles: globalSettings?.module_toggles || {},
+    });
+  } catch (error) {
+    console.error('Error fetching module toggles:', error);
+    res.status(500).json({ error: 'Failed to fetch module toggles' });
+  }
+});
+
+// Update module toggles for a tenant (super-admin only)
+router.patch('/tenants/:tenantId/module-toggles', authenticate, requireSuperAdmin, async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) {
+    return res.status(503).json({ error: 'Database not configured' });
+  }
+
+  const { tenantId } = req.params;
+  const { moduleToggles } = req.body || {};
+
+  if (!moduleToggles || typeof moduleToggles !== 'object') {
+    return res.status(400).json({ error: 'moduleToggles object is required' });
+  }
+
+  try {
+    // Get current tenant settings
+    const { data: tenant, error: fetchError } = await supabaseAdmin
+      .from('tenants')
+      .select('settings')
+      .eq('id', tenantId)
+      .single();
+
+    if (fetchError || !tenant) {
+      return res.status(404).json({ error: 'Tenant not found' });
+    }
+
+    // Update module toggles
+    const currentSettings = tenant.settings || {};
+    const updatedSettings = {
+      ...currentSettings,
+      moduleToggles,
+    };
+
+    const { data: updatedTenant, error: updateError } = await supabaseAdmin
+      .from('tenants')
+      .update({ 
+        settings: updatedSettings,
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', tenantId)
+      .select()
+      .single();
+
+    if (updateError) {
+      return res.status(500).json({ error: updateError.message });
+    }
+
+    await writeAuditEvent({
+      req,
+      user: req.user,
+      action: 'tenant.module_toggles_update',
+      entityType: 'tenant',
+      entityId: tenantId,
+      module: 'admin',
+      details: { moduleToggles },
+    });
+
+    res.json({ tenant: updatedTenant, moduleToggles });
+  } catch (error) {
+    console.error('Error updating module toggles:', error);
+    res.status(500).json({ error: 'Failed to update module toggles' });
+  }
+});
+
 // Get platform statistics (super-admin only)
-router.get('/stats', authenticate, requireSuperAdmin, async (req, res) => {
+router.get('/stats', authenticate, requireSuperAdmin, async (_req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) {
     return res.status(503).json({ error: 'Database not configured' });
   }

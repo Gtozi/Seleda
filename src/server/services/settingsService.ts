@@ -60,6 +60,23 @@ export function invalidateGlobalSettingsCache(): void {
 }
 
 /**
+ * Fetch the module toggles configured for a tenant
+ * (`tenants.settings.moduleToggles`, written by the super-admin portal).
+ * Returns null when the tenant has no overrides.
+ */
+export async function getTenantModuleToggles(tenantId: string): Promise<Record<string, boolean> | null> {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin || !tenantId) return null;
+  const { data, error } = await supabaseAdmin
+    .from('tenants')
+    .select('settings')
+    .eq('id', tenantId)
+    .maybeSingle();
+  if (error || !data) return null;
+  const toggles = data.settings?.moduleToggles;
+  return toggles && typeof toggles === 'object' ? toggles : null;
+}
+
+/**
  * Fetch a single column from `global_settings` using the cache.
  */
 export async function getGlobalSetting<K extends string>(
