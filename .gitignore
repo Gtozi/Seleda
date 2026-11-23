@@ -8,3 +8,8 @@ tsc-out.txt
 .tmp-*.js
 
 !.env.example
+
+# Local env files (secrets)
+.env
+.env.local
+.env.*.local
