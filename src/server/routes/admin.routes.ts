@@ -356,6 +356,101 @@ router.delete('/tenants/:tenantId/users/:userId', authenticate, requireSuperAdmi
   }
 });
 
+// Get portal settings for a tenant (super-admin only)
+router.get('/tenants/:tenantId/portal-settings', authenticate, requireSuperAdmin, async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) {
+    return res.status(503).json({ error: 'Database not configured' });
+  }
+
+  const { tenantId } = req.params;
+
+  try {
+    const { data: tenant, error } = await supabaseAdmin
+      .from('tenants')
+      .select('settings')
+      .eq('id', tenantId)
+      .single();
+
+    if (error || !tenant) {
+      return res.status(404).json({ error: 'Tenant not found' });
+    }
+
+    const portalSettings = tenant.settings?.portal || {};
+    res.json({ settings: portalSettings });
+  } catch (error) {
+    console.error('Error fetching portal settings:', error);
+    res.status(500).json({ error: 'Failed to fetch portal settings' });
+  }
+});
+
+// Update portal settings for a tenant (super-admin only)
+router.patch('/tenants/:tenantId/portal-settings', authenticate, requireSuperAdmin, async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) {
+    return res.status(503).json({ error: 'Database not configured' });
+  }
+
+  const { tenantId } = req.params;
+  const { enabled, customDomain, features } = req.body || {};
+
+  try {
+    // Get current tenant settings
+    const { data: tenant, error: fetchError } = await supabaseAdmin
+      .from('tenants')
+      .select('settings')
+      .eq('id', tenantId)
+      .single();
+
+    if (fetchError || !tenant) {
+      return res.status(404).json({ error: 'Tenant not found' });
+    }
+
+    // Update portal settings
+    const currentSettings = tenant.settings || {};
+    const portalSettings = currentSettings.portal || {};
+    
+    const updatedPortalSettings = {
+      ...portalSettings,
+      ...(enabled !== undefined && { enabled }),
+      ...(customDomain !== undefined && { customDomain }),
+      ...(features !== undefined && { features }),
+    };
+
+    const updatedSettings = {
+      ...currentSettings,
+      portal: updatedPortalSettings,
+    };
+
+    const { data: updatedTenant, error: updateError } = await supabaseAdmin
+      .from('tenants')
+      .update({ 
+        settings: updatedSettings,
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', tenantId)
+      .select()
+      .single();
+
+    if (updateError) {
+      return res.status(500).json({ error: updateError.message });
+    }
+
+    await writeAuditEvent({
+      req,
+      user: req.user,
+      action: 'tenant.portal_settings_update',
+      entityType: 'tenant',
+      entityId: tenantId,
+      module: 'admin',
+      details: { portalSettings: updatedPortalSettings },
+    });
+
+    res.json({ tenant: updatedTenant, settings: updatedPortalSettings });
+  } catch (error) {
+    console.error('Error updating portal settings:', error);
+    res.status(500).json({ error: 'Failed to update portal settings' });
+  }
+});
+
 // Get platform statistics (super-admin only)
 router.get('/stats', authenticate, requireSuperAdmin, async (req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) {

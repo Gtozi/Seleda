@@ -42,7 +42,7 @@ export const SuperAdminPortal: React.FC<AdminPortalProps> = ({ currentUser, onLo
   const { formatAmount } = useERP();
   const [tenants, setTenants] = useState<Tenant[]>([]);
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<'overview' | 'tenants' | 'users' | 'settings'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'tenants' | 'users' | 'portal' | 'settings'>('overview');
 
   // Redirect non-super-admins
   useEffect(() => {
@@ -113,6 +113,7 @@ export const SuperAdminPortal: React.FC<AdminPortalProps> = ({ currentUser, onLo
             { id: 'overview', label: 'Overview', icon: BarChart3 },
             { id: 'tenants', label: 'Tenants', icon: Building2 },
             { id: 'users', label: 'Users', icon: Users },
+            { id: 'portal', label: 'Portal Management', icon: Shield },
             { id: 'settings', label: 'Settings', icon: Settings },
           ].map((tab) => (
             <button
@@ -136,6 +137,7 @@ export const SuperAdminPortal: React.FC<AdminPortalProps> = ({ currentUser, onLo
         {activeTab === 'overview' && <OverviewTab tenants={tenants} loading={loading} />}
         {activeTab === 'tenants' && <TenantsTab tenants={tenants} loading={loading} onRefresh={fetchTenants} />}
         {activeTab === 'users' && <UsersTab tenants={tenants} />}
+        {activeTab === 'portal' && <PortalManagementTab tenants={tenants} />}
         {activeTab === 'settings' && <SettingsTab />}
       </main>
     </div>
@@ -916,6 +918,206 @@ const UsersTab: React.FC<{ tenants: Tenant[] }> = ({ tenants }) => {
                   </td>
                 </tr>
               ))
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+};
+
+// Portal Management Tab - Manage tenant portals
+const PortalManagementTab: React.FC<{ tenants: Tenant[] }> = ({ tenants }) => {
+  const [portalSettings, setPortalSettings] = useState<Record<string, any>>({});
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState<string | null>(null);
+
+  useEffect(() => {
+    const fetchPortalSettings = async () => {
+      try {
+        const apiBase = getSubdomainInfo().isAdmin ? `https://admin.${window.location.hostname.split('.').slice(-2).join('.')}` : '';
+        
+        // Fetch portal settings for all tenants
+        const promises = tenants.map(tenant => 
+          fetch(`${apiBase}/api/admin/tenants/${tenant.id}/portal-settings`, { credentials: 'include' })
+            .then(res => res.ok ? res.json() : { settings: {} })
+            .then(data => ({ tenantId: tenant.id, settings: data.settings || {} }))
+        );
+
+        const results = await Promise.all(promises);
+        const settingsMap = results.reduce((acc, { tenantId, settings }) => {
+          acc[tenantId] = settings;
+          return acc;
+        }, {} as Record<string, any>);
+        
+        setPortalSettings(settingsMap);
+      } catch (error) {
+        console.error('Failed to fetch portal settings:', error);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    if (tenants.length > 0) {
+      fetchPortalSettings();
+    }
+  }, [tenants]);
+
+  const handleTogglePortal = async (tenantId: string, enabled: boolean) => {
+    setSaving(tenantId);
+    try {
+      const apiBase = getSubdomainInfo().isAdmin ? `https://admin.${window.location.hostname.split('.').slice(-2).join('.')}` : '';
+      
+      const response = await fetch(`${apiBase}/api/admin/tenants/${tenantId}/portal-settings`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ enabled }),
+      });
+
+      if (response.ok) {
+        setPortalSettings(prev => ({
+          ...prev,
+          [tenantId]: { ...prev[tenantId], enabled }
+        }));
+      } else {
+        const data = await response.json();
+        alert(data.error || 'Failed to update portal settings');
+      }
+    } catch (error) {
+      console.error('Failed to update portal settings:', error);
+      alert('Failed to update portal settings');
+    } finally {
+      setSaving(null);
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      <h2 className="text-2xl font-bold text-slate-900 dark:text-white">Portal Management</h2>
+      <p className="text-slate-600 dark:text-slate-400">
+        Manage tenant portal access and settings
+      </p>
+
+      <div className="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700">
+        <table className="w-full">
+          <thead className="bg-slate-50 dark:bg-slate-900/50 border-b border-slate-200 dark:border-slate-700">
+            <tr>
+              <th className="px-6 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wider">
+                Tenant
+              </th>
+              <th className="px-6 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wider">
+                Portal Status
+              </th>
+              <th className="px-6 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wider">
+                Custom Domain
+              </th>
+              <th className="px-6 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wider">
+                Features
+              </th>
+              <th className="px-6 py-3 text-right text-xs font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wider">
+                Actions
+              </th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100 dark:divide-slate-700">
+            {loading ? (
+              <tr>
+                <td colSpan={5} className="px-6 py-8 text-center text-slate-500">
+                  Loading portal settings...
+                </td>
+              </tr>
+            ) : tenants.length === 0 ? (
+              <tr>
+                <td colSpan={5} className="px-6 py-8 text-center text-slate-500">
+                  No tenants found
+                </td>
+              </tr>
+            ) : (
+              tenants.map((tenant) => {
+                const settings = portalSettings[tenant.id] || {};
+                const isEnabled = settings.enabled !== false;
+                const customDomain = settings.customDomain || '';
+                const features = settings.features || {};
+
+                return (
+                  <tr key={tenant.id} className="hover:bg-slate-50 dark:hover:bg-slate-700/50">
+                    <td className="px-6 py-4">
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-lg bg-indigo-100 dark:bg-indigo-900/30 flex items-center justify-center">
+                          <Building2 className="text-indigo-600" size={20} />
+                        </div>
+                        <div>
+                          <p className="font-medium text-slate-900 dark:text-white">{tenant.name}</p>
+                          <p className="text-sm text-slate-500 dark:text-slate-400">{tenant.code}</p>
+                        </div>
+                      </div>
+                    </td>
+                    <td className="px-6 py-4">
+                      <button
+                        onClick={() => handleTogglePortal(tenant.id, !isEnabled)}
+                        disabled={saving === tenant.id}
+                        className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                          isEnabled ? 'bg-emerald-600' : 'bg-slate-300 dark:bg-slate-600'
+                        } ${saving === tenant.id ? 'opacity-50' : ''}`}
+                      >
+                        <span
+                          className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                            isEnabled ? 'translate-x-6' : 'translate-x-1'
+                          }`}
+                        />
+                      </button>
+                      <span className={`ml-2 text-sm ${
+                        isEnabled ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-500 dark:text-slate-400'
+                      }`}>
+                        {isEnabled ? 'Enabled' : 'Disabled'}
+                      </span>
+                    </td>
+                    <td className="px-6 py-4">
+                      {customDomain ? (
+                        <span className="text-sm text-slate-600 dark:text-slate-300 font-mono">
+                          {customDomain}
+                        </span>
+                      ) : (
+                        <span className="text-sm text-slate-400 dark:text-slate-500">
+                          {tenant.code}.seledabet.com
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-6 py-4">
+                      <div className="flex flex-wrap gap-1">
+                        {features.guestPortal && (
+                          <span className="px-2 py-1 bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400 text-xs rounded-full">
+                            Guest
+                          </span>
+                        )}
+                        {features.booking && (
+                          <span className="px-2 py-1 bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400 text-xs rounded-full">
+                            Booking
+                          </span>
+                        )}
+                        {features.pos && (
+                          <span className="px-2 py-1 bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400 text-xs rounded-full">
+                            POS
+                          </span>
+                        )}
+                        {!features.guestPortal && !features.booking && !features.pos && (
+                          <span className="text-sm text-slate-400 dark:text-slate-500">Default</span>
+                        )}
+                      </div>
+                    </td>
+                    <td className="px-6 py-4 text-right">
+                      <button
+                        onClick={() => handleTogglePortal(tenant.id, !isEnabled)}
+                        disabled={saving === tenant.id}
+                        className="px-3 py-1 bg-indigo-600 text-white text-sm rounded-lg hover:bg-indigo-700 transition-colors disabled:opacity-50"
+                      >
+                        {saving === tenant.id ? 'Saving...' : 'Configure'}
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })
             )}
           </tbody>
         </table>
