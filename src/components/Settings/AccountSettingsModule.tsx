@@ -22,6 +22,18 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
+const SPECIAL_CHARS = /[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?~`]/;
+
+function validatePasswordComplexity(password: string): { valid: boolean; errors: string[] } {
+  const errors: string[] = [];
+  if (password.length < 8) errors.push('At least 8 characters');
+  if (!/[A-Z]/.test(password)) errors.push('One uppercase letter');
+  if (!/[a-z]/.test(password)) errors.push('One lowercase letter');
+  if (!/\d/.test(password)) errors.push('One number');
+  if (!SPECIAL_CHARS.test(password)) errors.push('One special character (!@#$%^&*...)');
+  return { valid: errors.length === 0, errors };
+}
+
 const AVATAR_GRADIENTS = [
   'from-indigo-500 to-purple-500', 'from-rose-500 to-pink-500', 'from-amber-500 to-orange-500',
   'from-emerald-500 to-teal-500', 'from-sky-500 to-blue-500', 'from-violet-500 to-fuchsia-500',
@@ -103,6 +115,7 @@ export default function AccountSettingsModule() {
   const [showNew, setShowNew] = useState(false);
   const [secStatus, setSecStatus] = useState<'idle' | 'checking' | 'success' | 'error'>('idle');
   const [errorMsg, setErrorMsg] = useState('');
+  const [passwordValidationErrors, setPasswordValidationErrors] = useState<string[]>([]);
 
   // Sessions State
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
@@ -200,8 +213,10 @@ export default function AccountSettingsModule() {
       setSecStatus('error');
       return;
     }
-    if (newPassword.length < 6) {
-      setErrorMsg('Password must be at least 6 characters');
+    const validation = validatePasswordComplexity(newPassword);
+    if (!validation.valid) {
+      setErrorMsg('Password does not meet requirements');
+      setPasswordValidationErrors(validation.errors);
       setSecStatus('error');
       return;
     }
@@ -213,6 +228,7 @@ export default function AccountSettingsModule() {
       setOldPassword('');
       setNewPassword('');
       setConfirmPassword('');
+      setPasswordValidationErrors([]);
       setTimeout(() => setSecStatus('idle'), 3000);
     } else {
       setErrorMsg('Current password incorrect');
@@ -455,7 +471,11 @@ export default function AccountSettingsModule() {
                         <input
                           type={showNew ? "text" : "password"}
                           value={newPassword}
-                          onChange={(e) => setNewPassword(e.target.value)}
+                          onChange={(e) => {
+                            setNewPassword(e.target.value);
+                            const validation = validatePasswordComplexity(e.target.value);
+                            setPasswordValidationErrors(validation.errors);
+                          }}
                           placeholder="At least 8 characters"
                           className="w-full px-4 py-2.5 bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 rounded-xl text-sm focus:ring-1 focus:ring-indigo-500 outline-none transition dark:text-slate-200"
                         />
@@ -466,6 +486,31 @@ export default function AccountSettingsModule() {
                         >
                           {showNew ? <EyeOff size={16} /> : <Eye size={16} />}
                         </button>
+                      </div>
+                      <div className="mt-2 space-y-1">
+                        <div className="text-xs text-slate-500 dark:text-slate-400">Password must contain:</div>
+                        <div className="grid grid-cols-2 gap-1 text-xs">
+                          <div className={`flex items-center gap-1 ${newPassword.length >= 8 ? 'text-emerald-600' : 'text-slate-400'}`}>
+                            {newPassword.length >= 8 ? <CheckCircle2 size={12} /> : <div className="w-3 h-3 rounded-full border border-slate-300" />}
+                            8+ characters
+                          </div>
+                          <div className={`flex items-center gap-1 ${/[A-Z]/.test(newPassword) ? 'text-emerald-600' : 'text-slate-400'}`}>
+                            {/[A-Z]/.test(newPassword) ? <CheckCircle2 size={12} /> : <div className="w-3 h-3 rounded-full border border-slate-300" />}
+                            Uppercase
+                          </div>
+                          <div className={`flex items-center gap-1 ${/[a-z]/.test(newPassword) ? 'text-emerald-600' : 'text-slate-400'}`}>
+                            {/[a-z]/.test(newPassword) ? <CheckCircle2 size={12} /> : <div className="w-3 h-3 rounded-full border border-slate-300" />}
+                            Lowercase
+                          </div>
+                          <div className={`flex items-center gap-1 ${/\d/.test(newPassword) ? 'text-emerald-600' : 'text-slate-400'}`}>
+                            {/\d/.test(newPassword) ? <CheckCircle2 size={12} /> : <div className="w-3 h-3 rounded-full border border-slate-300" />}
+                            Number
+                          </div>
+                          <div className={`flex items-center gap-1 col-span-2 ${SPECIAL_CHARS.test(newPassword) ? 'text-emerald-600' : 'text-slate-400'}`}>
+                            {SPECIAL_CHARS.test(newPassword) ? <CheckCircle2 size={12} /> : <div className="w-3 h-3 rounded-full border border-slate-300" />}
+                            Special character (!@#$%^&*...)
+                          </div>
+                        </div>
                       </div>
                     </div>
 
@@ -482,9 +527,16 @@ export default function AccountSettingsModule() {
                   </div>
 
                   {secStatus === 'error' && (
-                    <div className="p-3 bg-rose-50 dark:bg-rose-900/20 border border-rose-100 dark:border-rose-900/30 rounded-xl text-xs text-rose-600 dark:text-rose-400 flex gap-2 animate-shake">
-                      <AlertCircle size={14} />
-                      {errorMsg}
+                    <div className="flex flex-col gap-1 p-3 bg-rose-50 dark:bg-rose-900/20 border border-rose-100 dark:border-rose-900/30 rounded-xl text-xs text-rose-600 dark:text-rose-400 animate-shake">
+                      <div className="flex gap-2">
+                        <AlertCircle size={14} />
+                        {errorMsg}
+                      </div>
+                      {passwordValidationErrors.length > 0 && (
+                        <ul className="list-disc list-inside pl-4 mt-1">
+                          {passwordValidationErrors.map((err, i) => <li key={i}>{err}</li>)}
+                        </ul>
+                      )}
                     </div>
                   )}
 

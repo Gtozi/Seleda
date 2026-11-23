@@ -722,7 +722,15 @@ export const SystemProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         credentials: 'include',
         body: JSON.stringify({ currentPassword: old, newPassword: newP }),
       });
-      const data = await response.json();
+      const text = await response.text();
+      let data: any;
+      try {
+        data = JSON.parse(text);
+      } catch {
+        // If HTML returned instead of JSON, show generic error
+        if (!response.ok) return false;
+        data = {};
+      }
       return response.ok && data.success;
     } catch (e) {
       console.error('Password change failed:', e);

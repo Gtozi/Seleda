@@ -64,6 +64,18 @@ function authHeaders(json = false): Record<string, string> {
   return headers;
 }
 
+const SPECIAL_CHARS = /[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?~`]/;
+
+function validatePasswordComplexity(password: string): { valid: boolean; errors: string[] } {
+  const errors: string[] = [];
+  if (password.length < 8) errors.push('At least 8 characters');
+  if (!/[A-Z]/.test(password)) errors.push('One uppercase letter');
+  if (!/[a-z]/.test(password)) errors.push('One lowercase letter');
+  if (!/\d/.test(password)) errors.push('One number');
+  if (!SPECIAL_CHARS.test(password)) errors.push('One special character (!@#$%^&*...)');
+  return { valid: errors.length === 0, errors };
+}
+
 const SettingsModule: React.FC<SettingsModuleProps> = ({
   reservationId,
   guestId
@@ -85,6 +97,7 @@ const SettingsModule: React.FC<SettingsModuleProps> = ({
   const [passwordError, setPasswordError] = useState<string | null>(null);
   const [passwordSaving, setPasswordSaving] = useState(false);
   const [passwordSuccess, setPasswordSuccess] = useState(false);
+  const [passwordValidationErrors, setPasswordValidationErrors] = useState<string[]>([]);
 
   const loadSettings = useCallback(async () => {
     if (!guestId) {
@@ -193,6 +206,12 @@ const SettingsModule: React.FC<SettingsModuleProps> = ({
       setPasswordError('New passwords do not match');
       return;
     }
+    const validation = validatePasswordComplexity(newPassword);
+    if (!validation.valid) {
+      setPasswordError('Password does not meet requirements');
+      setPasswordValidationErrors(validation.errors);
+      return;
+    }
     try {
       setPasswordSaving(true);
       const res = await fetch('/api/guest-portal/auth/change-password', {
@@ -201,7 +220,18 @@ const SettingsModule: React.FC<SettingsModuleProps> = ({
         credentials: 'include',
         body: JSON.stringify({ currentPassword, newPassword }),
       });
-      const payload = await res.json().catch(() => ({}));
+      const text = await res.text();
+      let payload: any;
+      try {
+        payload = JSON.parse(text);
+      } catch {
+        // Fallback: if HTML returned, show generic error
+        if (!res.ok) {
+          setPasswordError(`Password change failed (${res.status})`);
+          return;
+        }
+        payload = {};
+      }
       if (!res.ok) throw new Error(payload.error || `Failed to change password (${res.status})`);
       setPasswordSuccess(true);
       setTimeout(() => {
@@ -210,6 +240,7 @@ const SettingsModule: React.FC<SettingsModuleProps> = ({
         setCurrentPassword('');
         setNewPassword('');
         setConfirmPassword('');
+        setPasswordValidationErrors([]);
       }, 1500);
     } catch (e: any) {
       setPasswordError(e?.message || 'Failed to change password');
@@ -534,10 +565,39 @@ const SettingsModule: React.FC<SettingsModuleProps> = ({
                 <input
                   type="password"
                   value={newPassword}
-                  onChange={(e) => setNewPassword(e.target.value)}
+                  onChange={(e) => {
+                    setNewPassword(e.target.value);
+                    const validation = validatePasswordComplexity(e.target.value);
+                    setPasswordValidationErrors(validation.errors);
+                  }}
                   autoComplete="new-password"
                   className="w-full px-4 py-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-900 text-slate-900 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
                 />
+                <div className="mt-2 space-y-1">
+                  <div className="text-xs text-slate-500 dark:text-slate-400">Password must contain:</div>
+                  <div className="grid grid-cols-2 gap-1 text-xs">
+                    <div className={`flex items-center gap-1 ${newPassword.length >= 8 ? 'text-emerald-600' : 'text-slate-400'}`}>
+                      {newPassword.length >= 8 ? <CheckCircle2 size={12} /> : <div className="w-3 h-3 rounded-full border border-slate-300" />}
+                      8+ characters
+                    </div>
+                    <div className={`flex items-center gap-1 ${/[A-Z]/.test(newPassword) ? 'text-emerald-600' : 'text-slate-400'}`}>
+                      {/[A-Z]/.test(newPassword) ? <CheckCircle2 size={12} /> : <div className="w-3 h-3 rounded-full border border-slate-300" />}
+                      Uppercase
+                    </div>
+                    <div className={`flex items-center gap-1 ${/[a-z]/.test(newPassword) ? 'text-emerald-600' : 'text-slate-400'}`}>
+                      {/[a-z]/.test(newPassword) ? <CheckCircle2 size={12} /> : <div className="w-3 h-3 rounded-full border border-slate-300" />}
+                      Lowercase
+                    </div>
+                    <div className={`flex items-center gap-1 ${/\d/.test(newPassword) ? 'text-emerald-600' : 'text-slate-400'}`}>
+                      {/\d/.test(newPassword) ? <CheckCircle2 size={12} /> : <div className="w-3 h-3 rounded-full border border-slate-300" />}
+                      Number
+                    </div>
+                    <div className={`flex items-center gap-1 col-span-2 ${SPECIAL_CHARS.test(newPassword) ? 'text-emerald-600' : 'text-slate-400'}`}>
+                      {SPECIAL_CHARS.test(newPassword) ? <CheckCircle2 size={12} /> : <div className="w-3 h-3 rounded-full border border-slate-300" />}
+                      Special character (!@#$%^&*...)
+                    </div>
+                  </div>
+                </div>
               </div>
               <div>
                 <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
@@ -552,9 +612,16 @@ const SettingsModule: React.FC<SettingsModuleProps> = ({
                 />
               </div>
               {passwordError && (
-                <div className="flex items-center gap-2 text-sm text-red-600 dark:text-red-400">
-                  <AlertCircle size={14} />
-                  {passwordError}
+                <div className="flex flex-col gap-1 text-sm text-red-600 dark:text-red-400">
+                  <div className="flex items-center gap-2">
+                    <AlertCircle size={14} />
+                    {passwordError}
+                  </div>
+                  {passwordValidationErrors.length > 0 && (
+                    <ul className="list-disc list-inside pl-4 mt-1 text-xs">
+                      {passwordValidationErrors.map((err, i) => <li key={i}>{err}</li>)}
+                    </ul>
+                  )}
                 </div>
               )}
               {passwordSuccess && (
