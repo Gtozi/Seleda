@@ -253,9 +253,7 @@ const TenantsTab: React.FC<{ tenants: Tenant[]; loading: boolean; onRefresh: () 
     setShowDeleteModal(true);
   };
 
-  const handleManageUsers = async (tenant: Tenant) => {
-    setSelectedTenant(tenant);
-    setShowUsersModal(true);
+  const fetchTenantUsers = async (tenant: Tenant) => {
     setLoadingUsers(true);
     try {
       const apiBase = getSubdomainInfo().isAdmin ? `https://admin.${window.location.hostname.split('.').slice(-2).join('.')}` : '';
@@ -271,6 +269,12 @@ const TenantsTab: React.FC<{ tenants: Tenant[]; loading: boolean; onRefresh: () 
     } finally {
       setLoadingUsers(false);
     }
+  };
+
+  const handleManageUsers = async (tenant: Tenant) => {
+    setSelectedTenant(tenant);
+    setShowUsersModal(true);
+    await fetchTenantUsers(tenant);
   };
 
   const confirmDelete = async () => {
@@ -434,6 +438,7 @@ const TenantsTab: React.FC<{ tenants: Tenant[]; loading: boolean; onRefresh: () 
           users={tenantUsers}
           loading={loadingUsers}
           onClose={() => setShowUsersModal(false)}
+          onRefresh={() => fetchTenantUsers(selectedTenant)}
         />
       )}
     </div>
@@ -746,11 +751,74 @@ const DeleteTenantModal: React.FC<{ tenant: Tenant; onClose: () => void; onConfi
   );
 };
 
-// Tenant Users Modal
-const TenantUsersModal: React.FC<{ tenant: Tenant; users: TenantUser[]; loading: boolean; onClose: () => void }> = ({ tenant, users, loading, onClose }) => {
+// Tenant Users Modal — create tenant admin/staff accounts and manage access
+const TenantUsersModal: React.FC<{ tenant: Tenant; users: TenantUser[]; loading: boolean; onClose: () => void; onRefresh: () => void }> = ({ tenant, users, loading, onClose, onRefresh }) => {
+  const [showCreate, setShowCreate] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [removing, setRemoving] = useState<string | null>(null);
+  const [createdCredentials, setCreatedCredentials] = useState<{ email: string; password?: string } | null>(null);
+  const [form, setForm] = useState({ name: '', email: '', username: '', password: '', role: 'admin', isSuperAdmin: false });
+  const [error, setError] = useState('');
+
+  const apiBase = getSubdomainInfo().isAdmin ? `https://admin.${window.location.hostname.split('.').slice(-2).join('.')}` : '';
+
+  const handleCreate = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setCreating(true);
+    setError('');
+    try {
+      const response = await fetch(`${apiBase}/api/admin/tenants/${tenant.id}/users/create`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          name: form.name,
+          email: form.email,
+          username: form.username || undefined,
+          password: form.password || undefined,
+          role: form.role,
+          isSuperAdmin: form.isSuperAdmin,
+          isDefault: users.length === 0,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        setError(data.error || 'Failed to create user');
+        return;
+      }
+      setCreatedCredentials({ email: data.user?.email || form.email, password: data.temporaryPassword });
+      setForm({ name: '', email: '', username: '', password: '', role: 'admin', isSuperAdmin: false });
+      setShowCreate(false);
+      onRefresh();
+    } catch {
+      setError('Failed to create user');
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const handleRemove = async (userId: string) => {
+    if (!confirm('Remove this user\'s access to the tenant? Their account is not deleted.')) return;
+    setRemoving(userId);
+    try {
+      const response = await fetch(`${apiBase}/api/admin/tenants/${tenant.id}/users/${userId}`, {
+        method: 'DELETE',
+        credentials: 'include',
+      });
+      if (response.ok) onRefresh();
+      else alert((await response.json()).error || 'Failed to remove user');
+    } catch {
+      alert('Failed to remove user');
+    } finally {
+      setRemoving(null);
+    }
+  };
+
+  const inputCls = 'w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-700 text-slate-900 dark:text-white text-sm';
+
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className="bg-white dark:bg-slate-800 rounded-lg shadow-xl max-w-2xl w-full max-h-[80vh] overflow-hidden">
+      <div className="bg-white dark:bg-slate-800 rounded-lg shadow-xl max-w-2xl w-full max-h-[85vh] overflow-hidden flex flex-col">
         <div className="px-6 py-4 border-b border-slate-200 dark:border-slate-700 flex items-center justify-between">
           <h3 className="text-lg font-semibold text-slate-900 dark:text-white">
             Users - {tenant.name}
@@ -760,7 +828,69 @@ const TenantUsersModal: React.FC<{ tenant: Tenant; users: TenantUser[]; loading:
           </button>
         </div>
 
-        <div className="p-6 overflow-y-auto max-h-[60vh]">
+        <div className="p-6 overflow-y-auto flex-1">
+          {createdCredentials && (
+            <div className="mb-4 p-4 bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-800 rounded-lg">
+              <p className="text-sm font-medium text-emerald-800 dark:text-emerald-300">User created — share these credentials once:</p>
+              <p className="text-sm text-emerald-700 dark:text-emerald-400 mt-1">Email: {createdCredentials.email}</p>
+              {createdCredentials.password && (
+                <p className="text-sm text-emerald-700 dark:text-emerald-400">Temporary password: <code className="font-mono bg-emerald-100 dark:bg-emerald-900/40 px-1 rounded">{createdCredentials.password}</code></p>
+              )}
+              <p className="text-xs text-emerald-600 dark:text-emerald-500 mt-1">They will be required to set a new password on first login at https://{tenant.code}.{BASE_DOMAIN}</p>
+              <button onClick={() => setCreatedCredentials(null)} className="mt-2 text-xs text-emerald-700 dark:text-emerald-400 underline">Dismiss</button>
+            </div>
+          )}
+
+          <div className="flex items-center justify-between mb-4">
+            <h4 className="text-sm font-semibold text-slate-700 dark:text-slate-300">Assigned Users</h4>
+            <button
+              onClick={() => setShowCreate(!showCreate)}
+              className="px-3 py-1.5 bg-indigo-600 text-white text-sm rounded-lg hover:bg-indigo-700 transition-colors flex items-center gap-1"
+            >
+              <Plus size={14} /> Add User
+            </button>
+          </div>
+
+          {showCreate && (
+            <form onSubmit={handleCreate} className="mb-6 p-4 border border-slate-200 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-900/40 space-y-3">
+              <p className="text-sm font-medium text-slate-700 dark:text-slate-300">New user for {tenant.name}</p>
+              <div className="grid grid-cols-2 gap-3">
+                <input required placeholder="Full name" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} className={inputCls} />
+                <input required type="email" placeholder="Email" value={form.email} onChange={e => setForm({ ...form, email: e.target.value })} className={inputCls} />
+                <input placeholder="Username (optional)" value={form.username} onChange={e => setForm({ ...form, username: e.target.value })} className={inputCls} />
+                <input placeholder="Password (blank = generate)" type="text" value={form.password} onChange={e => setForm({ ...form, password: e.target.value })} className={inputCls} />
+              </div>
+              <div className="flex items-center gap-4">
+                <select value={form.role} onChange={e => setForm({ ...form, role: e.target.value })} className={inputCls + ' w-auto'}>
+                  <option value="admin">Admin (full access)</option>
+                  <option value="executive">Executive</option>
+                  <option value="general_manager">General Manager</option>
+                  <option value="frontoffice">Front Office</option>
+                  <option value="housekeeping">Housekeeping</option>
+                  <option value="fb_manager">F&B Manager</option>
+                  <option value="engineering">Engineering</option>
+                  <option value="finance">Finance</option>
+                  <option value="hr">HR</option>
+                  <option value="staff">Staff</option>
+                </select>
+                <label className="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-400">
+                  <input type="checkbox" checked={form.isSuperAdmin} onChange={e => setForm({ ...form, isSuperAdmin: e.target.checked })} className="rounded" />
+                  Super admin
+                </label>
+              </div>
+              {error && <p className="text-sm text-red-600 dark:text-red-400">{error}</p>}
+              <div className="flex gap-2">
+                <button type="submit" disabled={creating} className="px-4 py-2 bg-indigo-600 text-white text-sm rounded-lg hover:bg-indigo-700 disabled:opacity-50 flex items-center gap-2">
+                  {creating ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
+                  {creating ? 'Creating…' : 'Create User'}
+                </button>
+                <button type="button" onClick={() => { setShowCreate(false); setError(''); }} className="px-4 py-2 text-sm text-slate-600 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200">
+                  Cancel
+                </button>
+              </div>
+            </form>
+          )}
+
           {loading ? (
             <div className="text-center text-slate-500 py-8">Loading users...</div>
           ) : users.length === 0 ? (
@@ -796,6 +926,14 @@ const TenantUsersModal: React.FC<{ tenant: Tenant; users: TenantUser[]; loading:
                     }`}>
                       {user.status}
                     </span>
+                    <button
+                      onClick={() => handleRemove(user.id)}
+                      disabled={removing === user.id}
+                      className="p-1.5 text-slate-400 hover:text-red-600 dark:hover:text-red-400 disabled:opacity-50"
+                      title="Remove tenant access"
+                    >
+                      {removing === user.id ? <Loader2 size={16} className="animate-spin" /> : <Trash2 size={16} />}
+                    </button>
                   </div>
                 </div>
               ))}

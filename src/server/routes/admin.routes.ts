@@ -9,6 +9,8 @@ import { hasSupabaseAdminConfig, supabaseAdmin } from '../supabaseAdmin';
 import { writeAuditEvent } from '../services/sessionService';
 import { getGlobalSettings } from '../services/settingsService';
 import { isValidTenantCode, invalidateTenantCache } from '../middleware/tenant';
+import bcrypt from 'bcryptjs';
+import crypto from 'crypto';
 
 const router = Router();
 
@@ -282,6 +284,122 @@ router.get('/tenants/:tenantId/users', authenticate, requireSuperAdmin, async (r
   } catch (error) {
     console.error('Error fetching tenant users:', error);
     res.status(500).json({ error: 'Failed to fetch users' });
+  }
+});
+
+// Create a new user account and assign it to a tenant (super-admin only).
+// Used by the Super Admin portal to give each tenant its own admin/staff
+// login. The user must change the password on first login.
+router.post('/tenants/:tenantId/users/create', authenticate, requireSuperAdmin, async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) {
+    return res.status(503).json({ error: 'Database not configured' });
+  }
+
+  const { tenantId } = req.params;
+  const { name, email, username, password, role = 'admin', isDefault = true, isSuperAdmin = false, mobileNumber, department } = req.body || {};
+
+  if (!name || !email) {
+    return res.status(400).json({ error: 'name and email are required' });
+  }
+  const normalizedEmail = String(email).trim().toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+    return res.status(400).json({ error: 'A valid email is required' });
+  }
+
+  try {
+    // Tenant must exist and be active
+    const { data: tenant, error: tenantError } = await supabaseAdmin
+      .from('tenants')
+      .select('id, code, status')
+      .eq('id', tenantId)
+      .maybeSingle();
+    if (tenantError) return res.status(500).json({ error: tenantError.message });
+    if (!tenant) return res.status(404).json({ error: 'Tenant not found' });
+    if (tenant.status !== 'Active') return res.status(400).json({ error: 'Tenant is not active' });
+
+    // Email/username must be unique across system_users
+    const { data: existing } = await supabaseAdmin
+      .from('system_users')
+      .select('id')
+      .or(`email.eq.${normalizedEmail},username.eq.${String(username || '').trim() || '∅'}`)
+      .limit(1);
+    if (existing && existing.length > 0) {
+      return res.status(409).json({ error: 'A user with this email or username already exists' });
+    }
+
+    // Generate a temporary password when none is supplied — returned once.
+    const tempPassword = password || `Tmp-${crypto.randomBytes(6).toString('base64url')}!`;
+    const passwordHash = await bcrypt.hash(tempPassword, 10);
+    const userId = crypto.randomUUID();
+
+    const { data: newUser, error: userError } = await supabaseAdmin
+      .from('system_users')
+      .insert({
+        id: userId,
+        name: String(name).trim(),
+        email: normalizedEmail,
+        username: username ? String(username).trim() : null,
+        password_hash: passwordHash,
+        role: String(role),
+        status: 'Active',
+        avatar_initials: String(name).trim().slice(0, 2).toUpperCase(),
+        mobile_number: mobileNumber || null,
+        department: department || null,
+        force_password_change: true,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      })
+      .select('id, name, email, role, status')
+      .single();
+
+    if (userError) {
+      return res.status(500).json({ error: userError.message });
+    }
+
+    // If this is the tenant's first/default user, make it the default tenant
+    // for the account and clear other defaults.
+    if (isDefault) {
+      await supabaseAdmin
+        .from('tenant_user_assignments')
+        .update({ is_default: false })
+        .eq('user_id', userId);
+    }
+
+    const { error: assignError } = await supabaseAdmin
+      .from('tenant_user_assignments')
+      .insert({
+        user_id: userId,
+        tenant_id: tenantId,
+        is_default: isDefault,
+        is_super_admin: isSuperAdmin === true,
+        created_at: new Date().toISOString(),
+      });
+
+    if (assignError) {
+      // Roll back the user so we don't leave an orphaned account.
+      await supabaseAdmin.from('system_users').delete().eq('id', userId);
+      return res.status(500).json({ error: assignError.message });
+    }
+
+    await writeAuditEvent({
+      req,
+      user: req.user,
+      action: 'tenant.user_create',
+      entityType: 'system_user',
+      entityId: userId,
+      module: 'admin',
+      details: { tenantId, tenantCode: tenant.code, email: normalizedEmail, role, isSuperAdmin: isSuperAdmin === true },
+    });
+
+    res.status(201).json({
+      user: newUser,
+      tenantId,
+      temporaryPassword: password ? undefined : tempPassword,
+      mustChangePassword: true,
+    });
+  } catch (error) {
+    console.error('Error creating tenant user:', error);
+    res.status(500).json({ error: 'Failed to create user' });
   }
 });
 
