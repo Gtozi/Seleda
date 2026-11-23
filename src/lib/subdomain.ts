@@ -3,7 +3,7 @@
  * Handles tenant-specific subdomains and admin subdomain in the browser
  */
 
-const BASE_DOMAIN = import.meta.env.VITE_BASE_DOMAIN || 'hotel.com';
+const BASE_DOMAIN = import.meta.env.VITE_BASE_DOMAIN || 'seledabet.com';
 const ADMIN_SUBDOMAIN = 'admin';
 const WWW_SUBDOMAIN = 'www';
 const IS_DEV = import.meta.env.DEV;
