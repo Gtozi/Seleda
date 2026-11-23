@@ -8,6 +8,7 @@ import { authenticate } from '../middleware/auth';
 import { hasSupabaseAdminConfig, supabaseAdmin } from '../supabaseAdmin';
 import { writeAuditEvent } from '../services/sessionService';
 import { getGlobalSettings } from '../services/settingsService';
+import { isValidTenantCode, invalidateTenantCache } from '../middleware/tenant';
 
 const router = Router();
 
@@ -54,12 +55,19 @@ router.post('/tenants', authenticate, requireSuperAdmin, async (req, res) => {
     return res.status(400).json({ error: 'Name and code are required' });
   }
 
+  const normalizedCode = String(code).toLowerCase();
+  if (!isValidTenantCode(normalizedCode)) {
+    return res.status(400).json({
+      error: 'Invalid tenant code — use lowercase letters, numbers and hyphens only (it becomes the <code>.seledabet.com subdomain); reserved names like admin/www are not allowed',
+    });
+  }
+
   try {
     const { data: tenant, error } = await supabaseAdmin
       .from('tenants')
       .insert({
         name,
-        code: code.toLowerCase(),
+        code: normalizedCode,
         legal_name: legalName || null,
         email: email || null,
         phone: phone || null,
@@ -144,11 +152,21 @@ router.patch('/tenants/:tenantId', authenticate, requireSuperAdmin, async (req, 
   }
 
   const { tenantId } = req.params;
-  const { name, legalName, email, phone, status, settings } = req.body || {};
+  const { name, code, legalName, email, phone, status, settings } = req.body || {};
+
+  if (code !== undefined) {
+    const normalizedCode = String(code).toLowerCase();
+    if (!isValidTenantCode(normalizedCode)) {
+      return res.status(400).json({
+        error: 'Invalid tenant code — use lowercase letters, numbers and hyphens only; reserved names like admin/www are not allowed',
+      });
+    }
+  }
 
   try {
     const updates: any = { updated_at: new Date().toISOString() };
     if (name !== undefined) updates.name = name;
+    if (code !== undefined) updates.code = String(code).toLowerCase();
     if (legalName !== undefined) updates.legal_name = legalName;
     if (email !== undefined) updates.email = email;
     if (phone !== undefined) updates.phone = phone;
@@ -176,6 +194,7 @@ router.patch('/tenants/:tenantId', authenticate, requireSuperAdmin, async (req, 
       details: { updates },
     });
 
+    invalidateTenantCache();
     res.json({ tenant });
   } catch (error) {
     console.error('Error updating tenant:', error);
@@ -227,6 +246,7 @@ router.delete('/tenants/:tenantId', authenticate, requireSuperAdmin, async (req,
       module: 'admin',
     });
 
+    invalidateTenantCache();
     res.json({ success: true });
   } catch (error) {
     console.error('Error deleting tenant:', error);
@@ -539,6 +559,7 @@ router.patch('/tenants/:tenantId/module-toggles', authenticate, requireSuperAdmi
       details: { moduleToggles },
     });
 
+    invalidateTenantCache();
     res.json({ tenant: updatedTenant, moduleToggles });
   } catch (error) {
     console.error('Error updating module toggles:', error);

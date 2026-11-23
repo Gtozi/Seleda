@@ -39,6 +39,12 @@ interface AdminPortalProps {
   onLogout: () => void;
 }
 
+// Base domain for tenant subdomains (admin.seledabet.com → seledabet.com)
+const BASE_DOMAIN = typeof window !== 'undefined'
+  ? window.location.hostname.split('.').slice(-2).join('.')
+  : 'seledabet.com';
+const tenantUrl = (code: string) => `https://${code}.${BASE_DOMAIN}`;
+
 export const SuperAdminPortal: React.FC<AdminPortalProps> = ({ currentUser, onLogout }) => {
   const navigate = useNavigate();
   const [tenants, setTenants] = useState<Tenant[]>([]);
@@ -357,7 +363,16 @@ const TenantsTab: React.FC<{ tenants: Tenant[]; loading: boolean; onRefresh: () 
                     </div>
                   </td>
                   <td className="px-6 py-4 text-sm text-slate-600 dark:text-slate-300 font-mono">
-                    {tenant.code}
+                    <div>{tenant.code}</div>
+                    <a
+                      href={tenantUrl(tenant.code)}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-xs text-indigo-600 dark:text-indigo-400 hover:underline"
+                      title="Open tenant portal"
+                    >
+                      {tenant.code}.{BASE_DOMAIN}
+                    </a>
                   </td>
                   <td className="px-6 py-4">
                     <span className={`px-3 py-1 rounded-full text-xs font-medium ${
@@ -497,6 +512,9 @@ const CreateTenantModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
               required
               placeholder="e.g., hotel-chain-1"
             />
+            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+              Becomes the tenant portal at https://{formData.code || 'tenant'}.{BASE_DOMAIN}
+            </p>
           </div>
 
           <div>

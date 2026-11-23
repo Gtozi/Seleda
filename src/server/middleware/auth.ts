@@ -24,11 +24,33 @@ declare global {
  * Authentication middleware - validates session and attaches user to request
  * Use this for any endpoint that requires authentication
  */
+/**
+ * When the request arrived on a tenant subdomain (<code>.seledabet.com), the
+ * subdomain is the tenant context: verify the user belongs to that tenant
+ * (super-admins bypass) and pin activeTenantId for this request so settings,
+ * toggles, and tenant-scoped queries resolve consistently.
+ */
+const applyTenantSubdomainContext = (req: Request, res: Response): boolean => {
+  const tenant = req.tenant;
+  if (!tenant || !req.user) return true;
+
+  const hasAccess = req.user.isSuperAdmin ||
+    (req.user.availableTenants || []).some(t => t.id === tenant.id || t.code === tenant.code);
+  if (!hasAccess) {
+    res.status(403).json({ error: 'No access to this tenant' });
+    return false;
+  }
+
+  req.user.activeTenantId = tenant.id;
+  return true;
+};
+
 export const authenticate = async (req: Request, res: Response, next: NextFunction) => {
   try {
     // Skip the session lookup when an upstream middleware already resolved
     // the user (e.g. router-level authenticate on portal routers).
     if (req.user) {
+      if (!applyTenantSubdomainContext(req, res)) return;
       // Set session context for RLS even if user was already set
       const token = parseCookies(req.headers.cookie)[SESSION_COOKIE];
       if (token) {
@@ -42,6 +64,7 @@ export const authenticate = async (req: Request, res: Response, next: NextFuncti
       return res.status(401).json({ error: 'Not authenticated' });
     }
     req.user = user;
+    if (!applyTenantSubdomainContext(req, res)) return;
     // Set audit context for DB triggers (Step 3.3)
     await setAuditContext(user.id);
     // Set session context for RLS policies

@@ -14,6 +14,7 @@
  */
 
 import { Router } from 'express';
+import { resolveTenant } from '../middleware/tenant';
 
 import b2bRoutes from './b2b.routes';
 import financeRoutes from './finance.routes';
@@ -177,6 +178,9 @@ import hrRoutes from './hr.routes';
 import salesRoutes from './sales.routes';
 
 const apiRouter = Router();
+
+// Resolve <tenant>.seledabet.com → tenants row (no-op on main/admin subdomains)
+apiRouter.use(resolveTenant);
 
 // ── B2B & Finance ────────────────────────────────────────────────────────
 apiRouter.use('/b2b', b2bRoutes);

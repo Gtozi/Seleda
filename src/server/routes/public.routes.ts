@@ -4,8 +4,7 @@ import { z } from 'zod';
 import { hasSupabaseAdminConfig, supabaseAdmin } from '../supabaseAdmin';
 import { getTypeAvailability, getRoomImageUrl, autoAssignRoomsForPublicBookings, writeAuditEvent } from '../services/sharedServices';
 import { computeFees, getSeasonMultiplier, getRatePlanModifier, getEffectiveNightlyRate, type FeeComponent, type SeasonRow, type RatePlanRow } from '../../utils/pricing';
-import { getGlobalSettings, getTenantModuleToggles } from '../services/settingsService';
-import { getTenantCodeFromSubdomain } from '../middleware/subdomain';
+import { getGlobalSettings } from '../services/settingsService';
 import { nextSpaId, timeToMin } from '../services/spaService';
 import { rateLimit } from '../middleware/rateLimit';
 import { getTaxRates, evaluateBusinessRules } from '../services/adminConfigService';
@@ -150,22 +149,13 @@ router.get('/settings', async (req, res) => {
   const data = await getGlobalSettings();
   if (!data) return res.json({ settings: {} });
 
-  // Tenant subdomains (<tenant>.seledabet.com) get that tenant's portal/module
-  // toggles merged over the global map.
-  const tenantCode = getTenantCodeFromSubdomain(req);
-  if (tenantCode) {
-    const { data: tenant } = await supabaseAdmin
-      .from('tenants')
-      .select('id')
-      .eq('code', tenantCode)
-      .maybeSingle();
-    if (tenant?.id) {
-      const tenantToggles = await getTenantModuleToggles(tenant.id);
-      if (tenantToggles) {
-        data.module_toggles = { ...(data.module_toggles || {}), ...tenantToggles };
-      }
-    }
-  }
+  // Tenant subdomains (<tenant>.seledabet.com): req.tenant is resolved by the
+  // resolveTenant middleware — merge that tenant's portal/module toggles over
+  // the global map and expose tenant branding.
+  const tenantToggles = req.tenant?.settings?.moduleToggles;
+  const moduleToggles = tenantToggles
+    ? { ...(data.module_toggles || {}), ...tenantToggles }
+    : (data.module_toggles || {});
 
   const feeComponents = data.fee_components || [];
   const vatFee = feeComponents.find((f: any) => f.name.toLowerCase().includes('vat') && f.isEnabled);
@@ -187,7 +177,8 @@ router.get('/settings', async (req, res) => {
       exchangeRate: data.exchange_rate || 1,
       publicBookingEnabled: data.public_booking_enabled ?? true,
       guestPortalEnabled: data.guest_portal_enabled ?? true,
-      moduleToggles: data.module_toggles || {},
+      moduleToggles,
+      tenant: req.tenant ? { id: req.tenant.id, name: req.tenant.name, code: req.tenant.code } : null,
       maintenanceMode: data.maintenance_mode ?? false,
       maintenanceMessage: data.maintenance_message || '',
       bookingTerms: data.booking_terms || '',
