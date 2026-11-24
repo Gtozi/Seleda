@@ -145,6 +145,15 @@ const PropertyManager: React.FC = () => {
 
   const toggleProperty = (p: Property) => save(`/api/admin/properties/${p.id}`, 'PATCH', { isActive: !p.is_active }, () => {});
   const toggleOrg = (o: Organization) => save(`/api/admin/organizations/${o.id}`, 'PATCH', { isActive: !o.is_active }, () => {});
+  const deleteOrg = async (o: Organization) => {
+    if (!confirm(`Delete organization "${o.org_name}"? This cannot be undone.`)) return;
+    try {
+      const res = await fetch(`/api/admin/organizations/${o.id}`, { method: 'DELETE', headers: authHeaders() });
+      const data = (res.headers.get('content-type') || '').includes('json') ? await res.json().catch(() => ({})) : {};
+      if (!res.ok) throw new Error(data.error || `Delete failed (${res.status})`);
+      await loadData();
+    } catch (err: any) { setError(err.message || 'Delete failed'); }
+  };
 
   const sumPortal = (id: string, portal: string) =>
     (footprints[id] || []).filter(f => f.portal === portal).reduce((s, f) => s + (f.count || 0), 0);
@@ -220,6 +229,9 @@ const PropertyManager: React.FC = () => {
                     <span className="text-xs text-gray-400 mr-1">{orgProperties.length} properties</span>
                     <button title="Edit" onClick={() => openOrg(org)} className="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700 text-gray-500"><Pencil size={16} /></button>
                     <button title={org.is_active ? 'Deactivate' : 'Activate'} onClick={() => toggleOrg(org)} className="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700 text-gray-500"><Power size={16} /></button>
+                    {orgProperties.length === 0 && (
+                      <button title="Delete" onClick={() => deleteOrg(org)} className="p-1.5 rounded-lg hover:bg-red-50 dark:hover:bg-red-900/20 text-red-500"><Trash2 size={16} /></button>
+                    )}
                   </div>
                 </div>
                 <h4 className="text-base font-bold text-gray-900 dark:text-white">{org.org_name} <span className="text-xs font-mono text-gray-400">{org.org_code}</span></h4>

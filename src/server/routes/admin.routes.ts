@@ -825,6 +825,24 @@ router.patch('/organizations/:id', authenticate, requireSuperAdmin, async (req, 
   res.json({ organization: data });
 });
 
+router.delete('/organizations/:id', authenticate, requireSuperAdmin, async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
+  const { id } = req.params;
+
+  const { count: propCount } = await supabaseAdmin
+    .from('properties')
+    .select('*', { count: 'exact', head: true })
+    .eq('organization_id', id);
+
+  if ((propCount || 0) > 0) {
+    return res.status(400).json({ error: 'Cannot delete organization with existing properties. Migrate properties first.' });
+  }
+
+  const { error } = await supabaseAdmin.from('organizations').delete().eq('id', id);
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ success: true });
+});
+
 const propPayload = (body: any) => {
   const out: Record<string, any> = {};
   if (body.organizationId !== undefined) out.organization_id = body.organizationId || null;
