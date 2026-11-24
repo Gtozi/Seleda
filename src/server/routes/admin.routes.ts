@@ -9,7 +9,7 @@ import { hasSupabaseAdminConfig, supabaseAdmin } from '../supabaseAdmin';
 import { writeAuditEvent } from '../services/sessionService';
 import { getGlobalSettings } from '../services/settingsService';
 import { isValidTenantCode, invalidateTenantCache } from '../middleware/tenant';
-import { invalidateTenantScopeCache } from '../services/tenantScope';
+import { invalidateTenantScopeCache, runWithTenantStore } from '../services/tenantScope';
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 
@@ -729,6 +729,146 @@ router.get('/stats', authenticate, requireSuperAdmin, async (_req, res) => {
     console.error('Error fetching platform stats:', error);
     res.status(500).json({ error: 'Failed to fetch statistics' });
   }
+});
+
+// ── Tenant & Property hierarchy ─────────────────────────────────────────
+// Powers Admin → Tenant & Property (PropertyManager / OrganizationHierarchyManager).
+// Organizations are platform-level entities; properties are tenant-scoped via
+// the ALS interceptor (insert stamps tenant_id, update/delete stay in-tenant).
+
+const FOOTPRINT_METRICS: { portal: string; metric: string; table: string }[] = [
+  { portal: 'Front Office', metric: 'Rooms', table: 'rooms' },
+  { portal: 'Front Office', metric: 'Reservations', table: 'reservations' },
+  { portal: 'Front Office', metric: 'Guests', table: 'guests' },
+  { portal: 'Front Office', metric: 'Folios', table: 'folios' },
+  { portal: 'Housekeeping', metric: 'Tasks', table: 'housekeeping_task_mgmt' },
+  { portal: 'Housekeeping', metric: 'Guest Requests', table: 'guest_requests' },
+  { portal: 'F&B', metric: 'Outlets', table: 'outlets' },
+  { portal: 'F&B', metric: 'Menu Items', table: 'menu_items' },
+  { portal: 'Spa & Wellness', metric: 'Appointments', table: 'spa_appointments' },
+  { portal: 'Engineering', metric: 'Work Requests', table: 'work_requests' },
+  { portal: 'Banquets & Events', metric: 'Events', table: 'banquet_events' },
+  { portal: 'Finance', metric: 'Journal Entries', table: 'journal_entries' },
+  { portal: 'HR', metric: 'Employees', table: 'employees' },
+  { portal: 'Inventory', metric: 'Items', table: 'inventory_items' },
+  { portal: 'Transport', metric: 'Requests', table: 'transport_requests' },
+];
+
+// Live org → property tree plus per-property row counts across every portal.
+router.get('/tenant-overview', authenticate, requireSuperAdmin, async (_req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) {
+    return res.status(503).json({ error: 'Database not configured' });
+  }
+  try {
+    const [orgsRes, propsRes] = await Promise.all([
+      supabaseAdmin.from('organizations').select('*').order('org_name'),
+      supabaseAdmin.from('properties').select('*').order('property_name'),
+    ]);
+    if (orgsRes.error) return res.status(500).json({ error: orgsRes.error.message });
+    if (propsRes.error) return res.status(500).json({ error: propsRes.error.message });
+
+    const properties = propsRes.data || [];
+
+    // Footprint counts run outside the request ALS scope: some portal tables
+    // are outlet-keyed in the interceptor, and we want raw per-property counts.
+    // The properties list itself is already tenant-filtered, so this stays
+    // correctly scoped.
+    const footprints = await runWithTenantStore(async () => {
+      const map: Record<string, any[]> = {};
+      await Promise.all(properties.map(async (p: any) => {
+        map[p.id] = await Promise.all(FOOTPRINT_METRICS.map(async (m) => {
+          const { count, error } = await supabaseAdmin!
+            .from(m.table)
+            .select('id', { count: 'exact', head: true })
+            .eq('property_id', p.id);
+          return { portal: m.portal, metric: m.metric, table: m.table, count: error ? null : (count ?? 0) };
+        }));
+      }));
+      return map;
+    });
+
+    res.json({ organizations: orgsRes.data || [], properties, footprints });
+  } catch (error) {
+    console.error('Error fetching tenant overview:', error);
+    res.status(500).json({ error: 'Failed to fetch tenant overview' });
+  }
+});
+
+const orgPayload = (body: any) => {
+  const out: Record<string, any> = {};
+  if (body.name !== undefined) out.org_name = body.name;
+  if (body.code !== undefined) out.org_code = body.code;
+  if (body.description !== undefined) out.description = body.description || null;
+  if (body.email !== undefined) out.contact_email = body.email || null;
+  if (body.phone !== undefined) out.contact_phone = body.phone || null;
+  if (body.isActive !== undefined) out.is_active = !!body.isActive;
+  if (body.billingAddress !== undefined) out.billing_address = body.billingAddress || null;
+  return out;
+};
+
+router.post('/organizations', authenticate, requireSuperAdmin, async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
+  const payload = orgPayload(req.body || {});
+  if (!payload.org_name) return res.status(400).json({ error: 'name is required' });
+  const { data, error } = await supabaseAdmin.from('organizations').insert(payload).select('*').single();
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ organization: data });
+});
+
+router.patch('/organizations/:id', authenticate, requireSuperAdmin, async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
+  const payload = orgPayload(req.body || {});
+  if (!Object.keys(payload).length) return res.status(400).json({ error: 'Nothing to update' });
+  payload.updated_at = new Date().toISOString();
+  const { data, error } = await supabaseAdmin.from('organizations').update(payload).eq('id', req.params.id).select('*').single();
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ organization: data });
+});
+
+const propPayload = (body: any) => {
+  const out: Record<string, any> = {};
+  if (body.organizationId !== undefined) out.organization_id = body.organizationId || null;
+  if (body.name !== undefined) out.property_name = body.name;
+  if (body.code !== undefined) out.property_code = body.code;
+  if (body.propertyType !== undefined) out.property_type = body.propertyType || null;
+  if (body.starRating !== undefined) out.star_rating = body.starRating ?? null;
+  if (body.timezone !== undefined) out.timezone = body.timezone || null;
+  if (body.currency !== undefined) out.currency_code = body.currency || null;
+  if (body.email !== undefined) out.contact_email = body.email || null;
+  if (body.phone !== undefined) out.contact_phone = body.phone || null;
+  if (body.isActive !== undefined) out.is_active = !!body.isActive;
+  if (body.address !== undefined && body.address && typeof body.address === 'object') out.address = body.address;
+  return out;
+};
+
+router.post('/properties', authenticate, requireSuperAdmin, async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
+  const body = req.body || {};
+  const payload = propPayload(body);
+  if (!payload.property_name) return res.status(400).json({ error: 'name is required' });
+  payload.property_code = payload.property_code || String(payload.property_name).toUpperCase().replace(/\s+/g, '-').slice(0, 12);
+  // tenant_id is stamped by the ALS interceptor for tenant-scoped requests;
+  // fall back to the request tenant / caller's active tenant otherwise.
+  if (!payload.tenant_id) payload.tenant_id = req.tenant?.id || req.user?.activeTenantId || null;
+  const { data, error } = await supabaseAdmin.from('properties').insert(payload).select('*').single();
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ property: data });
+});
+
+router.patch('/properties/:id', authenticate, requireSuperAdmin, async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
+  const body = req.body || {};
+  const payload = propPayload(body);
+  // Merge address JSONB so partial updates never clobber other keys.
+  if (payload.address) {
+    const { data: existing } = await supabaseAdmin.from('properties').select('address').eq('id', req.params.id).single();
+    payload.address = { ...(existing?.address || {}), ...payload.address };
+  }
+  if (!Object.keys(payload).length) return res.status(400).json({ error: 'Nothing to update' });
+  payload.updated_at = new Date().toISOString();
+  const { data, error } = await supabaseAdmin.from('properties').update(payload).eq('id', req.params.id).select('*').single();
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ property: data });
 });
 
 export default router;
