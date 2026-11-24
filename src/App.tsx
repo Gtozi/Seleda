@@ -29,7 +29,7 @@ import { isTabEnabledByToggles } from './config/departmentTabs';
 import { User } from './types/erp';
 import { supabase } from './lib/supabase';
 import { logout, verifySession } from './lib/auth';
-import { getSubdomainInfo, redirectToAppropriateSubdomain } from './lib/subdomain';
+import { getSubdomainInfo, redirectToAppropriateSubdomain, BASE_DOMAIN } from './lib/subdomain';
 import {
   LogOut,
   Users,
@@ -1234,15 +1234,24 @@ function MasterHotelERP() {
 }
 
 export default function App() {
+  // The apex/www host serves no application UI at all — tenant portals live
+  // on <code>.seledabet.com subdomains and platform admin on admin.*.
+  const apexHost = !import.meta.env.DEV &&
+    (window.location.hostname === BASE_DOMAIN || window.location.hostname === `www.${BASE_DOMAIN}`);
+
   return (
     <ErrorBoundary onError={(error, errorInfo) => console.error('App Error:', error, errorInfo)}>
       <AppProviders>
+        {apexHost ? (
+          <div className="min-h-screen bg-slate-950" />
+        ) : (
         <Routes>
           {/* Admin Portal - standalone route without ERP chrome */}
           <Route path="/admin" element={<AdminPortalWrapper />} />
           {/* All other routes use the main ERP layout */}
           <Route path="/*" element={<MasterHotelERP />} />
         </Routes>
+        )}
       </AppProviders>
     </ErrorBoundary>
   );
