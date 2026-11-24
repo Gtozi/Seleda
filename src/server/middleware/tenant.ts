@@ -9,9 +9,9 @@
  */
 
 import { Request, Response, NextFunction } from 'express';
-import { getTenantCodeFromSubdomain } from './subdomain';
+import { getTenantCodeFromSubdomain, BASE_DOMAIN } from './subdomain';
 import { hasSupabaseAdminConfig, supabaseAdmin } from '../supabaseAdmin';
-import { runWithTenantStore, setResolvedTenantScope } from '../services/tenantScope';
+import { runWithTenantStore, setResolvedTenantScope, getTenantStore, EMPTY_TENANT_SCOPE } from '../services/tenantScope';
 
 export interface RequestTenant {
   id: string;
@@ -92,6 +92,13 @@ export async function resolveTenant(req: Request, res: Response, next: NextFunct
       const tenantCode = getTenantCodeFromSubdomain(req);
       if (!tenantCode) {
         req.tenant = null;
+        // Apex/www host: tenant data lives only on tenant subdomains, so
+        // install an empty scope — every tenant-scoped query matches nothing.
+        const host = String(req.hostname || req.headers.host || '').split(':')[0].toLowerCase();
+        if (host === BASE_DOMAIN || host === `www.${BASE_DOMAIN}`) {
+          const store = getTenantStore();
+          if (store && !store.scope) store.scope = EMPTY_TENANT_SCOPE;
+        }
         return next();
       }
 

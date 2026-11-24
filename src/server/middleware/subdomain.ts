@@ -6,7 +6,7 @@
 import { Request, Response, NextFunction } from 'express';
 
 // Configuration
-const BASE_DOMAIN = process.env.BASE_DOMAIN || 'seledabet.com'; // e.g., 'seledabet.com'
+export const BASE_DOMAIN = process.env.BASE_DOMAIN || 'seledabet.com'; // e.g., 'seledabet.com'
 const ADMIN_SUBDOMAIN = 'admin';
 const WWW_SUBDOMAIN = 'www';
 

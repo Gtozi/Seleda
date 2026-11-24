@@ -152,10 +152,18 @@ export function redirectToAppropriateSubdomain(user: { isSuperAdmin?: boolean; a
     }
   }
   
-  // If on main domain and user is super-admin, optionally redirect to admin
-  // (This is optional - super-admins can choose to stay on main domain)
-  if (info.isMainDomain && user.isSuperAdmin) {
-    // Don't auto-redirect - let user choose
-    // window.location.href = `https://admin.${BASE_DOMAIN}`;
+  // Apex/www host holds no tenant data — send users to their tenant
+  // subdomain (super-admins to the admin subdomain).
+  if (info.isMainDomain) {
+    if (user.isSuperAdmin) {
+      window.location.href = `https://admin.${BASE_DOMAIN}`;
+      return;
+    }
+    const tenants = user.availableTenants || [];
+    const active = tenants.find(t => t.id === user.activeTenantId) || tenants[0];
+    if (active?.code) {
+      window.location.href = `https://${active.code}.${BASE_DOMAIN}`;
+      return;
+    }
   }
 }

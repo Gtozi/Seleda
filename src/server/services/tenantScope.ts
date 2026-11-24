@@ -24,6 +24,18 @@ import { isAdminSubdomain } from '../middleware/subdomain';
 
 const EMPTY_ID = '00000000-0000-0000-0000-000000000000';
 
+/**
+ * Scope installed on the apex/www host: every tenant-scoped read matches
+ * nothing and writes are left unstamped (tenant_id stays NULL or is derived
+ * from property_id by the DB backstop trigger). Tenant data only exists on
+ * tenant subdomains.
+ */
+export const EMPTY_TENANT_SCOPE: TenantScopeContext = {
+  tenantId: EMPTY_ID,
+  propertyIds: [],
+  outletIds: [],
+};
+
 // ─────────────────────────────────────────────────────────────────────────
 // Request-scoped tenant context (AsyncLocalStorage)
 //
@@ -216,7 +228,7 @@ function applyReadFilter<Q extends Filterable>(q: Q, spec: ScopeSpec, scope: Ten
 function stampPayload(payload: any, spec: ScopeSpec, scope: TenantScopeContext): any {
   if (spec !== 'tenant_id' && spec !== 'tenant_or_property' && spec !== 'tenant_id_null_ok') return payload;
   const stamp = (row: any) =>
-    row && typeof row === 'object' && !Array.isArray(row) && row.tenant_id === undefined
+    row && typeof row === 'object' && !Array.isArray(row) && row.tenant_id === undefined && scope.tenantId !== EMPTY_ID
       ? { ...row, tenant_id: scope.tenantId }
       : row;
   return Array.isArray(payload) ? payload.map(stamp) : stamp(payload);
