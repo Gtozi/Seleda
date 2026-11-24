@@ -141,9 +141,11 @@ export function redirectToAppropriateSubdomain(user: { isSuperAdmin?: boolean; a
     return;
   }
   
-  // If on tenant subdomain but user doesn't have access, redirect to main
+  // If on tenant subdomain but user doesn't have access, redirect to main.
+  // Super-admins bypass the membership check — the backend pins their data
+  // scope to the subdomain tenant anyway.
   if (info.tenantCode && user.availableTenants) {
-    const hasAccess = user.availableTenants.some(t => t.code === info.tenantCode);
+    const hasAccess = user.isSuperAdmin || user.availableTenants.some(t => t.code === info.tenantCode);
     if (!hasAccess) {
       window.location.href = `https://${BASE_DOMAIN}`;
       return;

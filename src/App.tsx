@@ -417,6 +417,17 @@ function MasterHotelERP() {
     const redirect = new URLSearchParams(location.search).get('redirect');
     if (redirect && redirect.startsWith('/') && !redirect.startsWith('//')) {
       navigate(redirect);
+    } else if (tenantCode) {
+      // On tenant subdomain - super-admins may enter any tenant (backend pins
+      // their scope to it); regular users must be assigned to this tenant.
+      const hasAccess = user.isSuperAdmin ||
+        (user.availableTenants || []).some(t => t.code === tenantCode);
+      if (!hasAccess) {
+        // Redirect to main domain if no access
+        window.location.href = `https://${window.location.hostname.split('.').slice(-2).join('.')}`;
+        return;
+      }
+      navigate(getDefaultErpPath(user));
     } else if (user.isSuperAdmin && isAdminSubdomain) {
       // Already on admin subdomain, stay there
       navigate('/admin');
@@ -424,15 +435,6 @@ function MasterHotelERP() {
       // Super-admin on main domain - redirect to admin subdomain
       const adminUrl = `https://admin.${window.location.hostname.split('.').slice(-2).join('.')}/admin`;
       window.location.href = adminUrl;
-    } else if (tenantCode && user.availableTenants) {
-      // On tenant subdomain - verify access and stay
-      const hasAccess = user.availableTenants.some(t => t.code === tenantCode);
-      if (!hasAccess) {
-        // Redirect to main domain if no access
-        window.location.href = `https://${window.location.hostname.split('.').slice(-2).join('.')}`;
-        return;
-      }
-      navigate(getDefaultErpPath(user));
     } else {
       // Main domain - navigate to default ERP path
       navigate(getDefaultErpPath(user));
@@ -1151,7 +1153,13 @@ function MasterHotelERP() {
             } />
             <Route path="*" element={<ErpIndexRedirect currentUser={currentUser} />} />
           </Route>
-          <Route path="/" element={<Navigate to="/public-portal" replace />} />
+          {/* Apex/www serve an empty page — tenant public portals live on
+              <code>.seledabet.com subdomains only. */}
+          <Route path="/" element={
+            subdomainInfo.tenantCode
+              ? <Navigate to="/public-portal" replace />
+              : <div className="min-h-screen bg-slate-950" />
+          } />
           {/* Standalone KDS Display — accessible at /kds */}
           <Route
             path="/kds"
