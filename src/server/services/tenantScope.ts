@@ -20,6 +20,7 @@
 import type { Request } from 'express';
 import { AsyncLocalStorage } from 'async_hooks';
 import { hasSupabaseAdminConfig, supabaseAdmin } from '../supabaseAdmin';
+import { isAdminSubdomain } from '../middleware/subdomain';
 
 const EMPTY_ID = '00000000-0000-0000-0000-000000000000';
 
@@ -93,14 +94,16 @@ export async function setResolvedTenantScope(tenantId: string): Promise<void> {
 /**
  * Populate the ALS scope for authenticated staff requests on non-tenant
  * hosts (main domain / admin subdomain). No-op when a scope already exists
- * (tenant subdomain). Everyone — including super-admins — is confined to
- * their active tenant here; cross-tenant visibility is only available on
- * tenant subdomains (where the URL picks the tenant) or for accounts with
- * no tenant assignment at all.
+ * (tenant subdomain). Everyone is confined to their active tenant here —
+ * EXCEPT super-admins on the admin subdomain, who operate platform-wide
+ * (tenant management, cross-tenant stats, control-plane resources).
+ * On the main domain and tenant subdomains super-admins stay confined to
+ * the resolved/active tenant.
  */
 export async function ensureStaffTenantScope(req: Request): Promise<void> {
   const store = tenantALS.getStore();
   if (!store || store.scope || !req.user) return;
+  if (req.user.isSuperAdmin && isAdminSubdomain(req)) return;
   const tenantId = req.user.activeTenantId || null;
   if (tenantId) store.scope = await buildTenantScope(tenantId);
 }
