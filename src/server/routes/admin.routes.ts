@@ -9,7 +9,7 @@ import { hasSupabaseAdminConfig, supabaseAdmin } from '../supabaseAdmin';
 import { writeAuditEvent } from '../services/sessionService';
 import { getGlobalSettings } from '../services/settingsService';
 import { isValidTenantCode, invalidateTenantCache } from '../middleware/tenant';
-import { invalidateTenantScopeCache, runWithTenantStore } from '../services/tenantScope';
+import { invalidateTenantScopeCache, runWithTenantStore, buildTenantScope, EMPTY_TENANT_SCOPE } from '../services/tenantScope';
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 
@@ -869,6 +869,111 @@ router.patch('/properties/:id', authenticate, requireSuperAdmin, async (req, res
   const { data, error } = await supabaseAdmin.from('properties').update(payload).eq('id', req.params.id).select('*').single();
   if (error) return res.status(500).json({ error: error.message });
   res.json({ property: data });
+});
+
+// ── Tenant Data Export / Import / Delete ─────────────────────────────────
+
+const TENANT_DATA_TABLES = [
+  'properties', 'rooms', 'room_types', 'rate_plans', 'packages', 'seasons',
+  'reservations', 'guests', 'folios', 'folio_lines', 'folio_payments',
+  'housekeeping_task_mgmt', 'guest_requests', 'work_requests',
+  'spa_appointments', 'fb_table_reservations', 'fb_room_service_orders',
+  'banquet_events', 'transport_requests', 'outlets', 'menu_items', 'ingredients',
+  'inventory_items', 'inventory_grns', 'inventory_stock_movements',
+  'journal_entries', 'journal_lines', 'employees',
+];
+
+// Export all data for a tenant (table-by-table JSON dump)
+router.get('/tenants/:tenantId/export', authenticate, requireSuperAdmin, async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) {
+    return res.status(503).json({ error: 'Database not configured' });
+  }
+  const { tenantId } = req.params;
+
+  try {
+    const exportData: Record<string, any[]> = {};
+    for (const table of TENANT_DATA_TABLES) {
+      const { data, error } = await supabaseAdmin
+        .from(table)
+        .select('*')
+        .eq('tenant_id', tenantId);
+      if (!error && data) exportData[table] = data;
+    }
+
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Content-Disposition', `attachment; filename=tenant-${tenantId}-${Date.now()}.json`);
+    res.json({ tenantId, exportedAt: new Date().toISOString(), tables: exportData });
+  } catch (error) {
+    console.error('Export failed:', error);
+    res.status(500).json({ error: 'Export failed' });
+  }
+});
+
+// Delete all data for a tenant (dangerous - for cleanup before import)
+router.delete('/tenants/:tenantId/data', authenticate, requireSuperAdmin, async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) {
+    return res.status(503).json({ error: 'Database not configured' });
+  }
+  const { tenantId } = req.params;
+
+  try {
+    const scope = await buildTenantScope(tenantId);
+    for (const table of TENANT_DATA_TABLES) {
+      const { error } = await supabaseAdmin
+        .from(table)
+        .delete()
+        .in('property_id', scope.propertyIds.length ? scope.propertyIds : ['00000000-0000-0000-0000-000000000000']);
+      if (error) console.error(`Failed to delete from ${table}:`, error.message);
+    }
+
+    invalidateTenantScopeCache(tenantId);
+    res.json({ success: true, message: 'Tenant data deleted (some tables may have failed - check logs)' });
+  } catch (error) {
+    console.error('Delete failed:', error);
+    res.status(500).json({ error: 'Delete failed' });
+  }
+});
+
+// Import tenant data from JSON export
+router.post('/tenants/:tenantId/import', authenticate, requireSuperAdmin, async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) {
+    return res.status(503).json({ error: 'Database not configured' });
+  }
+  const { tenantId } = req.params;
+  const { data } = req.body || {};
+
+  if (!data || typeof data !== 'object' || !data.tables) {
+    return res.status(400).json({ error: 'Invalid import data format' });
+  }
+
+  try {
+    const tables = data.tables as Record<string, any[]>;
+    let imported = 0;
+    const errors: string[] = [];
+
+    for (const [table, rows] of Object.entries(tables)) {
+      if (!Array.isArray(rows) || rows.length === 0) continue;
+      if (!TENANT_DATA_TABLES.includes(table)) {
+        errors.push(`Skipped unknown table: ${table}`);
+        continue;
+      }
+
+      const { error } = await supabaseAdmin
+        .from(table)
+        .upsert(rows.map((r: any) => ({ ...r, tenant_id: tenantId })));
+      if (error) {
+        errors.push(`${table}: ${error.message}`);
+      } else {
+        imported += rows.length;
+      }
+    }
+
+    invalidateTenantScopeCache(tenantId);
+    res.json({ success: true, imported, errors });
+  } catch (error) {
+    console.error('Import failed:', error);
+    res.status(500).json({ error: 'Import failed' });
+  }
 });
 
 export default router;

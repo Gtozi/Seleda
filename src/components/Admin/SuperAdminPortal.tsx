@@ -5,7 +5,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Building2, Users, Settings, BarChart3, Shield, LogOut, ChevronRight, ChevronDown, Plus, Edit, Trash2, X, Save, Loader2 } from 'lucide-react';
+import { Building2, Users, Settings, BarChart3, Shield, LogOut, ChevronRight, ChevronDown, Plus, Edit, Trash2, X, Save, Loader2, Download, Upload, Database } from 'lucide-react';
 import { User } from '../../types/erp';
 import { getSubdomainInfo } from '../../lib/subdomain';
 import { DEPARTMENTS } from '../../config/departments';
@@ -238,10 +238,14 @@ const TenantsTab: React.FC<{ tenants: Tenant[]; loading: boolean; onRefresh: () 
   const [showEditModal, setShowEditModal] = useState(false);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [showUsersModal, setShowUsersModal] = useState(false);
+  const [showDataModal, setShowDataModal] = useState(false);
   const [selectedTenant, setSelectedTenant] = useState<Tenant | null>(null);
   const [tenantUsers, setTenantUsers] = useState<TenantUser[]>([]);
   const [loadingUsers, setLoadingUsers] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [importFile, setImportFile] = useState<File | null>(null);
 
   const handleEdit = (tenant: Tenant) => {
     setSelectedTenant(tenant);
@@ -275,6 +279,90 @@ const TenantsTab: React.FC<{ tenants: Tenant[]; loading: boolean; onRefresh: () 
     setSelectedTenant(tenant);
     setShowUsersModal(true);
     await fetchTenantUsers(tenant);
+  };
+
+  const handleManageData = (tenant: Tenant) => {
+    setSelectedTenant(tenant);
+    setShowDataModal(true);
+  };
+
+  const handleExport = async () => {
+    if (!selectedTenant) return;
+    setExporting(true);
+    try {
+      const apiBase = getSubdomainInfo().isAdmin ? `https://admin.${window.location.hostname.split('.').slice(-2).join('.')}` : '';
+      const response = await fetch(`${apiBase}/api/admin/tenants/${selectedTenant.id}/export`, {
+        credentials: 'include',
+      });
+      if (response.ok) {
+        const blob = await response.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `tenant-${selectedTenant.code}-${Date.now()}.json`;
+        a.click();
+        URL.revokeObjectURL(url);
+      } else {
+        alert('Export failed');
+      }
+    } catch (error) {
+      console.error('Export failed:', error);
+      alert('Export failed');
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const handleDeleteData = async () => {
+    if (!selectedTenant || !confirm('DANGER: This will delete ALL data for this tenant. This cannot be undone. Continue?')) return;
+    setDeleting(true);
+    try {
+      const apiBase = getSubdomainInfo().isAdmin ? `https://admin.${window.location.hostname.split('.').slice(-2).join('.')}` : '';
+      const response = await fetch(`${apiBase}/api/admin/tenants/${selectedTenant.id}/data`, {
+        method: 'DELETE',
+        credentials: 'include',
+      });
+      if (response.ok) {
+        alert('Tenant data deleted successfully');
+      } else {
+        const data = await response.json();
+        alert(data.error || 'Delete failed');
+      }
+    } catch (error) {
+      console.error('Delete failed:', error);
+      alert('Delete failed');
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  const handleImport = async () => {
+    if (!selectedTenant || !importFile) return;
+    setImporting(true);
+    try {
+      const text = await importFile.text();
+      const data = JSON.parse(text);
+      const apiBase = getSubdomainInfo().isAdmin ? `https://admin.${window.location.hostname.split('.').slice(-2).join('.')}` : '';
+      const response = await fetch(`${apiBase}/api/admin/tenants/${selectedTenant.id}/import`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ data }),
+      });
+      if (response.ok) {
+        const result = await response.json();
+        alert(`Imported ${result.imported} rows${result.errors?.length ? `\nErrors: ${result.errors.join(', ')}` : ''}`);
+        setImportFile(null);
+      } else {
+        const err = await response.json();
+        alert(err.error || 'Import failed');
+      }
+    } catch (error) {
+      console.error('Import failed:', error);
+      alert('Import failed - invalid JSON or network error');
+    } finally {
+      setImporting(false);
+    }
   };
 
   const confirmDelete = async () => {
@@ -393,6 +481,13 @@ const TenantsTab: React.FC<{ tenants: Tenant[]; loading: boolean; onRefresh: () 
                   <td className="px-6 py-4 text-right">
                     <div className="flex items-center justify-end gap-2">
                       <button
+                        onClick={() => handleManageData(tenant)}
+                        className="p-2 text-slate-600 hover:text-emerald-600 dark:text-slate-300 dark:hover:text-emerald-400 transition-colors"
+                        title="Export/Import Data"
+                      >
+                        <Database size={16} />
+                      </button>
+                      <button
                         onClick={() => handleManageUsers(tenant)}
                         className="p-2 text-slate-600 hover:text-indigo-600 dark:text-slate-300 dark:hover:text-indigo-400 transition-colors"
                         title="Manage Users"
@@ -439,6 +534,13 @@ const TenantsTab: React.FC<{ tenants: Tenant[]; loading: boolean; onRefresh: () 
           loading={loadingUsers}
           onClose={() => setShowUsersModal(false)}
           onRefresh={() => fetchTenantUsers(selectedTenant)}
+        />
+      )}
+      {showDataModal && selectedTenant && (
+        <TenantDataModal
+          tenant={selectedTenant}
+          onClose={() => setShowDataModal(false)}
+          onRefresh={onRefresh}
         />
       )}
     </div>
@@ -1365,6 +1467,162 @@ const SettingsTab: React.FC = () => {
       <div className="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 p-8 text-center">
         <Settings className="mx-auto text-slate-400 mb-4" size={48} />
         <p className="text-slate-500 dark:text-slate-400">Platform settings coming soon</p>
+      </div>
+    </div>
+  );
+};
+
+// Tenant Data Management Modal — export, import, delete tenant data
+const TenantDataModal: React.FC<{ tenant: Tenant; onClose: () => void; onRefresh: () => void }> = ({ tenant, onClose, onRefresh }) => {
+  const [exporting, setExporting] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [importFile, setImportFile] = useState<File | null>(null);
+
+  const apiBase = getSubdomainInfo().isAdmin ? `https://admin.${window.location.hostname.split('.').slice(-2).join('.')}` : '';
+
+  const handleExport = async () => {
+    setExporting(true);
+    try {
+      const response = await fetch(`${apiBase}/api/admin/tenants/${tenant.id}/export`, { credentials: 'include' });
+      if (response.ok) {
+        const blob = await response.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `tenant-${tenant.code}-${Date.now()}.json`;
+        a.click();
+        URL.revokeObjectURL(url);
+      } else {
+        alert('Export failed');
+      }
+    } catch (error) {
+      console.error('Export failed:', error);
+      alert('Export failed');
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const handleDeleteData = async () => {
+    if (!confirm('DANGER: This will delete ALL data for this tenant. This cannot be undone. Continue?')) return;
+    setDeleting(true);
+    try {
+      const response = await fetch(`${apiBase}/api/admin/tenants/${tenant.id}/data`, {
+        method: 'DELETE',
+        credentials: 'include',
+      });
+      if (response.ok) {
+        alert('Tenant data deleted successfully');
+        onRefresh();
+      } else {
+        const data = await response.json();
+        alert(data.error || 'Delete failed');
+      }
+    } catch (error) {
+      console.error('Delete failed:', error);
+      alert('Delete failed');
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  const handleImport = async () => {
+    if (!importFile) return;
+    setImporting(true);
+    try {
+      const text = await importFile.text();
+      const data = JSON.parse(text);
+      const response = await fetch(`${apiBase}/api/admin/tenants/${tenant.id}/import`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ data }),
+      });
+      if (response.ok) {
+        const result = await response.json();
+        alert(`Imported ${result.imported} rows${result.errors?.length ? `\nErrors: ${result.errors.join(', ')}` : ''}`);
+        setImportFile(null);
+        onRefresh();
+      } else {
+        const err = await response.json();
+        alert(err.error || 'Import failed');
+      }
+    } catch (error) {
+      console.error('Import failed:', error);
+      alert('Import failed - invalid JSON or network error');
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white dark:bg-slate-800 rounded-lg shadow-xl max-w-2xl w-full">
+        <div className="px-6 py-4 border-b border-slate-200 dark:border-slate-700 flex items-center justify-between">
+          <h3 className="text-lg font-semibold text-slate-900 dark:text-white flex items-center gap-2">
+            <Database size={20} /> Data Management: {tenant.name}
+          </h3>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-300">
+            <X size={20} />
+          </button>
+        </div>
+
+        <div className="p-6 space-y-6">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <button
+              onClick={handleExport}
+              disabled={exporting}
+              className="flex flex-col items-center gap-2 p-4 border border-slate-200 dark:border-slate-700 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-700/50 transition-colors disabled:opacity-50"
+            >
+              <Download size={24} className="text-emerald-600" />
+              <span className="text-sm font-medium text-slate-900 dark:text-white">Export Data</span>
+              <span className="text-xs text-slate-500">Download full tenant backup</span>
+            </button>
+
+            <label className="flex flex-col items-center gap-2 p-4 border border-slate-200 dark:border-slate-700 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-700/50 transition-colors cursor-pointer">
+              <Upload size={24} className="text-blue-600" />
+              <span className="text-sm font-medium text-slate-900 dark:text-white">Import Data</span>
+              <span className="text-xs text-slate-500">Upload backup JSON</span>
+              <input
+                type="file"
+                accept=".json"
+                onChange={(e) => setImportFile(e.target.files?.[0] || null)}
+                className="hidden"
+              />
+              {importFile && <span className="text-xs text-blue-600 truncate max-w-full">{importFile.name}</span>}
+            </label>
+
+            <button
+              onClick={handleDeleteData}
+              disabled={deleting}
+              className="flex flex-col items-center gap-2 p-4 border border-red-200 dark:border-red-900/30 rounded-lg hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors disabled:opacity-50"
+            >
+              <Trash2 size={24} className="text-red-600" />
+              <span className="text-sm font-medium text-slate-900 dark:text-white">Delete Data</span>
+              <span className="text-xs text-slate-500">Clear all tenant data</span>
+            </button>
+          </div>
+
+          {importFile && (
+            <button
+              onClick={handleImport}
+              disabled={importing}
+              className="w-full px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+            >
+              {importing ? <Loader2 size={16} className="animate-spin" /> : 'Import Backup'}
+            </button>
+          )}
+
+          <div className="text-xs text-slate-500 dark:text-slate-400 bg-slate-50 dark:bg-slate-900/40 p-3 rounded-lg">
+            <p className="font-medium mb-1">Notes:</p>
+            <ul className="list-disc list-inside space-y-1">
+              <li>Export downloads a JSON file with all tenant data (properties, rooms, reservations, guests, etc.)</li>
+              <li>Import restores data from a backup — use Delete Data first to clear existing rows</li>
+              <li>Delete Data removes ALL tenant data — dangerous, cannot be undone</li>
+            </ul>
+          </div>
+        </div>
       </div>
     </div>
   );
