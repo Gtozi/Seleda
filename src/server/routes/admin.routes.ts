@@ -291,7 +291,7 @@ router.get('/tenants/:tenantId/users', authenticate, requireSuperAdmin, async (r
 });
 
 // Get ALL users from system_users, including those without tenant assignments (super-admin only)
-router.get('/users/all', authenticate, requireSuperAdmin, async (req, res) => {
+router.get('/users/all', authenticate, requireSuperAdmin, async (_req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) {
     return res.status(503).json({ error: 'Database not configured' });
   }
