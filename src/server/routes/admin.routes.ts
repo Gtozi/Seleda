@@ -215,23 +215,99 @@ router.delete('/tenants/:tenantId', authenticate, requireSuperAdmin, async (req,
   const { tenantId } = req.params;
 
   try {
-    // Check if tenant has any data
-    const { count: userCount } = await supabaseAdmin
-      .from('tenant_user_assignments')
-      .select('*', { count: 'exact', head: true })
-      .eq('tenant_id', tenantId);
+    // Get tenant info for audit
+    const { data: tenant } = await supabaseAdmin
+      .from('tenants')
+      .select('id, name, code')
+      .eq('id', tenantId)
+      .single();
 
-    const { count: propertyCount } = await supabaseAdmin
-      .from('properties')
-      .select('*', { count: 'exact', head: true })
-      .eq('tenant_id', tenantId);
-
-    if ((userCount || 0) > 0 || (propertyCount || 0) > 0) {
-      return res.status(400).json({ 
-        error: 'Cannot delete tenant with existing users or properties. Please migrate data first.' 
-      });
+    if (!tenant) {
+      return res.status(404).json({ error: 'Tenant not found' });
     }
 
+    // Purge all tenant data before deleting the tenant
+    // This handles junction tables without tenant_id and ensures FK constraints are satisfied
+    
+    // 1. Delete junction tables without tenant_id
+    // First get recipe IDs for this tenant
+    const { data: tenantRecipes } = await supabaseAdmin
+      .from('recipes')
+      .select('id')
+      .eq('tenant_id', tenantId);
+    
+    const recipeIds = (tenantRecipes || []).map((r: any) => r.id);
+    
+    if (recipeIds.length > 0) {
+      // Delete sub_recipe_lines that reference these recipes
+      await supabaseAdmin
+        .from('sub_recipe_lines')
+        .delete()
+        .in('sub_recipe_id', recipeIds);
+      
+      // Delete recipe_lines that reference these recipes (both as recipe_id and sub_recipe_id)
+      // We'll do two separate deletes to avoid complex OR syntax issues
+      await supabaseAdmin
+        .from('recipe_lines')
+        .delete()
+        .in('recipe_id', recipeIds);
+      
+      await supabaseAdmin
+        .from('recipe_lines')
+        .delete()
+        .in('sub_recipe_id', recipeIds);
+    }
+
+    // 2. Delete user sessions for this tenant
+    await supabaseAdmin
+      .from('user_sessions')
+      .delete()
+      .eq('active_tenant_id', tenantId);
+
+    // 3. Delete tenant user assignments
+    await supabaseAdmin
+      .from('tenant_user_assignments')
+      .delete()
+      .eq('tenant_id', tenantId);
+
+    // 4. Delete all tenant-scoped data
+    // We'll use a list of tables that have tenant_id column
+    // This is a comprehensive list - in production, you might want to query information_schema
+    const tenantScopedTables = [
+      'properties', 'rooms', 'reservations', 'guests', 'folios', 'folio_lines', 'folio_payments',
+      'journal_entries', 'journal_lines', 'chart_of_accounts', 'recipes', 'ingredients',
+      'guest_services', 'guest_faqs', 'sales_leads', 'vendors', 'outlets', 'stock_locations',
+      'audit_events', 'alert_instances', 'metric_history', 'uinv_stock_ledger', 'stock_transactions',
+      'reporting_snapshots', 'sales_contracts', 'sales_proposals', 'wastage_logs', 'menu_items',
+      'group_profiles', 'group_bookings', 'group_audit_log', 'guest_group_relationships',
+      'accounting_periods', 'airport_shuttle_requests', 'alert_rules', 'ap_bills', 'ap_payments',
+      'bank_accounts', 'bank_statement_lines', 'corporate_accounts', 'custom_roles', 'dashboard_views',
+      'depreciation_schedules', 'digital_keys', 'drill_down_links', 'employees', 'fixed_assets',
+      'forecast_entries', 'global_settings', 'guest_feedbacks', 'guest_notifications', 'guest_requests',
+      'hk_amenity_stock', 'hk_linen_stock', 'housekeeping_communication_messages',
+      'housekeeping_maintenance_issues', 'housekeeping_task_mgmt', 'inventory_grns',
+      'inventory_items', 'inventory_requisitions', 'inventory_stock_movements', 'inventory_stores',
+      'inventory_suppliers', 'lost_found', 'metric_definitions', 'mobile_check_ins', 'orders',
+      'packages', 'pm_schedules', 'rate_plans', 'reconciliation_batches', 'report_schedules',
+      'requisitions', 'seasons', 'spa_appointments', 'spare_parts', 'stock_counts',
+      'transport_requests', 'uinv_items', 'uinv_stock_balances', 'uinv_stores', 'work_orders',
+      'yield_policies', 'guest_sessions'
+    ];
+
+    // Delete from each table (ignore errors for tables that might not exist or have different schema)
+    for (const table of tenantScopedTables) {
+      try {
+        await supabaseAdmin
+          .from(table)
+          .delete()
+          .eq('tenant_id', tenantId);
+      } catch (err) {
+        // Log but continue - some tables might not exist or have different column names
+        console.warn(`Failed to delete from ${table}:`, err);
+      }
+    }
+
+    // 5. Finally delete the tenant
     const { error } = await supabaseAdmin
       .from('tenants')
       .delete()
@@ -248,6 +324,7 @@ router.delete('/tenants/:tenantId', authenticate, requireSuperAdmin, async (req,
       entityType: 'tenant',
       entityId: tenantId,
       module: 'admin',
+      details: { tenantName: tenant.name, tenantCode: tenant.code },
     });
 
     invalidateTenantCache();
