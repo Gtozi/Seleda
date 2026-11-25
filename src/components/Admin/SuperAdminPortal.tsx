@@ -5,7 +5,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Building2, Users, Settings, BarChart3, Shield, LogOut, ChevronRight, ChevronDown, Plus, Edit, Trash2, X, Save, Loader2, Download, Upload, Database } from 'lucide-react';
+import { Building2, Users, Settings, BarChart3, Shield, LogOut, ChevronRight, ChevronDown, Plus, Edit, Trash2, X, Save, Loader2, Download, Upload, Database, UserMinus } from 'lucide-react';
 import { User } from '../../types/erp';
 import { getSubdomainInfo } from '../../lib/subdomain';
 import { DEPARTMENTS } from '../../config/departments';
@@ -916,6 +916,23 @@ const TenantUsersModal: React.FC<{ tenant: Tenant; users: TenantUser[]; loading:
     }
   };
 
+  const handleDeleteUser = async (userId: string, userName: string) => {
+    if (!confirm(`Permanently delete user "${userName}"? This will remove their account from all tenants and cannot be undone.`)) return;
+    setRemoving(userId);
+    try {
+      const response = await fetch(`${apiBase}/api/admin/users/${userId}`, {
+        method: 'DELETE',
+        credentials: 'include',
+      });
+      if (response.ok) onRefresh();
+      else alert((await response.json()).error || 'Failed to delete user');
+    } catch {
+      alert('Failed to delete user');
+    } finally {
+      setRemoving(null);
+    }
+  };
+
   const inputCls = 'w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-700 text-slate-900 dark:text-white text-sm';
 
   return (
@@ -1031,8 +1048,16 @@ const TenantUsersModal: React.FC<{ tenant: Tenant; users: TenantUser[]; loading:
                     <button
                       onClick={() => handleRemove(user.id)}
                       disabled={removing === user.id}
-                      className="p-1.5 text-slate-400 hover:text-red-600 dark:hover:text-red-400 disabled:opacity-50"
+                      className="p-1.5 text-slate-400 hover:text-orange-600 dark:hover:text-orange-400 disabled:opacity-50"
                       title="Remove tenant access"
+                    >
+                      {removing === user.id ? <Loader2 size={16} className="animate-spin" /> : <UserMinus size={16} />}
+                    </button>
+                    <button
+                      onClick={() => handleDeleteUser(user.id, user.name)}
+                      disabled={removing === user.id}
+                      className="p-1.5 text-slate-400 hover:text-red-600 dark:hover:text-red-400 disabled:opacity-50"
+                      title="Delete user permanently"
                     >
                       {removing === user.id ? <Loader2 size={16} className="animate-spin" /> : <Trash2 size={16} />}
                     </button>

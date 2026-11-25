@@ -498,6 +498,54 @@ router.delete('/tenants/:tenantId/users/:userId', authenticate, requireSuperAdmi
   }
 });
 
+// Completely delete a user from system_users and all tenant assignments (super-admin only)
+router.delete('/users/:userId', authenticate, requireSuperAdmin, async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) {
+    return res.status(503).json({ error: 'Database not configured' });
+  }
+
+  const { userId } = req.params;
+
+  try {
+    // Delete all tenant assignments first
+    await supabaseAdmin
+      .from('tenant_user_assignments')
+      .delete()
+      .eq('user_id', userId);
+
+    // Delete user sessions
+    await supabaseAdmin
+      .from('user_sessions')
+      .delete()
+      .eq('user_id', userId);
+
+    // Delete the user from system_users
+    const { error } = await supabaseAdmin
+      .from('system_users')
+      .delete()
+      .eq('id', userId);
+
+    if (error) {
+      return res.status(500).json({ error: error.message });
+    }
+
+    await writeAuditEvent({
+      req,
+      user: req.user,
+      action: 'user.delete',
+      entityType: 'system_user',
+      entityId: userId,
+      module: 'admin',
+      details: { userId },
+    });
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Error deleting user:', error);
+    res.status(500).json({ error: 'Failed to delete user' });
+  }
+});
+
 // Get portal settings for a tenant (super-admin only)
 router.get('/tenants/:tenantId/portal-settings', authenticate, requireSuperAdmin, async (req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) {
