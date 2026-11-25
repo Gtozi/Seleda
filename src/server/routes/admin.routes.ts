@@ -9,7 +9,7 @@ import { hasSupabaseAdminConfig, supabaseAdmin } from '../supabaseAdmin';
 import { writeAuditEvent } from '../services/sessionService';
 import { getGlobalSettings } from '../services/settingsService';
 import { isValidTenantCode, invalidateTenantCache } from '../middleware/tenant';
-import { invalidateTenantScopeCache, runWithTenantStore, buildTenantScope, EMPTY_TENANT_SCOPE } from '../services/tenantScope';
+import { invalidateTenantScopeCache, runWithTenantStore, buildTenantScope } from '../services/tenantScope';
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 
