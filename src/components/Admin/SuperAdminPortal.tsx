@@ -1077,20 +1077,41 @@ const UsersTab: React.FC<{ tenants: Tenant[] }> = ({ tenants }) => {
   const [users, setUsers] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedTenant, setSelectedTenant] = useState<string>('all');
+  const [showOrphanedOnly, setShowOrphanedOnly] = useState(false);
+  const [deleting, setDeleting] = useState<string | null>(null);
+
+  const apiBase = getSubdomainInfo().isAdmin ? `https://admin.${window.location.hostname.split('.').slice(-2).join('.')}` : '';
+
+  const handleDeleteUser = async (userId: string, userName: string) => {
+    if (!confirm(`Permanently delete user "${userName}"? This will remove their account from all tenants and cannot be undone.`)) return;
+    setDeleting(userId);
+    try {
+      const response = await fetch(`${apiBase}/api/admin/users/${userId}`, {
+        method: 'DELETE',
+        credentials: 'include',
+      });
+      if (response.ok) {
+        setUsers(users.filter(u => u.id !== userId));
+      } else {
+        alert((await response.json()).error || 'Failed to delete user');
+      }
+    } catch {
+      alert('Failed to delete user');
+    } finally {
+      setDeleting(null);
+    }
+  };
 
   useEffect(() => {
     const fetchAllUsers = async () => {
       try {
         const apiBase = getSubdomainInfo().isAdmin ? `https://admin.${window.location.hostname.split('.').slice(-2).join('.')}` : '';
         
-        const promises = tenants.map(tenant => 
-          fetch(`${apiBase}/api/admin/tenants/${tenant.id}/users`, { credentials: 'include' })
-            .then(res => res.ok ? res.json() : { users: [] })
-            .then(data => data.users.map((user: any) => ({ ...user, tenantName: tenant.name, tenantId: tenant.id })))
-        );
-
-        const results = await Promise.all(promises);
-        setUsers(results.flat());
+        const response = await fetch(`${apiBase}/api/admin/users/all`, { credentials: 'include' });
+        if (response.ok) {
+          const data = await response.json();
+          setUsers(data.users || []);
+        }
       } catch (error) {
         console.error('Failed to fetch users:', error);
       } finally {
@@ -1098,29 +1119,43 @@ const UsersTab: React.FC<{ tenants: Tenant[] }> = ({ tenants }) => {
       }
     };
 
-    if (tenants.length > 0) {
-      fetchAllUsers();
-    }
-  }, [tenants]);
+    fetchAllUsers();
+  }, []);
 
-  const filteredUsers = selectedTenant === 'all' 
-    ? users 
-    : users.filter(u => u.tenantId === selectedTenant);
+  const filteredUsers = users.filter(user => {
+    if (showOrphanedOnly && user.hasTenant) return false;
+    if (!showOrphanedOnly && selectedTenant !== 'all') {
+      return user.tenants.some((t: any) => t.tenantId === selectedTenant);
+    }
+    if (selectedTenant !== 'all' && showOrphanedOnly) return false;
+    return true;
+  });
 
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h2 className="text-2xl font-bold text-slate-900 dark:text-white">User Management</h2>
-        <select
-          value={selectedTenant}
-          onChange={(e) => setSelectedTenant(e.target.value)}
-          className="px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-700 text-slate-900 dark:text-white"
-        >
-          <option value="all">All Tenants</option>
-          {tenants.map(tenant => (
-            <option key={tenant.id} value={tenant.id}>{tenant.name}</option>
-          ))}
-        </select>
+        <div className="flex items-center gap-4">
+          <label className="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-400">
+            <input
+              type="checkbox"
+              checked={showOrphanedOnly}
+              onChange={(e) => setShowOrphanedOnly(e.target.checked)}
+              className="rounded"
+            />
+            Show orphaned only
+          </label>
+          <select
+            value={selectedTenant}
+            onChange={(e) => setSelectedTenant(e.target.value)}
+            className="px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-700 text-slate-900 dark:text-white"
+          >
+            <option value="all">All Tenants</option>
+            {tenants.map(tenant => (
+              <option key={tenant.id} value={tenant.id}>{tenant.name}</option>
+            ))}
+          </select>
+        </div>
       </div>
 
       <div className="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700">
@@ -1142,24 +1177,27 @@ const UsersTab: React.FC<{ tenants: Tenant[] }> = ({ tenants }) => {
               <th className="px-6 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wider">
                 Flags
               </th>
+              <th className="px-6 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wider">
+                Actions
+              </th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100 dark:divide-slate-700">
             {loading ? (
               <tr>
-                <td colSpan={5} className="px-6 py-8 text-center text-slate-500">
+                <td colSpan={6} className="px-6 py-8 text-center text-slate-500">
                   Loading users...
                 </td>
               </tr>
             ) : filteredUsers.length === 0 ? (
               <tr>
-                <td colSpan={5} className="px-6 py-8 text-center text-slate-500">
+                <td colSpan={6} className="px-6 py-8 text-center text-slate-500">
                   No users found
                 </td>
               </tr>
             ) : (
               filteredUsers.map((user) => (
-                <tr key={`${user.tenantId}-${user.id}`} className="hover:bg-slate-50 dark:hover:bg-slate-700/50">
+                <tr key={user.id} className="hover:bg-slate-50 dark:hover:bg-slate-700/50">
                   <td className="px-6 py-4">
                     <div className="flex items-center gap-3">
                       <div className="w-10 h-10 rounded-full bg-indigo-100 dark:bg-indigo-900/30 flex items-center justify-center">
@@ -1168,11 +1206,24 @@ const UsersTab: React.FC<{ tenants: Tenant[] }> = ({ tenants }) => {
                       <div>
                         <p className="font-medium text-slate-900 dark:text-white">{user.name}</p>
                         <p className="text-sm text-slate-500 dark:text-slate-400">{user.email}</p>
+                        {!user.hasTenant && (
+                          <p className="text-xs text-orange-600 dark:text-orange-400">No tenant assigned</p>
+                        )}
                       </div>
                     </div>
                   </td>
                   <td className="px-6 py-4 text-sm text-slate-600 dark:text-slate-300">
-                    {user.tenantName}
+                    {user.tenants.length > 0 ? (
+                      <div className="flex flex-wrap gap-1">
+                        {user.tenants.map((t: any) => (
+                          <span key={t.tenantId} className="px-2 py-0.5 bg-slate-100 dark:bg-slate-700 rounded text-xs">
+                            {t.tenantName}
+                          </span>
+                        ))}
+                      </div>
+                    ) : (
+                      <span className="text-slate-400">—</span>
+                    )}
                   </td>
                   <td className="px-6 py-4 text-sm text-slate-600 dark:text-slate-300">
                     {user.role}
@@ -1188,17 +1239,27 @@ const UsersTab: React.FC<{ tenants: Tenant[] }> = ({ tenants }) => {
                   </td>
                   <td className="px-6 py-4">
                     <div className="flex gap-1">
-                      {user.isSuperAdmin && (
+                      {user.tenants.some((t: any) => t.isSuperAdmin) && (
                         <span className="px-2 py-1 bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400 text-xs rounded-full">
                           SA
                         </span>
                       )}
-                      {user.isDefault && (
+                      {user.tenants.some((t: any) => t.isDefault) && (
                         <span className="px-2 py-1 bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400 text-xs rounded-full">
                           Def
                         </span>
                       )}
                     </div>
+                  </td>
+                  <td className="px-6 py-4">
+                    <button
+                      onClick={() => handleDeleteUser(user.id, user.name)}
+                      disabled={deleting === user.id}
+                      className="p-1.5 text-slate-400 hover:text-red-600 dark:hover:text-red-400 disabled:opacity-50"
+                      title="Delete user permanently"
+                    >
+                      {deleting === user.id ? <Loader2 size={16} className="animate-spin" /> : <Trash2 size={16} />}
+                    </button>
                   </td>
                 </tr>
               ))

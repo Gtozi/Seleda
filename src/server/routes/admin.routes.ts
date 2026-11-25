@@ -290,6 +290,61 @@ router.get('/tenants/:tenantId/users', authenticate, requireSuperAdmin, async (r
   }
 });
 
+// Get ALL users from system_users, including those without tenant assignments (super-admin only)
+router.get('/users/all', authenticate, requireSuperAdmin, async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) {
+    return res.status(503).json({ error: 'Database not configured' });
+  }
+
+  try {
+    // Get all users
+    const { data: allUsers, error: usersError } = await supabaseAdmin
+      .from('system_users')
+      .select('id, name, email, username, role, status, created_at')
+      .order('created_at', { ascending: false });
+
+    if (usersError) {
+      return res.status(500).json({ error: usersError.message });
+    }
+
+    // Get all tenant assignments
+    const { data: assignments, error: assignError } = await supabaseAdmin
+      .from('tenant_user_assignments')
+      .select('user_id, tenant_id, is_default, is_super_admin, tenants (id, name, code)');
+
+    if (assignError) {
+      return res.status(500).json({ error: assignError.message });
+    }
+
+    // Map assignments by user_id
+    const assignmentsByUser = new Map<string, any[]>();
+    (assignments || []).forEach((a: any) => {
+      if (!assignmentsByUser.has(a.user_id)) {
+        assignmentsByUser.set(a.user_id, []);
+      }
+      assignmentsByUser.get(a.user_id)!.push({
+        tenantId: a.tenant_id,
+        tenantName: a.tenants?.name,
+        tenantCode: a.tenants?.code,
+        isDefault: a.is_default,
+        isSuperAdmin: a.is_super_admin,
+      });
+    });
+
+    // Combine users with their tenant assignments
+    const usersWithTenants = (allUsers || []).map((user: any) => ({
+      ...user,
+      tenants: assignmentsByUser.get(user.id) || [],
+      hasTenant: (assignmentsByUser.get(user.id) || []).length > 0,
+    }));
+
+    res.json({ users: usersWithTenants });
+  } catch (error) {
+    console.error('Error fetching all users:', error);
+    res.status(500).json({ error: 'Failed to fetch users' });
+  }
+});
+
 // Create a new user account and assign it to a tenant (super-admin only).
 // Used by the Super Admin portal to give each tenant its own admin/staff
 // login. The user must change the password on first login.
