@@ -13,3 +13,10 @@ tsc-out.txt
 .env
 .env.local
 .env.*.local
+*.pem
+
+# Local tooling & artifacts
+.agents/
+.aider-desk/
+nul
+

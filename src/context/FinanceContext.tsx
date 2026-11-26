@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { createContext, useContext, useState, useCallback, useEffect } from 'react';
+import React, { createContext, useContext, useState, useCallback, useEffect, useRef } from 'react';
 import { ERPStats } from '../types/erp';
 import { JournalEntry, GlobalSaleTransaction, ChartOfAccount, ExpenseRequest } from '../types/finance';
 import { initialSalesTransactions, initialExpenseRequests } from './initialState';
@@ -71,6 +71,7 @@ export const useFinance = () => {
 async function fetchJournalsUnified(): Promise<JournalEntry[]> {
   const token = localStorage.getItem('auth_token');
   const res = await fetch('/api/fin-portal/journals', {
+    credentials: 'include',
     headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
   });
   if (!res.ok) return [];
@@ -98,6 +99,7 @@ async function postJournalToApi(entry: Omit<JournalEntry, 'id'>): Promise<string
   try {
     const res = await fetch('/api/fin-portal/journals', {
       method: 'POST',
+      credentials: 'include',
       headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
       body: JSON.stringify({
         date: entry.date,
@@ -121,7 +123,12 @@ async function postJournalToApi(entry: Omit<JournalEntry, 'id'>): Promise<string
   }
 }
 
-export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+export const FinanceProvider: React.FC<{ enabled?: boolean; children: React.ReactNode }> = ({
+  enabled = true,
+  children,
+}) => {
+  const enabledRef = useRef(enabled);
+  enabledRef.current = enabled;
   const { currentSystemDate, addNotification, logAudit } = useSystem();
   const { rooms, reservations } = useReservation();
 
@@ -183,7 +190,7 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
   }, [calculateFinanceStats]);
 
   const refreshData = useCallback(async () => {
-    if (!hasSupabaseConfig) {
+    if (!enabledRef.current || !hasSupabaseConfig) {
       calculateFinanceStats();
       return;
     }
@@ -200,12 +207,12 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
     calculateFinanceStats();
   }, [calculateFinanceStats]);
 
-  // Load data on mount when Supabase is configured
+  // Load data when ERP session is authenticated and Supabase is configured
   useEffect(() => {
-    if (hasSupabaseConfig) {
+    if (enabled && hasSupabaseConfig) {
       refreshData();
     }
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [enabled]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const addJournalEntry = useCallback((entry: Omit<JournalEntry, 'id'>): string => {
     // When API is available, post to the backend (fire-and-forget — the

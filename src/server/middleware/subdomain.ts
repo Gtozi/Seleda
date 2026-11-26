@@ -4,48 +4,19 @@
  */
 
 import { Request, Response, NextFunction } from 'express';
+import { ADMIN_SUBDOMAIN, parseSubdomainFromHost } from '../../lib/subdomainParser';
 
 // Configuration
 export const BASE_DOMAIN = process.env.BASE_DOMAIN || 'seledabet.com'; // e.g., 'seledabet.com'
-const ADMIN_SUBDOMAIN = 'admin';
-const WWW_SUBDOMAIN = 'www';
 
 /**
  * Extract subdomain from request
- * Supports: admin.hotel.com, tenant1.hotel.com, localhost:3000 (dev)
+ * Supports: admin.seledabet.com, tenant1.seledabet.com, localhost:3000 (dev)
  */
 export function getSubdomain(req: Request): string | null {
-  const host = req.headers.host || req.hostname || '';
-  
-  // For localhost development, check for subdomain in host header
-  if (host.includes('localhost') || host.includes('127.0.0.1')) {
-    // In dev, you can use ?subdomain=tenant1 or headers
-    const subdomainParam = req.query.subdomain as string;
-    if (subdomainParam) return subdomainParam;
-    
-    // Or check for subdomain in host like tenant1.localhost:3000
-    const parts = host.split('.');
-    if (parts.length > 1 && parts[0] !== 'localhost') {
-      return parts[0];
-    }
-    return null;
-  }
-  
-  // Production: extract subdomain from hostname
-  const hostname = host.split(':')[0]; // Remove port
-  const parts = hostname.split('.');
-  
-  // Check if it's a subdomain of our base domain
-  if (parts.length >= 3 && parts[parts.length - 2] === BASE_DOMAIN.split('.')[0]) {
-    const subdomain = parts[0];
-    
-    // Ignore www subdomain
-    if (subdomain === WWW_SUBDOMAIN) return null;
-    
-    return subdomain;
-  }
-  
-  return null;
+  const host = String(req.headers.host || req.hostname || '');
+  const querySubdomain = typeof req.query.subdomain === 'string' ? req.query.subdomain : null;
+  return parseSubdomainFromHost(host, BASE_DOMAIN, querySubdomain);
 }
 
 /**
@@ -69,21 +40,16 @@ export function getTenantCodeFromSubdomain(req: Request): string | null {
 /**
  * Middleware to set tenant context based on subdomain
  */
-export function tenantSubdomainMiddleware(req: Request, res: Response, next: NextFunction) {
+export function tenantSubdomainMiddleware(req: Request, _res: Response, next: NextFunction) {
   const subdomain = getSubdomain(req);
   const isAdmin = isAdminSubdomain(req);
   const tenantCode = getTenantCodeFromSubdomain(req);
-  
+
   // Attach subdomain info to request
   (req as any).subdomain = subdomain;
   (req as any).isAdminSubdomain = isAdmin;
   (req as any).tenantCode = tenantCode;
-  
-  // For admin subdomain, ensure user has super-admin access
-  if (isAdmin && req.user && !req.user.isSuperAdmin) {
-    return res.status(403).json({ error: 'Admin access requires super-admin privileges' });
-  }
-  
+
   next();
 }
 

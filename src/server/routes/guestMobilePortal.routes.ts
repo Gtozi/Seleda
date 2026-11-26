@@ -41,6 +41,8 @@ import {
 } from '../services/conciergeSettings';
 import { canAccommodateBookings } from '../services/fbTableAllocation';
 import { ensureStaffTenantScope } from '../services/tenantScope';
+import { getGlobalSettings } from '../services/settingsService';
+import { resolveTenantPortalFlags } from '../services/sharedServices';
 
 const router = Router();
 
@@ -122,6 +124,11 @@ async function authenticateGuestOrStaff(req: any, res: any, next: any) {
       return next();
     }
 
+    const portalFlags = resolveTenantPortalFlags(await getGlobalSettings(), req.tenant?.settings);
+    if (!portalFlags.guestPortalEnabled) {
+      return res.status(503).json({ error: 'Guest portal is currently disabled' });
+    }
+
     // Logged-in guest (guest_sessions). A guest who has not yet completed the
     // forced first-login password change may only reach /auth/* endpoints.
     const guestSession = await resolveGuestSession(req);
@@ -184,6 +191,10 @@ const guestLoginLimiter = rateLimit({ windowMs: 10 * 60 * 1000, max: 10 });
 
 router.post('/auth/login', guestLoginLimiter, async (req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) return dbNotConfigured(res);
+  const portalFlags = resolveTenantPortalFlags(await getGlobalSettings(), req.tenant?.settings);
+  if (!portalFlags.guestPortalEnabled) {
+    return res.status(503).json({ error: 'Guest portal is currently disabled' });
+  }
   const name = String(req.body?.name || req.body?.username || '').trim();
   const password = String(req.body?.password || '');
   if (!name || !password) {

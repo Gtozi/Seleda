@@ -26,6 +26,7 @@ import { getGlobalSettings } from './settingsService';
 import { resolvePolicy, type PasswordPolicy } from '../../lib/passwordPolicy';
 import { encrypt, maskApiKey, isEncrypted, decryptIfEncrypted } from '../../lib/crypto';
 import { enrichUserWithDerivedPermissions as enrichUserShared } from './sharedServices';
+import { isAdminSubdomain } from '../middleware/subdomain';
 
 // ─── Constants ───────────────────────────────────────────────────────────
 
@@ -396,6 +397,10 @@ export async function authenticateUser(
   if (IS_FALLBACK_MODE) {
     const fallbackUser = FALLBACK_USERS.find(u => u.email === email);
     if (fallbackUser && password === FALLBACK_PASSWORD) {
+      if (isAdminSubdomain(req) && !fallbackUser.isSuperAdmin && fallbackUser.role !== 'admin') {
+        await writeAuditEvent({ req, user: fallbackUser, action: 'login.admin_denied', outcome: 'denied', module: 'auth', details: { email, mode: 'development-fallback' } });
+        return { status: 403, error: 'Super admin access required to sign in on admin portal' };
+      }
       await writeAuditEvent({ req, user: fallbackUser, action: 'login.success', module: 'auth', details: { mode: 'development-fallback' } });
       return { status: 200, user: fallbackUser, forcePasswordChange: false };
     }
@@ -488,6 +493,12 @@ export async function authenticateUser(
   user.isSuperAdmin = tenantAssignments.some(t => t.isSuperAdmin);
   const defaultTenant = tenantAssignments.find(t => t.isDefault);
   user.activeTenantId = defaultTenant?.tenantId || tenantAssignments[0]?.tenantId;
+
+  // Reject non-super-admins trying to sign in on the admin subdomain
+  if (isAdminSubdomain(req) && !user.isSuperAdmin) {
+    await writeAuditEvent({ req, user, action: 'login.admin_denied', outcome: 'denied', module: 'auth', details: { email } });
+    return { status: 403, error: 'Super admin access required to sign in on admin portal' };
+  }
 
   // Tenant subdomain (<code>.seledabet.com): the subdomain is the tenant
   // context. Non-super-admins must belong to that tenant; everyone who logs

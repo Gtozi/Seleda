@@ -3,9 +3,9 @@
  * Handles tenant-specific subdomains and admin subdomain in the browser
  */
 
+import { ADMIN_SUBDOMAIN, isLocalDevHostname, parseSubdomainFromHost } from './subdomainParser';
+
 export const BASE_DOMAIN = import.meta.env.VITE_BASE_DOMAIN || 'seledabet.com';
-const ADMIN_SUBDOMAIN = 'admin';
-const WWW_SUBDOMAIN = 'www';
 const IS_DEV = import.meta.env.DEV;
 
 export interface SubdomainInfo {
@@ -19,36 +19,14 @@ export interface SubdomainInfo {
  * Get subdomain information from current URL
  */
 export function getSubdomainInfo(): SubdomainInfo {
-  const hostname = window.location.hostname;
-  const host = window.location.host;
-  
-  // For localhost development
-  if (hostname.includes('localhost') || hostname.includes('127.0.0.1')) {
-    // Check for subdomain in URL params or path
-    const urlParams = new URLSearchParams(window.location.search);
-    const subdomainParam = urlParams.get('subdomain');
-    
-    if (subdomainParam) {
-      return {
-        subdomain: subdomainParam,
-        isAdmin: subdomainParam === ADMIN_SUBDOMAIN,
-        tenantCode: subdomainParam === ADMIN_SUBDOMAIN ? null : subdomainParam,
-        isMainDomain: false,
-      };
-    }
-    
-    // Check for subdomain in host like tenant1.localhost:3000
-    const parts = host.split('.');
-    if (parts.length > 1 && parts[0] !== 'localhost') {
-      const subdomain = parts[0];
-      return {
-        subdomain,
-        isAdmin: subdomain === ADMIN_SUBDOMAIN,
-        tenantCode: subdomain === ADMIN_SUBDOMAIN ? null : subdomain,
-        isMainDomain: false,
-      };
-    }
-    
+  const urlParams = new URLSearchParams(window.location.search);
+  const subdomain = parseSubdomainFromHost(
+    window.location.host,
+    BASE_DOMAIN,
+    urlParams.get('subdomain')
+  );
+
+  if (!subdomain) {
     return {
       subdomain: null,
       isAdmin: false,
@@ -56,38 +34,13 @@ export function getSubdomainInfo(): SubdomainInfo {
       isMainDomain: true,
     };
   }
-  
-  // Production: extract subdomain from hostname
-  const parts = hostname.split('.');
-  
-  // Check if it's a subdomain of our base domain
-  if (parts.length >= 3 && parts[parts.length - 2] === BASE_DOMAIN.split('.')[0]) {
-    const subdomain = parts[0];
-    
-    // Ignore www subdomain
-    if (subdomain === WWW_SUBDOMAIN) {
-      return {
-        subdomain: null,
-        isAdmin: false,
-        tenantCode: null,
-        isMainDomain: true,
-      };
-    }
-    
-    return {
-      subdomain,
-      isAdmin: subdomain === ADMIN_SUBDOMAIN,
-      tenantCode: subdomain === ADMIN_SUBDOMAIN ? null : subdomain,
-      isMainDomain: false,
-    };
-  }
-  
-  // Main domain or unknown domain
+
+  const isAdmin = subdomain === ADMIN_SUBDOMAIN;
   return {
-    subdomain: null,
-    isAdmin: false,
-    tenantCode: null,
-    isMainDomain: true,
+    subdomain,
+    isAdmin,
+    tenantCode: isAdmin ? null : subdomain,
+    isMainDomain: false,
   };
 }
 
@@ -113,7 +66,7 @@ export function getApiBaseUrl(): string {
   const info = getSubdomainInfo();
 
   // Development: use same origin (localhost:3000)
-  if (IS_DEV || window.location.hostname.includes('localhost') || window.location.hostname.includes('127.0.0.1')) {
+  if (IS_DEV || isLocalDevHostname(window.location.hostname)) {
     return window.location.origin;
   }
 

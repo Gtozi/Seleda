@@ -35,7 +35,11 @@ WHERE t.table_schema = 'public'
   )
   -- Exclude system/junction patterns
   AND t.table_name !~ '^(pg_|information_schema|_prisma|drizzle_|knex_|typeorm_|sequelize_|migration|seed_|fixture_|test_|spec_|__|audit_log_system|system_)'
-  AND t.table_name !~ '_junction$|_link$|_map$|_assoc$|_pivot$'
+  AND t.table_name !~ '_junction$'
+  AND t.table_name !~ '_link$'
+  AND t.table_name !~ '_map$'
+  AND t.table_name !~ '_assoc$'
+  AND t.table_name !~ '_pivot$'
 ORDER BY t.table_name;
 
 -- Junction tables (may need tenant_id or reference via parent)
@@ -54,7 +58,23 @@ WHERE t.table_schema = 'public'
       AND c.table_name = t.table_name
       AND c.column_name = 'tenant_id'
   )
-  AND t.table_name ~ '(_junction|_link|_map|_assoc|_pivot|_line|_detail|_item|_entry|_record|_log|_history|_audit|_event|_activity|_action|_operation|_process|_procedure|_workflow|_rule|_validation|_constraint|_trigger|_function|_package|_schema|_database|_table|_view|_index|_sequence|_type|_domain|_enum|_composite|_array|_range|_interval|_timestamp|_date|_time|_datetime|_json|_jsonb|_xml|_text|_varchar|_char|_integer|_bigint|_smallint|_numeric|_decimal|_real|_double|_precision|_boolean|_bit|_serial|_bigserial|_uuid|_inet|_cidr|_macaddr|_point|_line|_lseg|_box|_path|_polygon|_circle|_money)$'
+  AND (
+    t.table_name LIKE '%_junction' OR
+    t.table_name LIKE '%_link' OR
+    t.table_name LIKE '%_map' OR
+    t.table_name LIKE '%_assoc' OR
+    t.table_name LIKE '%_pivot' OR
+    t.table_name LIKE '%_line' OR
+    t.table_name LIKE '%_detail' OR
+    t.table_name LIKE '%_item' OR
+    t.table_name LIKE '%_entry' OR
+    t.table_name LIKE '%_record' OR
+    t.table_name LIKE '%_log' OR
+    t.table_name LIKE '%_history' OR
+    t.table_name LIKE '%_audit' OR
+    t.table_name LIKE '%_event' OR
+    t.table_name LIKE '%_activity'
+  )
 ORDER BY t.table_name;
 
 -- System tables (don't need tenant_id)
@@ -74,8 +94,22 @@ WHERE t.table_schema = 'public'
       AND c.column_name = 'tenant_id'
   )
   AND (
-    t.table_name ~ '^(pg_|information_schema|_prisma|drizzle_|knex_|typeorm_|sequelize_|migration|seed_|fixture_|test_|spec_|__|audit_log_system|system_)'
-    OR t.table_name ~ '(migration|schema_migrations|knex_migrations|typeorm_migrations|sequelize_meta|drizzle_migrations|prisma_migrations)'
+    t.table_name LIKE 'pg_%' OR
+    t.table_name LIKE 'information_schema%' OR
+    t.table_name LIKE '_prisma%' OR
+    t.table_name LIKE 'drizzle_%' OR
+    t.table_name LIKE 'knex_%' OR
+    t.table_name LIKE 'typeorm_%' OR
+    t.table_name LIKE 'sequelize_%' OR
+    t.table_name LIKE 'migration%' OR
+    t.table_name LIKE 'seed_%' OR
+    t.table_name LIKE 'fixture_%' OR
+    t.table_name LIKE 'test_%' OR
+    t.table_name LIKE 'spec_%' OR
+    t.table_name LIKE '__%' OR
+    t.table_name LIKE 'audit_log_system%' OR
+    t.table_name LIKE 'system_%' OR
+    t.table_name LIKE '%_migrations'
   )
 ORDER BY t.table_name;
 

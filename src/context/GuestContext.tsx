@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { createContext, useContext, useState, useCallback } from 'react';
+import React, { createContext, useContext, useState, useCallback, useRef } from 'react';
 import { Guest, GuestGroupRelationship, GuestGroupSummary, GuestCommunication } from '../types/erp';
 import { initialGuests } from './initialState';
 import { useSystem } from './SystemContext';
@@ -75,19 +75,27 @@ export const useGuest = () => {
   return context;
 };
 
-export const GuestProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+export const GuestProvider: React.FC<{ enabled?: boolean; children: React.ReactNode }> = ({
+  enabled = true,
+  children,
+}) => {
+  const enabledRef = useRef(enabled);
+  enabledRef.current = enabled;
   const { logAudit, addNotification } = useSystem();
   const [guests, setGuests] = useState<Guest[]>(initialGuests);
-  // Start in loading state when Supabase is configured — the mount effect will fetch,
+  // Start in loading state when enabled & Supabase is configured — the mount effect will fetch,
   // so the UI shows "Loading..." immediately instead of flashing "No guests" first.
-  const [guestsLoading, setGuestsLoading] = useState<boolean>(supabaseService.isConfigured());
+  const [guestsLoading, setGuestsLoading] = useState<boolean>(enabled && supabaseService.isConfigured());
   const [guestsError, setGuestsError] = useState<string | null>(null);
   const [guestFeedbacks, setGuestFeedbacks] = useState<any[]>([]);
   const [guestGroupRelationships, setGuestGroupRelationships] = useState<GuestGroupRelationship[]>([]);
   const [guestCommunications, setGuestCommunications] = useState<GuestCommunication[]>([]);
 
   const refreshData = useCallback(async () => {
-    if (!supabaseService.isConfigured()) return;
+    if (!enabledRef.current || !supabaseService.isConfigured()) {
+      setGuestsLoading(false);
+      return;
+    }
     setGuestsLoading(true);
     setGuestsError(null);
     try {
@@ -102,8 +110,12 @@ export const GuestProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   }, []);
 
   React.useEffect(() => {
+    if (!enabled) {
+      setGuestsLoading(false);
+      return;
+    }
     refreshData();
-  }, [refreshData]);
+  }, [enabled, refreshData]);
 
   const addGuest = useCallback((guestData: Omit<Guest, 'id'>): string => {
     // Deduplication: prevent creating duplicate profiles

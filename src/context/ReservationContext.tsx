@@ -82,7 +82,12 @@ export const useReservation = () => {
   return context;
 };
 
-export const ReservationProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+export const ReservationProvider: React.FC<{ enabled?: boolean; children: React.ReactNode }> = ({
+  enabled = true,
+  children,
+}) => {
+  const enabledRef = useRef(enabled);
+  enabledRef.current = enabled;
   const { logAudit, addNotification, addDispatchedEmail, globalHotelSettings, currentPropertyId } = useSystem();
   const { addGuest, guests, setGuests } = useGuest();
 
@@ -96,7 +101,7 @@ export const ReservationProvider: React.FC<{ children: React.ReactNode }> = ({ c
   const [packages, setPackages] = useState<Package[]>(initialPackages);
 
   const refreshData = useCallback(async () => {
-    if (!supabaseService.isConfigured()) return;
+    if (!enabledRef.current || !supabaseService.isConfigured()) return;
     try {
       const [
         fetchedRooms,
@@ -128,8 +133,9 @@ export const ReservationProvider: React.FC<{ children: React.ReactNode }> = ({ c
   }, [currentPropertyId]);
 
   React.useEffect(() => {
+    if (!enabled) return;
     refreshData();
-  }, [refreshData]);
+  }, [enabled, refreshData]);
 
   // ── Delta-based realtime subscriptions ─────────────────────────────────────
   // Instead of refetching entire tables on every postgres_changes event,
@@ -147,7 +153,7 @@ export const ReservationProvider: React.FC<{ children: React.ReactNode }> = ({ c
   }, [refreshData]);
 
   React.useEffect(() => {
-    if (!hasSupabaseConfig) return;
+    if (!enabled || !hasSupabaseConfig) return;
 
     let isCancelled = false;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -250,10 +256,11 @@ export const ReservationProvider: React.FC<{ children: React.ReactNode }> = ({ c
         try { supabase.removeChannel(channel); } catch (e) { /* HMR race — ignore */ }
       }
     };
-  }, [scheduleFallbackRefresh]);
+  }, [enabled, scheduleFallbackRefresh]);
 
   // BroadcastChannel listener for cross-tab booking notifications
   React.useEffect(() => {
+    if (!enabled) return;
     let broadcastChannel: BroadcastChannel | null = null;
     try {
       broadcastChannel = new BroadcastChannel('seleda-booking-updates');
@@ -273,7 +280,7 @@ export const ReservationProvider: React.FC<{ children: React.ReactNode }> = ({ c
         broadcastChannel.close();
       }
     };
-  }, [refreshData]);
+  }, [enabled, refreshData]);
 
   const addReservation = useCallback(async (resData: Omit<Reservation, 'id'>): Promise<string> => {
     const newId = `R-${Math.floor(1000 + Math.random() * 9000)}`;

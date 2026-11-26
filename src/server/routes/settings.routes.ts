@@ -2,23 +2,37 @@ import { Router } from 'express';
 import crypto from 'crypto';
 import { authenticate } from '../middleware/auth';
 import { hasSupabaseAdminConfig, supabaseAdmin } from '../supabaseAdmin';
-import { getGlobalSettings, getTenantModuleToggles } from '../services/settingsService';
+import { getGlobalSettings } from '../services/settingsService';
 import { processApiIntegrationsOnRead } from '../services/sessionService';
+import { resolveTenantPortalFlags } from '../services/sharedServices';
 
 const router = Router();
 
 // Single settings read endpoint with a lightweight checksum for stale-context detection
 router.get('/', authenticate, async (req, res) => {
   if (hasSupabaseAdminConfig && supabaseAdmin) {
-    const data = await getGlobalSettings();
-    if (!data) return res.json({ settings: null, checksum: null });
+    const rawData = await getGlobalSettings();
+    if (!rawData) return res.json({ settings: null, checksum: null });
 
-    // Merge per-tenant portal/module toggles over the global map so
-    // super-admin portal management is enforced for the active tenant.
-    const tenantToggles = await getTenantModuleToggles(req.user?.activeTenantId || '');
-    if (tenantToggles) {
-      data.module_toggles = { ...(data.module_toggles || {}), ...tenantToggles };
+    // Shallow-clone the cached global_settings row so per-tenant toggle merging
+    // and API key masking never mutate the in-memory cache across requests.
+    const data: Record<string, any> = { ...rawData };
+
+    const activeTenantId = req.user?.activeTenantId || req.tenant?.id;
+    let tenantSettings: Record<string, any> | null = req.tenant?.settings || null;
+    if (activeTenantId && (!req.tenant || req.tenant.id !== activeTenantId)) {
+      const { data: tenantRow } = await supabaseAdmin
+        .from('tenants')
+        .select('settings')
+        .eq('id', activeTenantId)
+        .maybeSingle();
+      tenantSettings = tenantRow?.settings || null;
     }
+
+    const flags = resolveTenantPortalFlags(rawData, tenantSettings);
+    data.module_toggles = flags.effectiveModuleToggles;
+    data.public_booking_enabled = flags.publicBookingEnabled;
+    data.guest_portal_enabled = flags.guestPortalEnabled;
 
     // Mask API keys on read — use encrypted_api_integrations if available, fall back to api_integrations
     const encryptedIntegrations = data.encrypted_api_integrations || data.api_integrations;

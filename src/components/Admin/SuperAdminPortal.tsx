@@ -3,15 +3,45 @@
  * Dedicated portal for super-admins to manage tenants and users across the platform
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Building2, Users, Settings, BarChart3, Shield, LogOut, ChevronRight, ChevronDown, Plus, Edit, Trash2, X, Save, Loader2, Download, Upload, Database, UserMinus } from 'lucide-react';
+import { Building2, Users, Settings, BarChart3, Shield, LogOut, ChevronRight, ChevronDown, Plus, Edit, Trash2, X, Save, Loader2, Download, Upload, Database, UserMinus, UserPlus, Unlock, Globe, RotateCcw } from 'lucide-react';
 import { User } from '../../types/erp';
-import { getSubdomainInfo } from '../../lib/subdomain';
+import { BASE_DOMAIN, getApiBaseUrl } from '../../lib/subdomain';
 import { DEPARTMENTS } from '../../config/departments';
 import { getTabsForDepartment } from '../../config/departmentTabs';
 import { CORE_ADMIN_MODULES } from './adminModules';
 import { PUBLIC_PORTAL_MODULES, GUEST_PORTAL_MODULES } from '../../config/portalModules';
+
+const ROLE_OPTIONS: readonly { value: string; label: string }[] = [
+  { value: 'admin', label: 'Admin (full access)' },
+  { value: 'executive', label: 'Executive' },
+  { value: 'general_manager', label: 'General Manager' },
+  { value: 'frontoffice', label: 'Front Office' },
+  { value: 'front office manager', label: 'Front Office Manager' },
+  { value: 'housekeeping', label: 'Housekeeping' },
+  { value: 'fb_manager', label: 'F&B Manager' },
+  { value: 'engineering', label: 'Engineering' },
+  { value: 'finance', label: 'Finance' },
+  { value: 'hr', label: 'HR' },
+  { value: 'staff', label: 'Staff' },
+];
+
+const USER_STATUS_OPTIONS = ['Active', 'Pending', 'Inactive', 'Suspended', 'Locked'] as const;
+
+const statusBadgeCls = (status: string) => {
+  switch (status) {
+    case 'Active':
+      return 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400';
+    case 'Locked':
+    case 'Suspended':
+      return 'bg-rose-100 text-rose-700 dark:bg-rose-900/30 dark:text-rose-400';
+    case 'Pending':
+      return 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400';
+    default:
+      return 'bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-300';
+  }
+};
 
 interface Tenant {
   id: string;
@@ -34,20 +64,38 @@ interface TenantUser {
   isSuperAdmin: boolean;
 }
 
+interface PlatformStats {
+  totalTenants: number;
+  activeTenants: number;
+  totalUsers: number;
+  totalProperties: number;
+}
+
+interface PlatformHealth {
+  status: string;
+  authStore?: string;
+}
+
 interface AdminPortalProps {
   currentUser: User;
   onLogout: () => void;
 }
 
-// Base domain for tenant subdomains (admin.seledabet.com → seledabet.com)
-const BASE_DOMAIN = typeof window !== 'undefined'
-  ? window.location.hostname.split('.').slice(-2).join('.')
-  : 'seledabet.com';
-const tenantUrl = (code: string) => `https://${code}.${BASE_DOMAIN}`;
+const isLocalHost = () =>
+  typeof window !== 'undefined' &&
+  (window.location.hostname.includes('localhost') || window.location.hostname.includes('127.0.0.1'));
+
+const tenantUrl = (code: string) =>
+  isLocalHost()
+    ? `${window.location.origin}/?subdomain=${encodeURIComponent(code)}`
+    : `https://${code}.${BASE_DOMAIN}`;
 
 export const SuperAdminPortal: React.FC<AdminPortalProps> = ({ currentUser, onLogout }) => {
   const navigate = useNavigate();
   const [tenants, setTenants] = useState<Tenant[]>([]);
+  const [stats, setStats] = useState<PlatformStats | null>(null);
+  const [health, setHealth] = useState<PlatformHealth | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<'overview' | 'tenants' | 'users' | 'portal' | 'settings'>('overview');
 
@@ -59,27 +107,48 @@ export const SuperAdminPortal: React.FC<AdminPortalProps> = ({ currentUser, onLo
     }
   }, [currentUser, navigate]);
 
-  // Fetch tenants
-  const fetchTenants = async () => {
+  // Fetch tenants, platform stats, and health check in parallel
+  const fetchTenants = useCallback(async () => {
+    setLoadError(null);
+    const apiBase = getApiBaseUrl();
     try {
-      const apiBase = getSubdomainInfo().isAdmin ? `https://admin.${window.location.hostname.split('.').slice(-2).join('.')}` : '';
-      const response = await fetch(`${apiBase}/api/admin/tenants`, {
-        credentials: 'include',
-      });
-      if (response.ok) {
-        const data = await response.json();
+      const [tenantsRes, statsRes, healthRes] = await Promise.all([
+        fetch(`${apiBase}/api/admin/tenants`, { credentials: 'include' }),
+        fetch(`${apiBase}/api/admin/stats`, { credentials: 'include' }),
+        fetch(`${apiBase}/api/health`, { credentials: 'include' }),
+      ]);
+
+      if (tenantsRes.ok) {
+        const data = await tenantsRes.json();
         setTenants(data.tenants || []);
+      } else {
+        const err = await tenantsRes.json().catch(() => ({}));
+        setLoadError(err.error || `Failed to load tenants (${tenantsRes.status})`);
+      }
+
+      if (statsRes.ok) {
+        const data = await statsRes.json();
+        if (data.stats) setStats(data.stats);
+      }
+
+      if (healthRes.ok) {
+        const data = await healthRes.json();
+        setHealth({ status: data.status || 'operational', authStore: data.authStore });
+      } else {
+        setHealth({ status: 'degraded' });
       }
     } catch (error) {
-      console.error('Failed to fetch tenants:', error);
+      console.error('Failed to fetch platform data:', error);
+      setLoadError('Failed to connect to admin API');
+      setHealth({ status: 'unreachable' });
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
     fetchTenants();
-  }, []);
+  }, [fetchTenants]);
 
   if (!currentUser?.isSuperAdmin) {
     return null;
@@ -106,6 +175,7 @@ export const SuperAdminPortal: React.FC<AdminPortalProps> = ({ currentUser, onLo
             <button
               onClick={onLogout}
               className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg text-slate-600 dark:text-slate-300 transition-colors"
+              title="Logout"
             >
               <LogOut size={18} />
             </button>
@@ -114,7 +184,7 @@ export const SuperAdminPortal: React.FC<AdminPortalProps> = ({ currentUser, onLo
       </header>
 
       {/* Navigation */}
-      <nav className="bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-6">
+      <nav className="bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-6 overflow-x-auto">
         <div className="flex gap-6">
           {[
             { id: 'overview', label: 'Overview', icon: BarChart3 },
@@ -126,7 +196,7 @@ export const SuperAdminPortal: React.FC<AdminPortalProps> = ({ currentUser, onLo
             <button
               key={tab.id}
               onClick={() => setActiveTab(tab.id as any)}
-              className={`flex items-center gap-2 px-4 py-3 text-sm font-medium border-b-2 transition-colors ${
+              className={`flex items-center gap-2 px-4 py-3 text-sm font-medium border-b-2 whitespace-nowrap transition-colors ${
                 activeTab === tab.id
                   ? 'border-indigo-600 text-indigo-600 dark:text-indigo-400'
                   : 'border-transparent text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
@@ -141,9 +211,14 @@ export const SuperAdminPortal: React.FC<AdminPortalProps> = ({ currentUser, onLo
 
       {/* Content */}
       <main className="p-6">
-        {activeTab === 'overview' && <OverviewTab tenants={tenants} loading={loading} />}
+        {loadError && (
+          <div className="mb-4 px-4 py-3 rounded-lg bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-800 text-sm text-rose-700 dark:text-rose-300">
+            {loadError}
+          </div>
+        )}
+        {activeTab === 'overview' && <OverviewTab tenants={tenants} stats={stats} health={health} loading={loading} />}
         {activeTab === 'tenants' && <TenantsTab tenants={tenants} loading={loading} onRefresh={fetchTenants} />}
-        {activeTab === 'users' && <UsersTab tenants={tenants} />}
+        {activeTab === 'users' && <UsersTab tenants={tenants} onUsersChanged={fetchTenants} />}
         {activeTab === 'portal' && <PortalManagementTab tenants={tenants} />}
         {activeTab === 'settings' && <SettingsTab />}
       </main>
@@ -152,9 +227,19 @@ export const SuperAdminPortal: React.FC<AdminPortalProps> = ({ currentUser, onLo
 };
 
 // Overview Tab
-const OverviewTab: React.FC<{ tenants: Tenant[]; loading: boolean }> = ({ tenants, loading }) => {
-  const activeTenants = tenants.filter(t => t.status === 'Active').length;
-  const totalTenants = tenants.length;
+const OverviewTab: React.FC<{ tenants: Tenant[]; stats: PlatformStats | null; health: PlatformHealth | null; loading: boolean }> = ({ tenants, stats, health, loading }) => {
+  const activeTenants = stats?.activeTenants ?? tenants.filter(t => t.status === 'Active').length;
+  const totalTenants = stats?.totalTenants ?? tenants.length;
+  const isHealthy = health?.status === 'operational';
+  const healthLabel = loading
+    ? '…'
+    : !health
+      ? 'Unknown'
+      : isHealthy
+        ? 'Operational'
+        : health.status === 'degraded'
+          ? 'Degraded'
+          : 'Unreachable';
 
   return (
     <div className="space-y-6">
@@ -166,7 +251,12 @@ const OverviewTab: React.FC<{ tenants: Tenant[]; loading: boolean }> = ({ tenant
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm text-slate-600 dark:text-slate-400">Total Tenants</p>
-              <p className="text-3xl font-bold text-slate-900 dark:text-white">{totalTenants}</p>
+              <p className="text-3xl font-bold text-slate-900 dark:text-white">{loading ? '…' : totalTenants}</p>
+              {stats && (
+                <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+                  {stats.totalProperties} {stats.totalProperties === 1 ? 'property' : 'properties'}
+                </p>
+              )}
             </div>
             <Building2 className="text-indigo-600" size={32} />
           </div>
@@ -176,7 +266,7 @@ const OverviewTab: React.FC<{ tenants: Tenant[]; loading: boolean }> = ({ tenant
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm text-slate-600 dark:text-slate-400">Active Tenants</p>
-              <p className="text-3xl font-bold text-emerald-600">{activeTenants}</p>
+              <p className="text-3xl font-bold text-emerald-600">{loading ? '…' : activeTenants}</p>
             </div>
             <Shield className="text-emerald-600" size={32} />
           </div>
@@ -186,7 +276,7 @@ const OverviewTab: React.FC<{ tenants: Tenant[]; loading: boolean }> = ({ tenant
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm text-slate-600 dark:text-slate-400">Total Users</p>
-              <p className="text-3xl font-bold text-slate-900 dark:text-white">-</p>
+              <p className="text-3xl font-bold text-slate-900 dark:text-white">{loading ? '…' : (stats?.totalUsers ?? '—')}</p>
             </div>
             <Users className="text-blue-600" size={32} />
           </div>
@@ -196,9 +286,14 @@ const OverviewTab: React.FC<{ tenants: Tenant[]; loading: boolean }> = ({ tenant
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm text-slate-600 dark:text-slate-400">System Health</p>
-              <p className="text-3xl font-bold text-emerald-600">Good</p>
+              <p className={`text-3xl font-bold ${isHealthy ? 'text-emerald-600' : loading ? 'text-slate-400' : 'text-amber-600'}`}>
+                {healthLabel}
+              </p>
+              {health?.authStore && (
+                <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">Auth: {health.authStore}</p>
+              )}
             </div>
-            <BarChart3 className="text-emerald-600" size={32} />
+            <BarChart3 className={isHealthy ? 'text-emerald-600' : 'text-amber-600'} size={32} />
           </div>
         </div>
       </div>
@@ -243,9 +338,6 @@ const TenantsTab: React.FC<{ tenants: Tenant[]; loading: boolean; onRefresh: () 
   const [tenantUsers, setTenantUsers] = useState<TenantUser[]>([]);
   const [loadingUsers, setLoadingUsers] = useState(false);
   const [deleting, setDeleting] = useState(false);
-  const [exporting, setExporting] = useState(false);
-  const [importing, setImporting] = useState(false);
-  const [importFile, setImportFile] = useState<File | null>(null);
 
   const handleEdit = (tenant: Tenant) => {
     setSelectedTenant(tenant);
@@ -260,8 +352,7 @@ const TenantsTab: React.FC<{ tenants: Tenant[]; loading: boolean; onRefresh: () 
   const fetchTenantUsers = async (tenant: Tenant) => {
     setLoadingUsers(true);
     try {
-      const apiBase = getSubdomainInfo().isAdmin ? `https://admin.${window.location.hostname.split('.').slice(-2).join('.')}` : '';
-      const response = await fetch(`${apiBase}/api/admin/tenants/${tenant.id}/users`, {
+      const response = await fetch(`${getApiBaseUrl()}/api/admin/tenants/${tenant.id}/users`, {
         credentials: 'include',
       });
       if (response.ok) {
@@ -286,91 +377,11 @@ const TenantsTab: React.FC<{ tenants: Tenant[]; loading: boolean; onRefresh: () 
     setShowDataModal(true);
   };
 
-  const handleExport = async () => {
-    if (!selectedTenant) return;
-    setExporting(true);
-    try {
-      const apiBase = getSubdomainInfo().isAdmin ? `https://admin.${window.location.hostname.split('.').slice(-2).join('.')}` : '';
-      const response = await fetch(`${apiBase}/api/admin/tenants/${selectedTenant.id}/export`, {
-        credentials: 'include',
-      });
-      if (response.ok) {
-        const blob = await response.blob();
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `tenant-${selectedTenant.code}-${Date.now()}.json`;
-        a.click();
-        URL.revokeObjectURL(url);
-      } else {
-        alert('Export failed');
-      }
-    } catch (error) {
-      console.error('Export failed:', error);
-      alert('Export failed');
-    } finally {
-      setExporting(false);
-    }
-  };
-
-  const handleDeleteData = async () => {
-    if (!selectedTenant || !confirm('DANGER: This will delete ALL data for this tenant. This cannot be undone. Continue?')) return;
-    setDeleting(true);
-    try {
-      const apiBase = getSubdomainInfo().isAdmin ? `https://admin.${window.location.hostname.split('.').slice(-2).join('.')}` : '';
-      const response = await fetch(`${apiBase}/api/admin/tenants/${selectedTenant.id}/data`, {
-        method: 'DELETE',
-        credentials: 'include',
-      });
-      if (response.ok) {
-        alert('Tenant data deleted successfully');
-      } else {
-        const data = await response.json();
-        alert(data.error || 'Delete failed');
-      }
-    } catch (error) {
-      console.error('Delete failed:', error);
-      alert('Delete failed');
-    } finally {
-      setDeleting(false);
-    }
-  };
-
-  const handleImport = async () => {
-    if (!selectedTenant || !importFile) return;
-    setImporting(true);
-    try {
-      const text = await importFile.text();
-      const data = JSON.parse(text);
-      const apiBase = getSubdomainInfo().isAdmin ? `https://admin.${window.location.hostname.split('.').slice(-2).join('.')}` : '';
-      const response = await fetch(`${apiBase}/api/admin/tenants/${selectedTenant.id}/import`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({ data }),
-      });
-      if (response.ok) {
-        const result = await response.json();
-        alert(`Imported ${result.imported} rows${result.errors?.length ? `\nErrors: ${result.errors.join(', ')}` : ''}`);
-        setImportFile(null);
-      } else {
-        const err = await response.json();
-        alert(err.error || 'Import failed');
-      }
-    } catch (error) {
-      console.error('Import failed:', error);
-      alert('Import failed - invalid JSON or network error');
-    } finally {
-      setImporting(false);
-    }
-  };
-
   const confirmDelete = async () => {
     if (!selectedTenant) return;
     setDeleting(true);
     try {
-      const apiBase = getSubdomainInfo().isAdmin ? `https://admin.${window.location.hostname.split('.').slice(-2).join('.')}` : '';
-      const response = await fetch(`${apiBase}/api/admin/tenants/${selectedTenant.id}`, {
+      const response = await fetch(`${getApiBaseUrl()}/api/admin/tenants/${selectedTenant.id}`, {
         method: 'DELETE',
         credentials: 'include',
       });
@@ -404,7 +415,7 @@ const TenantsTab: React.FC<{ tenants: Tenant[]; loading: boolean; onRefresh: () 
         </button>
       </div>
 
-      <div className="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700">
+      <div className="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 overflow-x-auto">
         <table className="w-full">
           <thead className="bg-slate-50 dark:bg-slate-900/50 border-b border-slate-200 dark:border-slate-700">
             <tr>
@@ -443,7 +454,7 @@ const TenantsTab: React.FC<{ tenants: Tenant[]; loading: boolean; onRefresh: () 
                 <tr key={tenant.id} className="hover:bg-slate-50 dark:hover:bg-slate-700/50">
                   <td className="px-6 py-4">
                     <div className="flex items-center gap-3">
-                      <div className="w-10 h-10 rounded-lg bg-indigo-100 dark:bg-indigo-900/30 flex items-center justify-center">
+                      <div className="w-10 h-10 rounded-lg bg-indigo-100 dark:bg-indigo-900/30 flex items-center justify-center shrink-0">
                         <Building2 className="text-indigo-600" size={20} />
                       </div>
                       <div>
@@ -454,7 +465,7 @@ const TenantsTab: React.FC<{ tenants: Tenant[]; loading: boolean; onRefresh: () 
                       </div>
                     </div>
                   </td>
-                  <td className="px-6 py-4 text-sm text-slate-600 dark:text-slate-300 font-mono">
+                  <td className="px-6 py-4 text-sm text-slate-600 dark:text-slate-300 font-mono whitespace-nowrap">
                     <div>{tenant.code}</div>
                     <a
                       href={tenantUrl(tenant.code)}
@@ -466,7 +477,7 @@ const TenantsTab: React.FC<{ tenants: Tenant[]; loading: boolean; onRefresh: () 
                       {tenant.code}.{BASE_DOMAIN}
                     </a>
                   </td>
-                  <td className="px-6 py-4">
+                  <td className="px-6 py-4 whitespace-nowrap">
                     <span className={`px-3 py-1 rounded-full text-xs font-medium ${
                       tenant.status === 'Active' 
                         ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400'
@@ -475,10 +486,10 @@ const TenantsTab: React.FC<{ tenants: Tenant[]; loading: boolean; onRefresh: () 
                       {tenant.status}
                     </span>
                   </td>
-                  <td className="px-6 py-4 text-sm text-slate-600 dark:text-slate-300">
+                  <td className="px-6 py-4 text-sm text-slate-600 dark:text-slate-300 whitespace-nowrap">
                     {new Date(tenant.created_at).toLocaleDateString()}
                   </td>
-                  <td className="px-6 py-4 text-right">
+                  <td className="px-6 py-4 text-right whitespace-nowrap">
                     <div className="flex items-center justify-end gap-2">
                       <button
                         onClick={() => handleManageData(tenant)}
@@ -517,7 +528,7 @@ const TenantsTab: React.FC<{ tenants: Tenant[]; loading: boolean; onRefresh: () 
         </table>
       </div>
 
-      {showCreateModal && <CreateTenantModal onClose={() => setShowCreateModal(false)} />}
+      {showCreateModal && <CreateTenantModal onClose={() => setShowCreateModal(false)} onSuccess={onRefresh} />}
       {showEditModal && selectedTenant && <EditTenantModal tenant={selectedTenant} onClose={() => setShowEditModal(false)} onSuccess={onRefresh} />}
       {showDeleteModal && selectedTenant && (
         <DeleteTenantModal
@@ -533,7 +544,10 @@ const TenantsTab: React.FC<{ tenants: Tenant[]; loading: boolean; onRefresh: () 
           users={tenantUsers}
           loading={loadingUsers}
           onClose={() => setShowUsersModal(false)}
-          onRefresh={() => fetchTenantUsers(selectedTenant)}
+          onRefresh={() => {
+            fetchTenantUsers(selectedTenant);
+            onRefresh();
+          }}
         />
       )}
       {showDataModal && selectedTenant && (
@@ -548,7 +562,7 @@ const TenantsTab: React.FC<{ tenants: Tenant[]; loading: boolean; onRefresh: () 
 };
 
 // Create Tenant Modal
-const CreateTenantModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
+const CreateTenantModal: React.FC<{ onClose: () => void; onSuccess: () => void }> = ({ onClose, onSuccess }) => {
   const [formData, setFormData] = useState({
     name: '',
     code: '',
@@ -557,14 +571,15 @@ const CreateTenantModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
     phone: '',
   });
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
+    setError('');
 
     try {
-      const apiBase = getSubdomainInfo().isAdmin ? `https://admin.${window.location.hostname.split('.').slice(-2).join('.')}` : '';
-      const response = await fetch(`${apiBase}/api/admin/tenants`, {
+      const response = await fetch(`${getApiBaseUrl()}/api/admin/tenants`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
@@ -573,14 +588,14 @@ const CreateTenantModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
 
       if (response.ok) {
         onClose();
-        window.location.reload();
+        onSuccess();
       } else {
-        const data = await response.json();
-        alert(data.error || 'Failed to create tenant');
+        const data = await response.json().catch(() => ({}));
+        setError(data.error || 'Failed to create tenant');
       }
     } catch (error) {
       console.error('Failed to create tenant:', error);
-      alert('Failed to create tenant');
+      setError('Failed to create tenant');
     } finally {
       setLoading(false);
     }
@@ -660,6 +675,8 @@ const CreateTenantModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
             />
           </div>
 
+          {error && <p className="text-sm text-rose-600 dark:text-rose-400">{error}</p>}
+
           <div className="flex gap-3 pt-4">
             <button
               type="button"
@@ -698,8 +715,7 @@ const EditTenantModal: React.FC<{ tenant: Tenant; onClose: () => void; onSuccess
     setLoading(true);
 
     try {
-      const apiBase = getSubdomainInfo().isAdmin ? `https://admin.${window.location.hostname.split('.').slice(-2).join('.')}` : '';
-      const response = await fetch(`${apiBase}/api/admin/tenants/${tenant.id}`, {
+      const response = await fetch(`${getApiBaseUrl()}/api/admin/tenants/${tenant.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
@@ -853,16 +869,72 @@ const DeleteTenantModal: React.FC<{ tenant: Tenant; onClose: () => void; onConfi
   );
 };
 
-// Tenant Users Modal — create tenant admin/staff accounts and manage access
+// Tenant Users Modal — create or assign tenant admin/staff accounts and manage access
 const TenantUsersModal: React.FC<{ tenant: Tenant; users: TenantUser[]; loading: boolean; onClose: () => void; onRefresh: () => void }> = ({ tenant, users, loading, onClose, onRefresh }) => {
   const [showCreate, setShowCreate] = useState(false);
+  const [showAssign, setShowAssign] = useState(false);
+  const [allUsers, setAllUsers] = useState<any[]>([]);
+  const [loadingAllUsers, setLoadingAllUsers] = useState(false);
+  const [assignForm, setAssignForm] = useState({ userId: '', isDefault: true, isSuperAdmin: false });
+  const [assigning, setAssigning] = useState(false);
   const [creating, setCreating] = useState(false);
-  const [removing, setRemoving] = useState<string | null>(null);
+  const [busyUserId, setBusyUserId] = useState<string | null>(null);
   const [createdCredentials, setCreatedCredentials] = useState<{ email: string; password?: string } | null>(null);
   const [form, setForm] = useState({ name: '', email: '', username: '', password: '', role: 'admin', isSuperAdmin: false });
   const [error, setError] = useState('');
 
-  const apiBase = getSubdomainInfo().isAdmin ? `https://admin.${window.location.hostname.split('.').slice(-2).join('.')}` : '';
+  const apiBase = getApiBaseUrl();
+
+  const openAssignForm = async () => {
+    const next = !showAssign;
+    setShowAssign(next);
+    setShowCreate(false);
+    setError('');
+    if (!next) return;
+
+    setLoadingAllUsers(true);
+    try {
+      const response = await fetch(`${apiBase}/api/admin/users/all`, { credentials: 'include' });
+      if (response.ok) {
+        const data = await response.json();
+        setAllUsers(data.users || []);
+      }
+    } catch {
+      setError('Failed to load existing users');
+    } finally {
+      setLoadingAllUsers(false);
+    }
+  };
+
+  const assignedIds = new Set(users.map(u => u.id));
+  const assignableUsers = allUsers.filter(u => !assignedIds.has(u.id));
+
+  const handleAssignExisting = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!assignForm.userId) return;
+    setAssigning(true);
+    setError('');
+    try {
+      const response = await fetch(`${apiBase}/api/admin/tenants/${tenant.id}/users`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify(assignForm),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        setError(data.error || 'Failed to assign user');
+        return;
+      }
+      setAssignForm({ userId: '', isDefault: true, isSuperAdmin: false });
+      setShowAssign(false);
+      onRefresh();
+    } catch {
+      setError('Failed to assign user');
+    } finally {
+      setAssigning(false);
+    }
+  };
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -899,9 +971,27 @@ const TenantUsersModal: React.FC<{ tenant: Tenant; users: TenantUser[]; loading:
     }
   };
 
+  const handleActivateUser = async (userId: string) => {
+    setBusyUserId(userId);
+    try {
+      const response = await fetch(`${apiBase}/api/admin/users/${userId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ status: 'Active' }),
+      });
+      if (response.ok) onRefresh();
+      else alert((await response.json()).error || 'Failed to activate user');
+    } catch {
+      alert('Failed to activate user');
+    } finally {
+      setBusyUserId(null);
+    }
+  };
+
   const handleRemove = async (userId: string) => {
     if (!confirm('Remove this user\'s access to the tenant? Their account is not deleted.')) return;
-    setRemoving(userId);
+    setBusyUserId(userId);
     try {
       const response = await fetch(`${apiBase}/api/admin/tenants/${tenant.id}/users/${userId}`, {
         method: 'DELETE',
@@ -912,13 +1002,13 @@ const TenantUsersModal: React.FC<{ tenant: Tenant; users: TenantUser[]; loading:
     } catch {
       alert('Failed to remove user');
     } finally {
-      setRemoving(null);
+      setBusyUserId(null);
     }
   };
 
   const handleDeleteUser = async (userId: string, userName: string) => {
     if (!confirm(`Permanently delete user "${userName}"? This will remove their account from all tenants and cannot be undone.`)) return;
-    setRemoving(userId);
+    setBusyUserId(userId);
     try {
       const response = await fetch(`${apiBase}/api/admin/users/${userId}`, {
         method: 'DELETE',
@@ -929,7 +1019,7 @@ const TenantUsersModal: React.FC<{ tenant: Tenant; users: TenantUser[]; loading:
     } catch {
       alert('Failed to delete user');
     } finally {
-      setRemoving(null);
+      setBusyUserId(null);
     }
   };
 
@@ -960,15 +1050,70 @@ const TenantUsersModal: React.FC<{ tenant: Tenant; users: TenantUser[]; loading:
             </div>
           )}
 
-          <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center justify-between gap-2 mb-4 flex-wrap">
             <h4 className="text-sm font-semibold text-slate-700 dark:text-slate-300">Assigned Users</h4>
-            <button
-              onClick={() => setShowCreate(!showCreate)}
-              className="px-3 py-1.5 bg-indigo-600 text-white text-sm rounded-lg hover:bg-indigo-700 transition-colors flex items-center gap-1"
-            >
-              <Plus size={14} /> Add User
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={openAssignForm}
+                className="px-3 py-1.5 border border-indigo-600 text-indigo-600 dark:text-indigo-400 text-sm rounded-lg hover:bg-indigo-50 dark:hover:bg-indigo-950/30 transition-colors flex items-center gap-1"
+              >
+                <UserPlus size={14} /> Assign Existing
+              </button>
+              <button
+                onClick={() => { setShowCreate(!showCreate); setShowAssign(false); setError(''); }}
+                className="px-3 py-1.5 bg-indigo-600 text-white text-sm rounded-lg hover:bg-indigo-700 transition-colors flex items-center gap-1"
+              >
+                <Plus size={14} /> Add User
+              </button>
+            </div>
           </div>
+
+          {showAssign && (
+            <form onSubmit={handleAssignExisting} className="mb-6 p-4 border border-slate-200 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-900/40 space-y-3">
+              <p className="text-sm font-medium text-slate-700 dark:text-slate-300">Assign existing user to {tenant.name}</p>
+              {loadingAllUsers ? (
+                <p className="text-xs text-slate-500">Loading users...</p>
+              ) : assignableUsers.length === 0 ? (
+                <p className="text-xs text-slate-500">All existing users are already assigned to this tenant.</p>
+              ) : (
+                <>
+                  <select
+                    required
+                    value={assignForm.userId}
+                    onChange={e => setAssignForm({ ...assignForm, userId: e.target.value })}
+                    className={inputCls}
+                  >
+                    <option value="">-- Select a user --</option>
+                    {assignableUsers.map((u: any) => (
+                      <option key={u.id} value={u.id}>
+                        {u.name} ({u.email}){!u.hasTenant ? ' — Orphaned' : ''}
+                      </option>
+                    ))}
+                  </select>
+                  <div className="flex items-center gap-4 flex-wrap">
+                    <label className="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-400">
+                      <input type="checkbox" checked={assignForm.isDefault} onChange={e => setAssignForm({ ...assignForm, isDefault: e.target.checked })} className="rounded" />
+                      Set as default tenant
+                    </label>
+                    <label className="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-400">
+                      <input type="checkbox" checked={assignForm.isSuperAdmin} onChange={e => setAssignForm({ ...assignForm, isSuperAdmin: e.target.checked })} className="rounded" />
+                      Super admin
+                    </label>
+                  </div>
+                </>
+              )}
+              {error && <p className="text-sm text-red-600 dark:text-red-400">{error}</p>}
+              <div className="flex gap-2">
+                <button type="submit" disabled={assigning || !assignForm.userId} className="px-4 py-2 bg-indigo-600 text-white text-sm rounded-lg hover:bg-indigo-700 disabled:opacity-50 flex items-center gap-2">
+                  {assigning ? <Loader2 size={14} className="animate-spin" /> : <UserPlus size={14} />}
+                  {assigning ? 'Assigning…' : 'Assign User'}
+                </button>
+                <button type="button" onClick={() => { setShowAssign(false); setError(''); }} className="px-4 py-2 text-sm text-slate-600 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200">
+                  Cancel
+                </button>
+              </div>
+            </form>
+          )}
 
           {showCreate && (
             <form onSubmit={handleCreate} className="mb-6 p-4 border border-slate-200 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-900/40 space-y-3">
@@ -981,16 +1126,9 @@ const TenantUsersModal: React.FC<{ tenant: Tenant; users: TenantUser[]; loading:
               </div>
               <div className="flex items-center gap-4">
                 <select value={form.role} onChange={e => setForm({ ...form, role: e.target.value })} className={inputCls + ' w-auto'}>
-                  <option value="admin">Admin (full access)</option>
-                  <option value="executive">Executive</option>
-                  <option value="general_manager">General Manager</option>
-                  <option value="frontoffice">Front Office</option>
-                  <option value="housekeeping">Housekeeping</option>
-                  <option value="fb_manager">F&B Manager</option>
-                  <option value="engineering">Engineering</option>
-                  <option value="finance">Finance</option>
-                  <option value="hr">HR</option>
-                  <option value="staff">Staff</option>
+                  {ROLE_OPTIONS.map(opt => (
+                    <option key={opt.value} value={opt.value}>{opt.label}</option>
+                  ))}
                 </select>
                 <label className="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-400">
                   <input type="checkbox" checked={form.isSuperAdmin} onChange={e => setForm({ ...form, isSuperAdmin: e.target.checked })} className="rounded" />
@@ -1038,28 +1176,34 @@ const TenantUsersModal: React.FC<{ tenant: Tenant; users: TenantUser[]; loading:
                         Default
                       </span>
                     )}
-                    <span className={`px-2 py-1 text-xs rounded-full ${
-                      user.status === 'Active'
-                        ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400'
-                        : 'bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-300'
-                    }`}>
+                    <span className={`px-2 py-1 text-xs rounded-full ${statusBadgeCls(user.status)}`}>
                       {user.status}
                     </span>
+                    {user.status !== 'Active' && (
+                      <button
+                        onClick={() => handleActivateUser(user.id)}
+                        disabled={busyUserId === user.id}
+                        className="p-1.5 text-slate-400 hover:text-emerald-600 dark:hover:text-emerald-400 disabled:opacity-50"
+                        title="Activate / Unlock user"
+                      >
+                        <Unlock size={16} />
+                      </button>
+                    )}
                     <button
                       onClick={() => handleRemove(user.id)}
-                      disabled={removing === user.id}
+                      disabled={busyUserId === user.id}
                       className="p-1.5 text-slate-400 hover:text-orange-600 dark:hover:text-orange-400 disabled:opacity-50"
                       title="Remove tenant access"
                     >
-                      {removing === user.id ? <Loader2 size={16} className="animate-spin" /> : <UserMinus size={16} />}
+                      {busyUserId === user.id ? <Loader2 size={16} className="animate-spin" /> : <UserMinus size={16} />}
                     </button>
                     <button
                       onClick={() => handleDeleteUser(user.id, user.name)}
-                      disabled={removing === user.id}
+                      disabled={busyUserId === user.id}
                       className="p-1.5 text-slate-400 hover:text-red-600 dark:hover:text-red-400 disabled:opacity-50"
                       title="Delete user permanently"
                     >
-                      {removing === user.id ? <Loader2 size={16} className="animate-spin" /> : <Trash2 size={16} />}
+                      {busyUserId === user.id ? <Loader2 size={16} className="animate-spin" /> : <Trash2 size={16} />}
                     </button>
                   </div>
                 </div>
@@ -1073,67 +1217,108 @@ const TenantUsersModal: React.FC<{ tenant: Tenant; users: TenantUser[]; loading:
 };
 
 // Users Tab - Manage users across all tenants
-const UsersTab: React.FC<{ tenants: Tenant[] }> = ({ tenants }) => {
+const UsersTab: React.FC<{ tenants: Tenant[]; onUsersChanged?: () => void }> = ({ tenants, onUsersChanged }) => {
   const [users, setUsers] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedTenant, setSelectedTenant] = useState<string>('all');
   const [showOrphanedOnly, setShowOrphanedOnly] = useState(false);
-  const [deleting, setDeleting] = useState<string | null>(null);
+  const [busyUserId, setBusyUserId] = useState<string | null>(null);
+  const [assignTarget, setAssignTarget] = useState<any | null>(null);
+  const [editTarget, setEditTarget] = useState<any | null>(null);
 
-  const apiBase = getSubdomainInfo().isAdmin ? `https://admin.${window.location.hostname.split('.').slice(-2).join('.')}` : '';
+  const apiBase = getApiBaseUrl();
+
+  const fetchAllUsers = useCallback(async () => {
+    try {
+      const response = await fetch(`${apiBase}/api/admin/users/all`, { credentials: 'include' });
+      if (response.ok) {
+        const data = await response.json();
+        setUsers(data.users || []);
+      }
+    } catch (error) {
+      console.error('Failed to fetch users:', error);
+    } finally {
+      setLoading(false);
+    }
+  }, [apiBase]);
+
+  useEffect(() => {
+    fetchAllUsers();
+  }, [fetchAllUsers]);
+
+  const handleQuickUnlock = async (user: any) => {
+    setBusyUserId(user.id);
+    try {
+      const response = await fetch(`${apiBase}/api/admin/users/${user.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ status: 'Active' }),
+      });
+      if (response.ok) {
+        await fetchAllUsers();
+      } else {
+        alert((await response.json().catch(() => ({}))).error || 'Failed to unlock user');
+      }
+    } catch {
+      alert('Failed to unlock user');
+    } finally {
+      setBusyUserId(null);
+    }
+  };
+
+  const handleUnassignTenant = async (userId: string, tenantId: string, tenantName: string) => {
+    if (!confirm(`Remove user's access to "${tenantName}"?`)) return;
+    setBusyUserId(userId);
+    try {
+      const response = await fetch(`${apiBase}/api/admin/tenants/${tenantId}/users/${userId}`, {
+        method: 'DELETE',
+        credentials: 'include',
+      });
+      if (response.ok) {
+        await fetchAllUsers();
+      } else {
+        alert((await response.json().catch(() => ({}))).error || 'Failed to remove tenant assignment');
+      }
+    } catch {
+      alert('Failed to remove tenant assignment');
+    } finally {
+      setBusyUserId(null);
+    }
+  };
 
   const handleDeleteUser = async (userId: string, userName: string) => {
     if (!confirm(`Permanently delete user "${userName}"? This will remove their account from all tenants and cannot be undone.`)) return;
-    setDeleting(userId);
+    setBusyUserId(userId);
     try {
       const response = await fetch(`${apiBase}/api/admin/users/${userId}`, {
         method: 'DELETE',
         credentials: 'include',
       });
       if (response.ok) {
-        setUsers(users.filter(u => u.id !== userId));
+        setUsers(prev => prev.filter(u => u.id !== userId));
+        onUsersChanged?.();
       } else {
-        alert((await response.json()).error || 'Failed to delete user');
+        alert((await response.json().catch(() => ({}))).error || 'Failed to delete user');
       }
     } catch {
       alert('Failed to delete user');
     } finally {
-      setDeleting(null);
+      setBusyUserId(null);
     }
   };
-
-  useEffect(() => {
-    const fetchAllUsers = async () => {
-      try {
-        const apiBase = getSubdomainInfo().isAdmin ? `https://admin.${window.location.hostname.split('.').slice(-2).join('.')}` : '';
-        
-        const response = await fetch(`${apiBase}/api/admin/users/all`, { credentials: 'include' });
-        if (response.ok) {
-          const data = await response.json();
-          setUsers(data.users || []);
-        }
-      } catch (error) {
-        console.error('Failed to fetch users:', error);
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    fetchAllUsers();
-  }, []);
 
   const filteredUsers = users.filter(user => {
     if (showOrphanedOnly && user.hasTenant) return false;
     if (!showOrphanedOnly && selectedTenant !== 'all') {
       return user.tenants.some((t: any) => t.tenantId === selectedTenant);
     }
-    if (selectedTenant !== 'all' && showOrphanedOnly) return false;
     return true;
   });
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between flex-wrap gap-3">
         <h2 className="text-2xl font-bold text-slate-900 dark:text-white">User Management</h2>
         <div className="flex items-center gap-4">
           <label className="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-400">
@@ -1148,7 +1333,8 @@ const UsersTab: React.FC<{ tenants: Tenant[] }> = ({ tenants }) => {
           <select
             value={selectedTenant}
             onChange={(e) => setSelectedTenant(e.target.value)}
-            className="px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-700 text-slate-900 dark:text-white"
+            disabled={showOrphanedOnly}
+            className="px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-700 text-slate-900 dark:text-white disabled:opacity-50"
           >
             <option value="all">All Tenants</option>
             {tenants.map(tenant => (
@@ -1158,7 +1344,7 @@ const UsersTab: React.FC<{ tenants: Tenant[] }> = ({ tenants }) => {
         </div>
       </div>
 
-      <div className="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700">
+      <div className="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 overflow-x-auto">
         <table className="w-full">
           <thead className="bg-slate-50 dark:bg-slate-900/50 border-b border-slate-200 dark:border-slate-700">
             <tr>
@@ -1177,7 +1363,7 @@ const UsersTab: React.FC<{ tenants: Tenant[] }> = ({ tenants }) => {
               <th className="px-6 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wider">
                 Flags
               </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wider">
+              <th className="px-6 py-3 text-right text-xs font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wider">
                 Actions
               </th>
             </tr>
@@ -1200,7 +1386,7 @@ const UsersTab: React.FC<{ tenants: Tenant[] }> = ({ tenants }) => {
                 <tr key={user.id} className="hover:bg-slate-50 dark:hover:bg-slate-700/50">
                   <td className="px-6 py-4">
                     <div className="flex items-center gap-3">
-                      <div className="w-10 h-10 rounded-full bg-indigo-100 dark:bg-indigo-900/30 flex items-center justify-center">
+                      <div className="w-10 h-10 rounded-full bg-indigo-100 dark:bg-indigo-900/30 flex items-center justify-center shrink-0">
                         <Users className="text-indigo-600" size={20} />
                       </div>
                       <div>
@@ -1216,8 +1402,16 @@ const UsersTab: React.FC<{ tenants: Tenant[] }> = ({ tenants }) => {
                     {user.tenants.length > 0 ? (
                       <div className="flex flex-wrap gap-1">
                         {user.tenants.map((t: any) => (
-                          <span key={t.tenantId} className="px-2 py-0.5 bg-slate-100 dark:bg-slate-700 rounded text-xs">
-                            {t.tenantName}
+                          <span key={t.tenantId} className="inline-flex items-center gap-1 px-2 py-0.5 bg-slate-100 dark:bg-slate-700 rounded text-xs">
+                            <span>{t.tenantName}</span>
+                            <button
+                              onClick={() => handleUnassignTenant(user.id, t.tenantId, t.tenantName)}
+                              disabled={busyUserId === user.id}
+                              className="text-slate-400 hover:text-rose-500 disabled:opacity-50"
+                              title={`Remove from ${t.tenantName}`}
+                            >
+                              <X size={12} />
+                            </button>
                           </span>
                         ))}
                       </div>
@@ -1225,19 +1419,15 @@ const UsersTab: React.FC<{ tenants: Tenant[] }> = ({ tenants }) => {
                       <span className="text-slate-400">—</span>
                     )}
                   </td>
-                  <td className="px-6 py-4 text-sm text-slate-600 dark:text-slate-300">
+                  <td className="px-6 py-4 text-sm text-slate-600 dark:text-slate-300 whitespace-nowrap">
                     {user.role}
                   </td>
-                  <td className="px-6 py-4">
-                    <span className={`px-3 py-1 rounded-full text-xs font-medium ${
-                      user.status === 'Active' 
-                        ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400'
-                        : 'bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-300'
-                    }`}>
+                  <td className="px-6 py-4 whitespace-nowrap">
+                    <span className={`px-3 py-1 rounded-full text-xs font-medium ${statusBadgeCls(user.status)}`}>
                       {user.status}
                     </span>
                   </td>
-                  <td className="px-6 py-4">
+                  <td className="px-6 py-4 whitespace-nowrap">
                     <div className="flex gap-1">
                       {user.tenants.some((t: any) => t.isSuperAdmin) && (
                         <span className="px-2 py-1 bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400 text-xs rounded-full">
@@ -1251,21 +1441,278 @@ const UsersTab: React.FC<{ tenants: Tenant[] }> = ({ tenants }) => {
                       )}
                     </div>
                   </td>
-                  <td className="px-6 py-4">
-                    <button
-                      onClick={() => handleDeleteUser(user.id, user.name)}
-                      disabled={deleting === user.id}
-                      className="p-1.5 text-slate-400 hover:text-red-600 dark:hover:text-red-400 disabled:opacity-50"
-                      title="Delete user permanently"
-                    >
-                      {deleting === user.id ? <Loader2 size={16} className="animate-spin" /> : <Trash2 size={16} />}
-                    </button>
+                  <td className="px-6 py-4 text-right whitespace-nowrap">
+                    <div className="flex items-center justify-end gap-1">
+                      {user.status !== 'Active' && (
+                        <button
+                          onClick={() => handleQuickUnlock(user)}
+                          disabled={busyUserId === user.id}
+                          className="p-1.5 text-slate-400 hover:text-emerald-600 dark:hover:text-emerald-400 disabled:opacity-50"
+                          title="Activate / Unlock user"
+                        >
+                          <Unlock size={16} />
+                        </button>
+                      )}
+                      <button
+                        onClick={() => setAssignTarget(user)}
+                        disabled={busyUserId === user.id}
+                        className="p-1.5 text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 disabled:opacity-50"
+                        title="Assign to tenant"
+                      >
+                        <UserPlus size={16} />
+                      </button>
+                      <button
+                        onClick={() => setEditTarget(user)}
+                        disabled={busyUserId === user.id}
+                        className="p-1.5 text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 disabled:opacity-50"
+                        title="Edit role & status"
+                      >
+                        <Edit size={16} />
+                      </button>
+                      <button
+                        onClick={() => handleDeleteUser(user.id, user.name)}
+                        disabled={busyUserId === user.id}
+                        className="p-1.5 text-slate-400 hover:text-red-600 dark:hover:text-red-400 disabled:opacity-50"
+                        title="Delete user permanently"
+                      >
+                        {busyUserId === user.id ? <Loader2 size={16} className="animate-spin" /> : <Trash2 size={16} />}
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))
             )}
           </tbody>
         </table>
+      </div>
+
+      {assignTarget && (
+        <AssignTenantModal
+          user={assignTarget}
+          tenants={tenants}
+          onClose={() => setAssignTarget(null)}
+          onSuccess={() => { setAssignTarget(null); fetchAllUsers(); }}
+        />
+      )}
+
+      {editTarget && (
+        <EditUserModal
+          user={editTarget}
+          onClose={() => setEditTarget(null)}
+          onSuccess={() => { setEditTarget(null); fetchAllUsers(); }}
+        />
+      )}
+    </div>
+  );
+};
+
+// Assign Tenant Modal (from Users Tab)
+const AssignTenantModal: React.FC<{ user: any; tenants: Tenant[]; onClose: () => void; onSuccess: () => void }> = ({ user, tenants, onClose, onSuccess }) => {
+  const activeTenants = tenants.filter(t => t.status === 'Active');
+  const [tenantId, setTenantId] = useState(activeTenants[0]?.id || '');
+  const [isDefault, setIsDefault] = useState(!user.hasTenant);
+  const [isSuperAdmin, setIsSuperAdmin] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!tenantId) return;
+    setSaving(true);
+    setError('');
+    try {
+      const response = await fetch(`${getApiBaseUrl()}/api/admin/tenants/${tenantId}/users`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ userId: user.id, isDefault, isSuperAdmin }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        setError(data.error || 'Failed to assign tenant');
+        return;
+      }
+      onSuccess();
+    } catch {
+      setError('Failed to assign tenant');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white dark:bg-slate-800 rounded-lg shadow-xl max-w-md w-full">
+        <div className="px-6 py-4 border-b border-slate-200 dark:border-slate-700 flex items-center justify-between">
+          <h3 className="text-lg font-semibold text-slate-900 dark:text-white">Assign Tenant</h3>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-300">
+            <X size={20} />
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="p-6 space-y-4">
+          <div className="text-sm text-slate-600 dark:text-slate-300">
+            Assign <strong>{user.name}</strong> ({user.email}) to a tenant:
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
+              Tenant *
+            </label>
+            <select
+              required
+              value={tenantId}
+              onChange={e => setTenantId(e.target.value)}
+              className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-700 text-slate-900 dark:text-white text-sm"
+            >
+              {activeTenants.length === 0 ? (
+                <option value="">No active tenants</option>
+              ) : (
+                activeTenants.map(t => (
+                  <option key={t.id} value={t.id}>{t.name} ({t.code})</option>
+                ))
+              )}
+            </select>
+          </div>
+
+          <div className="space-y-2">
+            <label className="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-400">
+              <input type="checkbox" checked={isDefault} onChange={e => setIsDefault(e.target.checked)} className="rounded" />
+              Set as default tenant
+            </label>
+            <label className="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-400">
+              <input type="checkbox" checked={isSuperAdmin} onChange={e => setIsSuperAdmin(e.target.checked)} className="rounded" />
+              Grant super-admin privileges
+            </label>
+          </div>
+
+          {error && <p className="text-sm text-rose-600 dark:text-rose-400">{error}</p>}
+
+          <div className="flex gap-3 pt-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="flex-1 px-4 py-2 border border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-300 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={saving || !tenantId}
+              className="flex-1 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors disabled:opacity-50"
+            >
+              {saving ? 'Assigning...' : 'Assign Tenant'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+};
+
+// Edit User Role & Status Modal (from Users Tab)
+const EditUserModal: React.FC<{ user: any; onClose: () => void; onSuccess: () => void }> = ({ user, onClose, onSuccess }) => {
+  const [role, setRole] = useState(user.role || 'staff');
+  const [status, setStatus] = useState(user.status || 'Active');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  const hasListedRole = ROLE_OPTIONS.some(r => r.value === role);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSaving(true);
+    setError('');
+    try {
+      const response = await fetch(`${getApiBaseUrl()}/api/admin/users/${user.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ role, status }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        setError(data.error || 'Failed to update user');
+        return;
+      }
+      onSuccess();
+    } catch {
+      setError('Failed to update user');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white dark:bg-slate-800 rounded-lg shadow-xl max-w-md w-full">
+        <div className="px-6 py-4 border-b border-slate-200 dark:border-slate-700 flex items-center justify-between">
+          <h3 className="text-lg font-semibold text-slate-900 dark:text-white">Edit User</h3>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-300">
+            <X size={20} />
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="p-6 space-y-4">
+          <div className="text-sm text-slate-600 dark:text-slate-300">
+            <strong>{user.name}</strong> ({user.email})
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
+              Role
+            </label>
+            <select
+              value={role}
+              onChange={e => setRole(e.target.value)}
+              className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-700 text-slate-900 dark:text-white text-sm"
+            >
+              {!hasListedRole && <option value={role}>{role}</option>}
+              {ROLE_OPTIONS.map(opt => (
+                <option key={opt.value} value={opt.value}>{opt.label}</option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
+              Account Status
+            </label>
+            <select
+              value={status}
+              onChange={e => setStatus(e.target.value)}
+              className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-700 text-slate-900 dark:text-white text-sm"
+            >
+              {USER_STATUS_OPTIONS.map(st => (
+                <option key={st} value={st}>{st}</option>
+              ))}
+            </select>
+            {user.status === 'Locked' && status === 'Active' && (
+              <p className="mt-1 text-xs text-emerald-600 dark:text-emerald-400">
+                Setting status to Active will also clear failed login lockouts.
+              </p>
+            )}
+          </div>
+
+          {error && <p className="text-sm text-rose-600 dark:text-rose-400">{error}</p>}
+
+          <div className="flex gap-3 pt-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="flex-1 px-4 py-2 border border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-300 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={saving}
+              className="flex-1 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors disabled:opacity-50"
+            >
+              {saving ? 'Saving...' : 'Save Changes'}
+            </button>
+          </div>
+        </form>
       </div>
     </div>
   );
@@ -1276,10 +1723,13 @@ const PortalManagementTab: React.FC<{ tenants: Tenant[] }> = ({ tenants }) => {
   const [selectedTenant, setSelectedTenant] = useState<string>('');
   const [moduleToggles, setModuleToggles] = useState<Record<string, boolean>>({});
   const [globalToggles, setGlobalToggles] = useState<Record<string, boolean>>({});
+  const [portalEnabled, setPortalEnabled] = useState(true);
+  const [customDomain, setCustomDomain] = useState('');
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [expandedDepartments, setExpandedDepartments] = useState<Set<string>>(new Set());
   const [dirty, setDirty] = useState(false);
+  const [notice, setNotice] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
   // Get modules for a department
   const modulesForDepartment = (deptKey: string) => {
@@ -1302,35 +1752,48 @@ const PortalManagementTab: React.FC<{ tenants: Tenant[] }> = ({ tenants }) => {
     { key: 'guest', label: 'Guest Portal', url: '/guest', modules: modulesForDepartment('guest'), locked: false },
   ];
 
-  // Load module toggles for selected tenant
+  // Load module toggles and portal flags for selected tenant
   useEffect(() => {
+    setNotice(null);
     if (!selectedTenant) {
       setModuleToggles({});
+      setGlobalToggles({});
+      setPortalEnabled(true);
+      setCustomDomain('');
       setDirty(false);
       return;
     }
 
+    let active = true;
     const loadModuleToggles = async () => {
       setLoading(true);
       try {
-        const apiBase = getSubdomainInfo().isAdmin ? `https://admin.${window.location.hostname.split('.').slice(-2).join('.')}` : '';
+        const apiBase = getApiBaseUrl();
         const response = await fetch(`${apiBase}/api/admin/tenants/${selectedTenant}/module-toggles`, {
           credentials: 'include',
         });
+        if (!active) return;
         if (response.ok) {
           const data = await response.json();
           setModuleToggles(data.moduleToggles || {});
           setGlobalToggles(data.globalToggles || {});
+          setPortalEnabled(data.portalSettings?.enabled !== false);
+          setCustomDomain(data.portalSettings?.customDomain || '');
           setDirty(false);
+        } else {
+          const err = await response.json().catch(() => ({}));
+          setNotice({ type: 'error', message: err.error || 'Failed to load tenant portal configuration' });
         }
       } catch (error) {
         console.error('Failed to fetch module toggles:', error);
+        if (active) setNotice({ type: 'error', message: 'Failed to load tenant portal configuration' });
       } finally {
-        setLoading(false);
+        if (active) setLoading(false);
       }
     };
 
     loadModuleToggles();
+    return () => { active = false; };
   }, [selectedTenant]);
 
   // Effective state: tenant override wins, otherwise fall back to the global toggle.
@@ -1348,6 +1811,18 @@ const PortalManagementTab: React.FC<{ tenants: Tenant[] }> = ({ tenants }) => {
       return copy;
     });
     setDirty(true);
+    setNotice(null);
+  };
+
+  const resetOverride = (key: string) => {
+    setModuleToggles(prev => {
+      if (prev[key] === undefined) return prev;
+      const copy = { ...prev };
+      delete copy[key];
+      return copy;
+    });
+    setDirty(true);
+    setNotice(null);
   };
 
   const togglePortal = (key: string) => setOverride(key, !enabled(key));
@@ -1367,39 +1842,52 @@ const PortalManagementTab: React.FC<{ tenants: Tenant[] }> = ({ tenants }) => {
   const saveModuleToggles = async () => {
     if (!selectedTenant) return;
     setSaving(true);
+    setNotice(null);
     try {
-      const apiBase = getSubdomainInfo().isAdmin ? `https://admin.${window.location.hostname.split('.').slice(-2).join('.')}` : '';
+      const apiBase = getApiBaseUrl();
       const response = await fetch(`${apiBase}/api/admin/tenants/${selectedTenant}/module-toggles`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({ moduleToggles }),
+        body: JSON.stringify({
+          moduleToggles,
+          portalSettings: {
+            enabled: portalEnabled,
+            customDomain: customDomain.trim() || null,
+          },
+        }),
       });
 
+      const data = await response.json().catch(() => ({}));
       if (response.ok) {
+        if (data.portalSettings) {
+          setPortalEnabled(data.portalSettings.enabled !== false);
+          setCustomDomain(data.portalSettings.customDomain || '');
+        }
         setDirty(false);
-        alert('Module toggles saved successfully');
+        setNotice({ type: 'success', message: 'Portal settings and module toggles saved successfully.' });
       } else {
-        const data = await response.json();
-        alert(data.error || 'Failed to save module toggles');
+        setNotice({ type: 'error', message: data.error || 'Failed to save module toggles' });
       }
     } catch (error) {
       console.error('Failed to save module toggles:', error);
-      alert('Failed to save module toggles');
+      setNotice({ type: 'error', message: 'Failed to save module toggles' });
     } finally {
       setSaving(false);
     }
   };
 
   const selectedTenantData = tenants.find(t => t.id === selectedTenant);
+  const publicBookingEffective = portalEnabled && enabled('public_booking');
+  const guestPortalEffective = portalEnabled && enabled('guest');
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-4 flex-wrap">
         <div>
           <h2 className="text-2xl font-bold text-slate-900 dark:text-white">Portal & Module Management</h2>
           <p className="text-slate-600 dark:text-slate-400">
-            Enable or disable portals and modules for each tenant
+            Enable or disable portals, customer booking access, and ERP modules per tenant
           </p>
         </div>
         {selectedTenant && (
@@ -1431,113 +1919,252 @@ const PortalManagementTab: React.FC<{ tenants: Tenant[] }> = ({ tenants }) => {
         </select>
       </div>
 
-      {/* Module Toggles */}
+      {notice && (
+        <div
+          className={`px-4 py-3 rounded-lg border text-sm ${
+            notice.type === 'success'
+              ? 'bg-emerald-50 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300'
+              : 'bg-rose-50 dark:bg-rose-950/30 border-rose-200 dark:border-rose-800 text-rose-700 dark:text-rose-300'
+          }`}
+        >
+          {notice.message}
+        </div>
+      )}
+
+      {/* Module Toggles & Customer Portal Delivery */}
       {selectedTenant && (
-        <div className="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700">
-          <div className="px-6 py-4 border-b border-slate-200 dark:border-slate-700">
-            <h3 className="font-semibold text-slate-900 dark:text-white">
-              {selectedTenantData?.name} - Portal & Module Settings
-            </h3>
-            {loading && <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">Loading...</p>}
-          </div>
+        <div className="space-y-6">
+          {/* Customer Portal Delivery Controls */}
+          <div className="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 p-6 space-y-5">
+            <div className="flex items-start justify-between gap-4 flex-wrap">
+              <div>
+                <h3 className="font-semibold text-slate-900 dark:text-white flex items-center gap-2">
+                  <Globe size={18} className="text-indigo-500" />
+                  {selectedTenantData?.name} - Customer Portal Access
+                </h3>
+                <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+                  Controls public booking & guest self-service availability for {selectedTenantData?.code}.{BASE_DOMAIN}. Overrides global defaults when changed.
+                </p>
+              </div>
+              <label className="inline-flex items-center gap-2.5 cursor-pointer select-none">
+                <span className="text-xs font-medium text-slate-600 dark:text-slate-300">
+                  Tenant Portals Master Switch
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPortalEnabled(prev => !prev);
+                    setDirty(true);
+                    setNotice(null);
+                  }}
+                  className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${
+                    portalEnabled ? 'bg-emerald-500' : 'bg-slate-300 dark:bg-slate-600'
+                  }`}
+                >
+                  <span className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform ${
+                    portalEnabled ? 'translate-x-5' : 'translate-x-0.5'
+                  }`} />
+                </button>
+              </label>
+            </div>
 
-          <div className="divide-y divide-slate-100 dark:divide-slate-700">
-            {portalEntries.map(entry => {
-              const locked = entry.locked;
-              const on = locked || enabled(entry.key);
-              const isExpanded = expandedDepartments.has(entry.key);
-
-              return (
-                <div key={entry.key} className="bg-white dark:bg-slate-800">
-                  {/* Portal Row */}
-                  <div className="flex items-center justify-between p-4 hover:bg-slate-50 dark:hover:bg-slate-700/30 transition">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              {/* Public Booking Card */}
+              <div className="p-4 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50/70 dark:bg-slate-900/30 space-y-3">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-sm font-semibold text-slate-900 dark:text-white">Public Booking</span>
+                  <button
+                    type="button"
+                    disabled={!portalEnabled}
+                    onClick={() => togglePortal('public_booking')}
+                    className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors disabled:opacity-50 ${
+                      publicBookingEffective ? 'bg-emerald-500' : 'bg-slate-300 dark:bg-slate-600'
+                    }`}
+                  >
+                    <span className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform ${
+                      publicBookingEffective ? 'translate-x-5' : 'translate-x-0.5'
+                    }`} />
+                  </button>
+                </div>
+                <div className="flex items-center justify-between text-xs">
+                  <span className={publicBookingEffective ? 'text-emerald-600 dark:text-emerald-400 font-medium' : 'text-rose-600 dark:text-rose-400 font-medium'}>
+                    {publicBookingEffective ? 'Enabled' : (!portalEnabled ? 'Blocked by Master Switch' : 'Disabled')}
+                  </span>
+                  {moduleToggles.public_booking !== undefined ? (
                     <button
-                      onClick={() => toggleDepartment(entry.key)}
-                      className="flex items-center gap-3 flex-1 text-left"
+                      type="button"
+                      onClick={() => resetOverride('public_booking')}
+                      className="text-indigo-600 dark:text-indigo-400 hover:underline"
                     >
-                      {isExpanded ? (
-                        <ChevronDown size={16} className="text-slate-400" />
-                      ) : (
-                        <ChevronRight size={16} className="text-slate-400" />
-                      )}
-                      <Building2 size={18} className="text-slate-400 shrink-0" />
-                      <div className="flex-1">
-                        <div className="flex items-center gap-2">
-                          <span className="text-sm font-bold text-slate-900 dark:text-white">{entry.label}</span>
-                          {locked && (
-                            <span className="px-2 py-0.5 bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400 text-xs rounded-full">
-                              Protected
-                            </span>
-                          )}
-                          {on && !locked && (
-                            <span className="px-2 py-0.5 bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400 text-xs rounded-full">
-                              Enabled
-                            </span>
-                          )}
-                          {!on && !locked && (
-                            <span className="px-2 py-0.5 bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400 text-xs rounded-full">
-                              Disabled
-                            </span>
-                          )}
-                        </div>
-                        <div className="text-xs text-slate-500 dark:text-slate-400 mt-0.5 font-mono">
-                          {entry.url} · {entry.modules.length} modules
-                        </div>
-                      </div>
+                      Reset to global ({globalEnabled('public_booking') ? 'On' : 'Off'})
                     </button>
-                    <button
-                      disabled={locked}
-                      onClick={() => togglePortal(entry.key)}
-                      className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors disabled:opacity-50 ${
-                        on ? 'bg-emerald-500' : 'bg-slate-300 dark:bg-slate-600'
-                      }`}
-                    >
-                      <span className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform ${
-                        on ? 'translate-x-5' : 'translate-x-0.5'
-                      }`} />
-                    </button>
-                  </div>
-
-                  {/* Module Rows */}
-                  {isExpanded && entry.modules.length > 0 && (
-                    <div className="px-4 pb-4 pl-12">
-                      <div className="space-y-2">
-                        {entry.modules.map(module => {
-                          const moduleKey = `${entry.key}_${module.tabId}`;
-                          const moduleOn = enabled(moduleKey);
-                          const moduleLocked = entry.locked;
-
-                          return (
-                            <div
-                              key={module.tabId}
-                              className="flex items-center justify-between gap-3 p-2.5 bg-slate-50 dark:bg-slate-900/40 rounded-lg border border-slate-100 dark:border-slate-700"
-                            >
-                              <div className="flex-1 min-w-0">
-                                <div className="text-xs font-bold text-slate-900 dark:text-white truncate">{module.label}</div>
-                                <div className="text-[10px] text-slate-500 dark:text-slate-400 font-mono mt-0.5">
-                                  {module.modId}
-                                </div>
-                              </div>
-                              <button
-                                disabled={moduleLocked}
-                                onClick={() => toggleModule(entry.key, module.tabId)}
-                                className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors disabled:opacity-50 ${
-                                  moduleOn ? 'bg-emerald-500' : 'bg-slate-300 dark:bg-slate-600'
-                                }`}
-                              >
-                                <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                                  moduleOn ? 'translate-x-4' : 'translate-x-0.5'
-                                }`} />
-                              </button>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </div>
+                  ) : (
+                    <span className="text-slate-400">Inherits global</span>
                   )}
                 </div>
-              );
-            })}
+              </div>
+
+              {/* Guest Portal Card */}
+              <div className="p-4 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50/70 dark:bg-slate-900/30 space-y-3">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-sm font-semibold text-slate-900 dark:text-white">Guest Portal</span>
+                  <button
+                    type="button"
+                    disabled={!portalEnabled}
+                    onClick={() => togglePortal('guest')}
+                    className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors disabled:opacity-50 ${
+                      guestPortalEffective ? 'bg-emerald-500' : 'bg-slate-300 dark:bg-slate-600'
+                    }`}
+                  >
+                    <span className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform ${
+                      guestPortalEffective ? 'translate-x-5' : 'translate-x-0.5'
+                    }`} />
+                  </button>
+                </div>
+                <div className="flex items-center justify-between text-xs">
+                  <span className={guestPortalEffective ? 'text-emerald-600 dark:text-emerald-400 font-medium' : 'text-rose-600 dark:text-rose-400 font-medium'}>
+                    {guestPortalEffective ? 'Enabled' : (!portalEnabled ? 'Blocked by Master Switch' : 'Disabled')}
+                  </span>
+                  {moduleToggles.guest !== undefined ? (
+                    <button
+                      type="button"
+                      onClick={() => resetOverride('guest')}
+                      className="text-indigo-600 dark:text-indigo-400 hover:underline"
+                    >
+                      Reset to global ({globalEnabled('guest') ? 'On' : 'Off'})
+                    </button>
+                  ) : (
+                    <span className="text-slate-400">Inherits global</span>
+                  )}
+                </div>
+              </div>
+
+              {/* Custom Domain */}
+              <div className="p-4 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50/70 dark:bg-slate-900/30 space-y-2">
+                <label className="block text-sm font-semibold text-slate-900 dark:text-white">
+                  Custom Domain (Optional)
+                </label>
+                <input
+                  type="text"
+                  value={customDomain}
+                  onChange={(e) => {
+                    setCustomDomain(e.target.value);
+                    setDirty(true);
+                    setNotice(null);
+                  }}
+                  placeholder={`booking.${BASE_DOMAIN}`}
+                  className="w-full px-3 py-1.5 text-sm border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-700 text-slate-900 dark:text-white font-mono"
+                />
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700">
+            <div className="px-6 py-4 border-b border-slate-200 dark:border-slate-700">
+              <h3 className="font-semibold text-slate-900 dark:text-white">
+                {selectedTenantData?.name} - Portal & Module Toggles
+              </h3>
+              {loading && <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">Loading...</p>}
+            </div>
+
+            <div className="divide-y divide-slate-100 dark:divide-slate-700">
+              {portalEntries.map(entry => {
+                const locked = entry.locked;
+                const on = locked || enabled(entry.key);
+                const isExpanded = expandedDepartments.has(entry.key);
+
+                return (
+                  <div key={entry.key} className="bg-white dark:bg-slate-800">
+                    {/* Portal Row */}
+                    <div className="flex items-center justify-between p-4 hover:bg-slate-50 dark:hover:bg-slate-700/30 transition">
+                      <button
+                        onClick={() => toggleDepartment(entry.key)}
+                        className="flex items-center gap-3 flex-1 text-left"
+                      >
+                        {isExpanded ? (
+                          <ChevronDown size={16} className="text-slate-400" />
+                        ) : (
+                          <ChevronRight size={16} className="text-slate-400" />
+                        )}
+                        <Building2 size={18} className="text-slate-400 shrink-0" />
+                        <div className="flex-1">
+                          <div className="flex items-center gap-2">
+                            <span className="text-sm font-bold text-slate-900 dark:text-white">{entry.label}</span>
+                            {locked && (
+                              <span className="px-2 py-0.5 bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400 text-xs rounded-full">
+                                Protected
+                              </span>
+                            )}
+                            {on && !locked && (
+                              <span className="px-2 py-0.5 bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400 text-xs rounded-full">
+                                Enabled
+                              </span>
+                            )}
+                            {!on && !locked && (
+                              <span className="px-2 py-0.5 bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400 text-xs rounded-full">
+                                Disabled
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-xs text-slate-500 dark:text-slate-400 mt-0.5 font-mono">
+                            {entry.url} · {entry.modules.length} modules
+                          </div>
+                        </div>
+                      </button>
+                      <button
+                        disabled={locked}
+                        onClick={() => togglePortal(entry.key)}
+                        className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors disabled:opacity-50 ${
+                          on ? 'bg-emerald-500' : 'bg-slate-300 dark:bg-slate-600'
+                        }`}
+                      >
+                        <span className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform ${
+                          on ? 'translate-x-5' : 'translate-x-0.5'
+                        }`} />
+                      </button>
+                    </div>
+
+                    {/* Module Rows */}
+                    {isExpanded && entry.modules.length > 0 && (
+                      <div className="px-4 pb-4 pl-12">
+                        <div className="space-y-2">
+                          {entry.modules.map(module => {
+                            const moduleKey = `${entry.key}_${module.tabId}`;
+                            const moduleOn = enabled(moduleKey);
+                            const moduleLocked = entry.locked;
+
+                            return (
+                              <div
+                                key={module.tabId}
+                                className="flex items-center justify-between gap-3 p-2.5 bg-slate-50 dark:bg-slate-900/40 rounded-lg border border-slate-100 dark:border-slate-700"
+                              >
+                                <div className="flex-1 min-w-0">
+                                  <div className="text-xs font-bold text-slate-900 dark:text-white truncate">{module.label}</div>
+                                  <div className="text-[10px] text-slate-500 dark:text-slate-400 font-mono mt-0.5">
+                                    {module.modId}
+                                  </div>
+                                </div>
+                                <button
+                                  disabled={moduleLocked}
+                                  onClick={() => toggleModule(entry.key, module.tabId)}
+                                  className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors disabled:opacity-50 ${
+                                    moduleOn ? 'bg-emerald-500' : 'bg-slate-300 dark:bg-slate-600'
+                                  }`}
+                                >
+                                  <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                                    moduleOn ? 'translate-x-4' : 'translate-x-0.5'
+                                  }`} />
+                                </button>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
           </div>
         </div>
       )}
@@ -1545,16 +2172,369 @@ const PortalManagementTab: React.FC<{ tenants: Tenant[] }> = ({ tenants }) => {
   );
 };
 
-// Settings Tab (placeholder)
+interface PlatformSettingsState {
+  maintenanceMode: boolean;
+  maintenanceMessage: string;
+  publicBookingEnabled: boolean;
+  guestPortalEnabled: boolean;
+  sessionTimeout: number;
+  maxConcurrentSessions: number;
+  passwordComplexity: 'low' | 'medium' | 'high';
+  forceMfa: boolean;
+  strictPasswordRotation: boolean;
+  backupFrequency: 'daily' | 'weekly' | 'manual';
+  systemLogLevel: 'info' | 'detailed' | 'debug';
+  updatedAt?: string | null;
+}
+
+const DEFAULT_PLATFORM_SETTINGS: PlatformSettingsState = {
+  maintenanceMode: false,
+  maintenanceMessage: '',
+  publicBookingEnabled: true,
+  guestPortalEnabled: true,
+  sessionTimeout: 0,
+  maxConcurrentSessions: 3,
+  passwordComplexity: 'medium',
+  forceMfa: false,
+  strictPasswordRotation: false,
+  backupFrequency: 'daily',
+  systemLogLevel: 'info',
+  updatedAt: null,
+};
+
+// Settings Tab - Platform-wide operational, portal default, and security settings
 const SettingsTab: React.FC = () => {
+  const [settings, setSettings] = useState<PlatformSettingsState>(DEFAULT_PLATFORM_SETTINGS);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [dirty, setDirty] = useState(false);
+  const [notice, setNotice] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+
+  const loadPlatformSettings = useCallback(async () => {
+    setLoading(true);
+    setNotice(null);
+    try {
+      const apiBase = getApiBaseUrl();
+      const response = await fetch(`${apiBase}/api/admin/platform-settings`, {
+        credentials: 'include',
+      });
+      const data = await response.json().catch(() => ({}));
+      if (response.ok && data.settings) {
+        setSettings({ ...DEFAULT_PLATFORM_SETTINGS, ...data.settings });
+        setDirty(false);
+      } else {
+        setNotice({ type: 'error', message: data.error || 'Failed to load platform settings' });
+      }
+    } catch {
+      setNotice({ type: 'error', message: 'Failed to load platform settings' });
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadPlatformSettings();
+  }, [loadPlatformSettings]);
+
+  const updateField = <K extends keyof PlatformSettingsState>(key: K, value: PlatformSettingsState[K]) => {
+    setSettings(prev => ({ ...prev, [key]: value }));
+    setDirty(true);
+    setNotice(null);
+  };
+
+  const handleSave = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSaving(true);
+    setNotice(null);
+    try {
+      const apiBase = getApiBaseUrl();
+      const response = await fetch(`${apiBase}/api/admin/platform-settings`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          maintenanceMode: settings.maintenanceMode,
+          maintenanceMessage: settings.maintenanceMessage,
+          publicBookingEnabled: settings.publicBookingEnabled,
+          guestPortalEnabled: settings.guestPortalEnabled,
+          sessionTimeout: Number(settings.sessionTimeout) || 0,
+          maxConcurrentSessions: Math.max(1, Number(settings.maxConcurrentSessions) || 3),
+          passwordComplexity: settings.passwordComplexity,
+          forceMfa: settings.forceMfa,
+          strictPasswordRotation: settings.strictPasswordRotation,
+          backupFrequency: settings.backupFrequency,
+          systemLogLevel: settings.systemLogLevel,
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (response.ok && data.settings) {
+        setSettings({ ...DEFAULT_PLATFORM_SETTINGS, ...data.settings });
+        setDirty(false);
+        setNotice({ type: 'success', message: 'Platform settings updated and cache refreshed.' });
+      } else {
+        setNotice({ type: 'error', message: data.error || 'Failed to save platform settings' });
+      }
+    } catch {
+      setNotice({ type: 'error', message: 'Failed to save platform settings' });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const inputCls = 'w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-700 text-slate-900 dark:text-white text-sm';
+
   return (
-    <div className="space-y-6">
-      <h2 className="text-2xl font-bold text-slate-900 dark:text-white">Platform Settings</h2>
-      <div className="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 p-8 text-center">
-        <Settings className="mx-auto text-slate-400 mb-4" size={48} />
-        <p className="text-slate-500 dark:text-slate-400">Platform settings coming soon</p>
+    <form onSubmit={handleSave} className="space-y-6">
+      <div className="flex items-center justify-between gap-4 flex-wrap">
+        <div>
+          <h2 className="text-2xl font-bold text-slate-900 dark:text-white">Platform Settings</h2>
+          <p className="text-slate-600 dark:text-slate-400">
+            Configure platform-wide maintenance mode, portal defaults, and security policy ({BASE_DOMAIN})
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={loadPlatformSettings}
+            disabled={loading || saving}
+            className="px-3 py-2 border border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-200 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors flex items-center gap-1.5 text-sm disabled:opacity-50"
+          >
+            <RotateCcw size={15} /> Reload
+          </button>
+          <button
+            type="submit"
+            disabled={!dirty || loading || saving}
+            className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors flex items-center gap-2 text-sm disabled:opacity-50"
+          >
+            {saving ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
+            {saving ? 'Saving...' : 'Save Settings'}
+          </button>
+        </div>
       </div>
-    </div>
+
+      {notice && (
+        <div
+          className={`px-4 py-3 rounded-lg border text-sm ${
+            notice.type === 'success'
+              ? 'bg-emerald-50 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300'
+              : 'bg-rose-50 dark:bg-rose-950/30 border-rose-200 dark:border-rose-800 text-rose-700 dark:text-rose-300'
+          }`}
+        >
+          {notice.message}
+        </div>
+      )}
+
+      {loading ? (
+        <div className="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 p-10 text-center text-slate-500 dark:text-slate-400 flex items-center justify-center gap-2">
+          <Loader2 size={18} className="animate-spin" /> Loading platform settings...
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          {/* Portal Defaults & Maintenance */}
+          <div className="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 p-6 space-y-5">
+            <div className="flex items-center gap-2 border-b border-slate-200 dark:border-slate-700 pb-3">
+              <Globe size={18} className="text-indigo-500" />
+              <h3 className="font-semibold text-slate-900 dark:text-white">Maintenance & Global Portal Defaults</h3>
+            </div>
+
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <div className="text-sm font-medium text-slate-900 dark:text-white">Maintenance Mode</div>
+                <div className="text-xs text-slate-500 dark:text-slate-400">
+                  Blocks public booking submissions with the notice below
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => updateField('maintenanceMode', !settings.maintenanceMode)}
+                className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${
+                  settings.maintenanceMode ? 'bg-amber-500' : 'bg-slate-300 dark:bg-slate-600'
+                }`}
+              >
+                <span className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform ${
+                  settings.maintenanceMode ? 'translate-x-5' : 'translate-x-0.5'
+                }`} />
+              </button>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
+                Maintenance Message
+              </label>
+              <textarea
+                rows={2}
+                value={settings.maintenanceMessage}
+                onChange={(e) => updateField('maintenanceMessage', e.target.value)}
+                placeholder="System is under scheduled maintenance. Please try again later."
+                className={inputCls}
+              />
+            </div>
+
+            <div className="flex items-center justify-between gap-4 pt-2 border-t border-slate-100 dark:border-slate-700">
+              <div>
+                <div className="text-sm font-medium text-slate-900 dark:text-white">Default Public Booking Engine</div>
+                <div className="text-xs text-slate-500 dark:text-slate-400">
+                  Fallback when a tenant has no per-tenant override in Portal Management
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => updateField('publicBookingEnabled', !settings.publicBookingEnabled)}
+                className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${
+                  settings.publicBookingEnabled ? 'bg-emerald-500' : 'bg-slate-300 dark:bg-slate-600'
+                }`}
+              >
+                <span className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform ${
+                  settings.publicBookingEnabled ? 'translate-x-5' : 'translate-x-0.5'
+                }`} />
+              </button>
+            </div>
+
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <div className="text-sm font-medium text-slate-900 dark:text-white">Default Guest Portal</div>
+                <div className="text-xs text-slate-500 dark:text-slate-400">
+                  Fallback when a tenant has no per-tenant override in Portal Management
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => updateField('guestPortalEnabled', !settings.guestPortalEnabled)}
+                className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${
+                  settings.guestPortalEnabled ? 'bg-emerald-500' : 'bg-slate-300 dark:bg-slate-600'
+                }`}
+              >
+                <span className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform ${
+                  settings.guestPortalEnabled ? 'translate-x-5' : 'translate-x-0.5'
+                }`} />
+              </button>
+            </div>
+          </div>
+
+          {/* Security & Session Policy + Operations */}
+          <div className="space-y-6">
+            <div className="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 p-6 space-y-4">
+              <div className="flex items-center gap-2 border-b border-slate-200 dark:border-slate-700 pb-3">
+                <Shield size={18} className="text-indigo-500" />
+                <h3 className="font-semibold text-slate-900 dark:text-white">Security & Session Policy</h3>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
+                    Session Idle Timeout (min)
+                  </label>
+                  <input
+                    type="number"
+                    min={0}
+                    max={43200}
+                    value={settings.sessionTimeout}
+                    onChange={(e) => updateField('sessionTimeout', Math.max(0, parseInt(e.target.value || '0', 10)))}
+                    className={inputCls}
+                  />
+                  <p className="text-xs text-slate-400 mt-1">0 uses default (8 hours)</p>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
+                    Max Concurrent Sessions
+                  </label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={50}
+                    value={settings.maxConcurrentSessions}
+                    onChange={(e) => updateField('maxConcurrentSessions', Math.max(1, parseInt(e.target.value || '3', 10)))}
+                    className={inputCls}
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
+                  Password Complexity
+                </label>
+                <select
+                  value={settings.passwordComplexity}
+                  onChange={(e) => updateField('passwordComplexity', e.target.value as 'low' | 'medium' | 'high')}
+                  className={inputCls}
+                >
+                  <option value="low">Low (minimum length)</option>
+                  <option value="medium">Medium (mixed case + numbers)</option>
+                  <option value="high">High (uppercase, lowercase, digit, symbol)</option>
+                </select>
+              </div>
+
+              <div className="flex flex-wrap gap-6 pt-2">
+                <label className="inline-flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={settings.forceMfa}
+                    onChange={(e) => updateField('forceMfa', e.target.checked)}
+                    className="rounded border-slate-300"
+                  />
+                  Force MFA
+                </label>
+                <label className="inline-flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={settings.strictPasswordRotation}
+                    onChange={(e) => updateField('strictPasswordRotation', e.target.checked)}
+                    className="rounded border-slate-300"
+                  />
+                  Strict Password Rotation
+                </label>
+              </div>
+            </div>
+
+            <div className="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 p-6 space-y-4">
+              <div className="flex items-center gap-2 border-b border-slate-200 dark:border-slate-700 pb-3">
+                <Settings size={18} className="text-indigo-500" />
+                <h3 className="font-semibold text-slate-900 dark:text-white">System Operations</h3>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
+                    Backup Frequency
+                  </label>
+                  <select
+                    value={settings.backupFrequency}
+                    onChange={(e) => updateField('backupFrequency', e.target.value as 'daily' | 'weekly' | 'manual')}
+                    className={inputCls}
+                  >
+                    <option value="daily">Daily</option>
+                    <option value="weekly">Weekly</option>
+                    <option value="manual">Manual</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
+                    System Log Level
+                  </label>
+                  <select
+                    value={settings.systemLogLevel}
+                    onChange={(e) => updateField('systemLogLevel', e.target.value as 'info' | 'detailed' | 'debug')}
+                    className={inputCls}
+                  >
+                    <option value="info">Info</option>
+                    <option value="detailed">Detailed</option>
+                    <option value="debug">Debug</option>
+                  </select>
+                </div>
+              </div>
+
+              {settings.updatedAt && (
+                <p className="text-xs text-slate-400">
+                  Last updated: {new Date(settings.updatedAt).toLocaleString()}
+                </p>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+    </form>
   );
 };
 
@@ -1565,7 +2545,7 @@ const TenantDataModal: React.FC<{ tenant: Tenant; onClose: () => void; onRefresh
   const [deleting, setDeleting] = useState(false);
   const [importFile, setImportFile] = useState<File | null>(null);
 
-  const apiBase = getSubdomainInfo().isAdmin ? `https://admin.${window.location.hostname.split('.').slice(-2).join('.')}` : '';
+  const apiBase = getApiBaseUrl();
 
   const handleExport = async () => {
     setExporting(true);

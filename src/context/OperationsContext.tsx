@@ -7,7 +7,7 @@
  * separate from pricing, reservations, and finance state.
  */
 
-import React, { createContext, useContext, useState, useCallback, useEffect } from 'react';
+import React, { createContext, useContext, useState, useCallback, useEffect, useRef } from 'react';
 import type { AirportShuttleRequest } from '../types/erp';
 import { supabase, hasSupabaseConfig } from '../lib/supabase';
 
@@ -21,11 +21,16 @@ export interface OperationsContextType {
 
 const OperationsContext = createContext<OperationsContextType | undefined>(undefined);
 
-export const OperationsProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+export const OperationsProvider: React.FC<{ enabled?: boolean; children: React.ReactNode }> = ({
+  enabled = true,
+  children,
+}) => {
   const [airportShuttleRequests, setAirportShuttleRequests] = useState<AirportShuttleRequest[]>([]);
+  const enabledRef = useRef(enabled);
+  enabledRef.current = enabled;
 
   const refreshData = useCallback(async () => {
-    if (!hasSupabaseConfig) return;
+    if (!enabledRef.current || !hasSupabaseConfig) return;
     try {
       const { data, error } = await supabase
         .from('airport_shuttle_requests')
@@ -62,8 +67,9 @@ export const OperationsProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   }, []);
 
   useEffect(() => {
+    if (!enabled) return;
     refreshData();
-  }, [refreshData]);
+  }, [enabled, refreshData]);
 
   const addAirportShuttleRequest = useCallback((request: Omit<AirportShuttleRequest, 'id' | 'createdAt' | 'updatedAt'>) => {
     const newId = `shuttle_${Date.now()}`;

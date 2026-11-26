@@ -9,7 +9,7 @@
  * source of truth, with localStorage as an offline cache fallback.
  */
 
-import React, { createContext, useContext, useState, useCallback } from 'react';
+import React, { createContext, useContext, useState, useCallback, useRef } from 'react';
 import { InventoryItem, Store, Requisition, RequisitionStatus, StockMovement, Supplier } from '../types/inventory';
 import { useSystem } from './SystemContext';
 import {
@@ -130,7 +130,12 @@ function uinvLedgerToLegacy(l: UinvLedgerEntry): StockMovement {
 
 // ── Provider ─────────────────────────────────────────────────────────────
 
-export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+export const InventoryProvider: React.FC<{ enabled?: boolean; children: React.ReactNode }> = ({
+  enabled = true,
+  children,
+}) => {
+  const enabledRef = useRef(enabled);
+  enabledRef.current = enabled;
   const { logAudit } = useSystem();
 
   const [inventoryItems, setInventoryItems] = useState<InventoryItem[]>(() => {
@@ -199,6 +204,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
   // ── Sync from unified inventory API ────────────────────────────────────
   const refreshData = useCallback(async () => {
+    if (!enabledRef.current) return;
     try {
       const [items, stores, issues, ledger] = await Promise.all([
         fetchUinvItems().catch(() => [] as UinvItem[]),
@@ -234,8 +240,9 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   }, [persistRequisitions, persistStockMovements]);
 
   React.useEffect(() => {
+    if (!enabled) return;
     refreshData();
-  }, [refreshData]);
+  }, [enabled, refreshData]);
 
   // ── Stock movements (local cache; ledger is authoritative server-side) ─
   const recordStockMovement = useCallback((movementData: Omit<StockMovement, 'id'>) => {

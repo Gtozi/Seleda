@@ -46,11 +46,15 @@ export const useGroup = () => {
   return context;
 };
 
-export const GroupProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+export const GroupProvider: React.FC<{ enabled?: boolean; children: React.ReactNode }> = ({
+  enabled = true,
+  children,
+}) => {
   const { logAudit, addNotification } = useSystem();
   const [groupProfiles, setGroupProfiles] = useState<GroupProfile[]>([]);
 
   React.useEffect(() => {
+    if (!enabled) return;
     if (groupProfileService.isConfigured()) {
       groupProfileService.fetchGroupProfiles()
         .then(data => {
@@ -58,7 +62,7 @@ export const GroupProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         })
         .catch(console.error);
     }
-  }, []);
+  }, [enabled]);
 
   const fetchGroupProfiles = useCallback(async () => {
     if (!groupProfileService.isConfigured()) {

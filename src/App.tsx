@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.5
  */
 
-import React, { Suspense, lazy, useState, useEffect } from 'react';
+import React, { Suspense, lazy, useState, useEffect, useRef } from 'react';
 import { Routes, Route, useLocation, Navigate, useNavigate } from 'react-router-dom';
 import { useERP } from './context/ERPContext';
 import { AppProviders } from './context/AppProviders';
@@ -166,7 +166,7 @@ function BookingRedirect() {
   return <Navigate to={`/public-portal?${params}`} replace />;
 }
 
-function MasterHotelERP() {
+function MasterHotelERP({ onErpAuthChange }: { onErpAuthChange?: (authenticated: boolean) => void }) {
   const location = useLocation();
   const navigate = useNavigate();
   const { 
@@ -204,15 +204,15 @@ function MasterHotelERP() {
     }
   }, [sessionChecked, currentUser]);
 
-  // If on admin subdomain, redirect to /admin route (super admin portal)
-  // Use sessionStorage to prevent loops across page reloads
+  // Notify outer AppProviders whether an active ERP/POS session is present
   React.useEffect(() => {
-    if (isAdminSubdomain && !location.pathname.startsWith('/admin')) {
-      const redirectKey = 'admin_redirect_done';
-      if (!sessionStorage.getItem(redirectKey)) {
-        sessionStorage.setItem(redirectKey, '1');
-        navigate('/admin', { replace: true });
-      }
+    onErpAuthChange?.(Boolean(currentUser || posUser));
+  }, [currentUser, posUser, onErpAuthChange]);
+
+  // Keep admin subdomain ERP paths anchored to /admin without blocking /login
+  React.useEffect(() => {
+    if (isAdminSubdomain && (location.pathname === '/' || location.pathname === '/erp' || location.pathname.startsWith('/erp/'))) {
+      navigate('/admin', { replace: true });
     }
   }, [isAdminSubdomain, location.pathname, navigate]);
 
@@ -268,38 +268,57 @@ function MasterHotelERP() {
   }, []);
 
   const { systemUsers, syncUserProfile } = useERP();
+  const sessionVerifiedRef = useRef(false);
 
   React.useEffect(() => {
+    if (sessionVerifiedRef.current) return;
+    const path = location.pathname;
+    const skipVerify = path === '/'
+      || ['/login', '/admin/login', '/public-portal', '/booking', '/guest', '/guest-portal', '/pos/login']
+        .some(p => path === p || path.startsWith(`${p}/`))
+      || Boolean((location.state as { sessionUnauthenticated?: boolean } | null)?.sessionUnauthenticated);
+
+    if (skipVerify) {
+      if (!sessionChecked) setSessionChecked(true);
+      return;
+    }
+
     let active = true;
-    verifySession().then(user => {
-      if (!active) return;
-      if (user) {
-        setCurrentUser(user);
-        // Sync userProfile with actual authentication data
-        syncUserProfile({
-          id: user.id,
-          name: user.name,
-          email: user.email,
-          role: user.role,
-          roleDescription: user.roleDescription,
-          avatar: user.avatarInitials,
-          lastLogin: user.lastLogin || new Date().toISOString(),
-          department: user.department,
-          employeeId: user.employeeId,
-          mobileNumber: user.mobileNumber,
-          username: user.username,
-          status: user.status,
-        });
-        // Phase 3: department is now URL-driven — no setActiveDept needed.
-        // If the user is on /erp (index), ErpIndexRedirect will redirect to
-        // their default department based on their role.
-      }
-      setSessionChecked(true);
-    });
+    sessionVerifiedRef.current = true;
+    setSessionChecked(false);
+    verifySession()
+      .then(user => {
+        if (!active) return;
+        if (user) {
+          setCurrentUser(user);
+          // Sync userProfile with actual authentication data
+          syncUserProfile({
+            id: user.id,
+            name: user.name,
+            email: user.email,
+            role: user.role,
+            roleDescription: user.roleDescription,
+            avatar: user.avatarInitials,
+            lastLogin: user.lastLogin || new Date().toISOString(),
+            department: user.department,
+            employeeId: user.employeeId,
+            mobileNumber: user.mobileNumber,
+            username: user.username,
+            status: user.status,
+          });
+          // Phase 3: department is now URL-driven — no setActiveDept needed.
+          // If the user is on /erp (index), ErpIndexRedirect will redirect to
+          // their default department based on their role.
+        }
+        setSessionChecked(true);
+      })
+      .catch(() => {
+        if (active) setSessionChecked(true);
+      });
     return () => {
       active = false;
     };
-  }, []);
+  }, [location.pathname, location.state, isAdminSubdomain]);
 
   // Restore POS session — any ERP session with outlet assignments grants POS
   // access. Runs once per signed-in user id so a POS-only login (which leaves
@@ -392,6 +411,8 @@ function MasterHotelERP() {
   }, [currentUser, refreshAllData]);
 
   const handleLoginSuccess = (user: User, forcePasswordChange?: boolean) => {
+    sessionVerifiedRef.current = true;
+    setSessionChecked(true);
     setCurrentUser(user);
     syncUserProfile({
       id: user.id,
@@ -440,9 +461,9 @@ function MasterHotelERP() {
       navigate(getDefaultErpPath(user));
     }
 
-    // Re-fetch all ERP data now that the user is authenticated.
-    // Sub-contexts fired their initial refreshData() on mount while
-    // unauthenticated, so those calls returned 401 and left state empty.
+    // When transitioning from unauthenticated -> authenticated, AppProviders flips
+    // `enabled` to true so every context initializes automatically; refreshAllData
+    // also handles re-authentication when providers are already enabled.
     refreshAllData();
   };
 
@@ -1153,12 +1174,13 @@ function MasterHotelERP() {
             } />
             <Route path="*" element={<ErpIndexRedirect currentUser={currentUser} />} />
           </Route>
-          {/* Apex/www serve an empty page — tenant public portals live on
-              <code>.seledabet.com subdomains only. */}
+          {/* Root redirect: admin subdomain -> /admin, tenant subdomain -> public portal, apex -> empty */}
           <Route path="/" element={
-            subdomainInfo.tenantCode
-              ? <Navigate to="/public-portal" replace />
-              : <div className="min-h-screen bg-slate-950" />
+            isAdminSubdomain
+              ? <Navigate to="/admin" replace />
+              : subdomainInfo.tenantCode
+                ? <Navigate to="/public-portal" replace />
+                : <div className="min-h-screen bg-slate-950" />
           } />
           {/* Standalone KDS Display — accessible at /kds */}
           <Route
@@ -1210,6 +1232,9 @@ function MasterHotelERP() {
             path="/admin/login"
             element={
               <LoginPage onLoginSuccess={(user) => {
+                sessionVerifiedRef.current = true;
+                setSessionChecked(true);
+                setCurrentUser(user);
                 if (user.isSuperAdmin) {
                   navigate('/admin');
                 } else {
@@ -1234,14 +1259,21 @@ function MasterHotelERP() {
 }
 
 export default function App() {
+  const location = useLocation();
+  const [erpAuthenticated, setErpAuthenticated] = useState(false);
+
   // The apex/www host serves no application UI at all — tenant portals live
   // on <code>.seledabet.com subdomains and platform admin on admin.*.
   const apexHost = !import.meta.env.DEV &&
     (window.location.hostname === BASE_DOMAIN || window.location.hostname === `www.${BASE_DOMAIN}`);
+  const isStandaloneAdminRoute = location.pathname === '/admin' || location.pathname.startsWith('/admin/');
+  const isPublicRoute = ['/public-portal', '/booking', '/guest', '/guest-portal', '/pos/login']
+    .some(p => location.pathname === p || location.pathname.startsWith(`${p}/`));
+  const erpDataEnabled = erpAuthenticated && !apexHost && !isStandaloneAdminRoute && !isPublicRoute;
 
   return (
     <ErrorBoundary onError={(error, errorInfo) => console.error('App Error:', error, errorInfo)}>
-      <AppProviders>
+      <AppProviders enabled={erpDataEnabled}>
         {apexHost ? (
           <div className="min-h-screen bg-slate-950" />
         ) : (
@@ -1249,7 +1281,7 @@ export default function App() {
           {/* Admin Portal - standalone route without ERP chrome */}
           <Route path="/admin" element={<AdminPortalWrapper />} />
           {/* All other routes use the main ERP layout */}
-          <Route path="/*" element={<MasterHotelERP />} />
+          <Route path="/*" element={<MasterHotelERP onErpAuthChange={setErpAuthenticated} />} />
         </Routes>
         )}
       </AppProviders>
@@ -1286,7 +1318,7 @@ function AdminPortalWrapper() {
   }
 
   if (!currentUser) {
-    return <Navigate to="/login?redirect=/admin" replace />;
+    return <Navigate to="/login?redirect=/admin" state={{ sessionUnauthenticated: true }} replace />;
   }
 
   if (!currentUser.isSuperAdmin) {

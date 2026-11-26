@@ -8,7 +8,7 @@
  * for pricing/catalog state.
  */
 
-import React, { createContext, useContext, useState, useCallback, useEffect } from 'react';
+import React, { createContext, useContext, useState, useCallback, useEffect, useRef } from 'react';
 import type {
   RoomTypeDetail,
   YieldPolicy,
@@ -44,7 +44,12 @@ export interface PricingContextType {
 
 const PricingContext = createContext<PricingContextType | undefined>(undefined);
 
-export const PricingProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+export const PricingProvider: React.FC<{ enabled?: boolean; children: React.ReactNode }> = ({
+  enabled = true,
+  children,
+}) => {
+  const enabledRef = useRef(enabled);
+  enabledRef.current = enabled;
   // Yield policies state
   const [yieldPolicies, setYieldPolicies] = useState<YieldPolicy[]>([]);
 
@@ -145,7 +150,7 @@ export const PricingProvider: React.FC<{ children: React.ReactNode }> = ({ child
   ]);
 
   const refreshData = useCallback(async () => {
-    if (!hasSupabaseConfig) return;
+    if (!enabledRef.current || !hasSupabaseConfig) return;
     try {
       const { data: yieldData } = await supabase.from('yield_policies').select('*');
       if (yieldData) {
@@ -196,8 +201,9 @@ export const PricingProvider: React.FC<{ children: React.ReactNode }> = ({ child
   }, []);
 
   useEffect(() => {
+    if (!enabled) return;
     refreshData();
-  }, [refreshData]);
+  }, [enabled, refreshData]);
 
   const addRoomType = useCallback(async (roomType: Omit<RoomTypeDetail, 'id' | 'createdAt' | 'updatedAt'>) => {
     const newId = `rt_${Date.now()}`;

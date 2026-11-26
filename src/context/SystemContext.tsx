@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { createContext, useContext, useState, useCallback, useEffect } from 'react';
+import React, { createContext, useContext, useState, useCallback, useEffect, useRef } from 'react';
 import { 
   Notification, SystemAuditLog, CustomRole, User, DispatchedEmail, GlobalHotelSettings, RoomTypeMetadata, PendingAdminChange, AdminChangeType
 } from '../types/erp';
@@ -128,7 +128,12 @@ export const useSystem = () => {
   return context;
 };
 
-export const SystemProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+export const SystemProvider: React.FC<{ enabled?: boolean; children: React.ReactNode }> = ({
+  enabled = true,
+  children,
+}) => {
+  const enabledRef = useRef(enabled);
+  enabledRef.current = enabled;
   const [platformView, setPlatformView] = useState<'erp' | 'direct' | 'mobile'>('erp');
   const [currentPropertyId, setCurrentPropertyId] = useState<string | null>(() => localStorage.getItem('erp_property_id'));
   const [properties, setProperties] = useState<PropertyInfo[]>([]);
@@ -155,7 +160,7 @@ export const SystemProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     const today = new Date();
     return today.toISOString().split('T')[0];
   });
-  const [isSystemLoading, setIsSystemLoading] = useState(true);
+  const [isSystemLoading, setIsSystemLoading] = useState(enabled);
   const [pendingAdminChanges, setPendingAdminChanges] = useState<PendingAdminChange[]>([]);
   const [settingsVersion, setSettingsVersion] = useState<number | null>(null);
   const [settingsChecksum, setSettingsChecksum] = useState<string | null>(null);
@@ -248,6 +253,7 @@ export const SystemProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   // assignment, HR events) insert into the notifications table; merge them
   // with session-local notifications (N-* ids) on each poll.
   const fetchNotifications = useCallback(async () => {
+    if (!enabledRef.current) return;
     try {
       const r = await fetch('/api/notifications', { credentials: 'include' });
       if (!r.ok) return;
@@ -272,12 +278,17 @@ export const SystemProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   }, []);
 
   useEffect(() => {
+    if (!enabled) return;
     fetchNotifications();
     const interval = setInterval(fetchNotifications, 60_000);
     return () => clearInterval(interval);
-  }, [fetchNotifications]);
+  }, [enabled, fetchNotifications]);
 
   const refreshData = useCallback(async () => {
+    if (!enabledRef.current) {
+      setIsSystemLoading(false);
+      return;
+    }
     let active = true;
     setIsSystemLoading(true);
     await Promise.all([
@@ -382,12 +393,17 @@ export const SystemProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     });
   }, []);
 
-  // Load admin data from Supabase on mount with loading tracking
+  // Load admin data when ERP session is authenticated
   useEffect(() => {
+    if (!enabled) {
+      setIsSystemLoading(false);
+      return;
+    }
     refreshData();
-  }, [refreshData]);
+  }, [enabled, refreshData]);
 
   const refreshPendingAdminChanges = useCallback(async () => {
+    if (!enabledRef.current) return;
     try {
       const r = await fetch('/api/admin/pending-changes', { credentials: 'include' });
       if (r.ok) {
@@ -403,10 +419,11 @@ export const SystemProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     }
   }, []);
 
-  // Load pending admin changes from DB on mount
+  // Load pending admin changes when ERP session is authenticated
   useEffect(() => {
+    if (!enabled) return;
     refreshPendingAdminChanges();
-  }, [refreshPendingAdminChanges]);
+  }, [enabled, refreshPendingAdminChanges]);
 
   const addStructuredAuditLog = useCallback((log: Omit<SystemAuditLog, 'id' | 'timestamp'>) => {
     const newLog: SystemAuditLog = {
@@ -486,23 +503,6 @@ export const SystemProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       return false;
     }
   }, [globalHotelSettings]);
-
-  // Load pending admin changes from DB on mount
-  useEffect(() => {
-    fetch('/api/admin/pending-changes', { credentials: 'include' })
-      .then(r => {
-        if (r.ok) return r.json();
-        if (r.status === 401) return []; // Not authenticated, return empty array
-        console.warn(`Pending changes fetch returned status ${r.status}`);
-        return [];
-      })
-      .then((data: PendingAdminChange[]) => {
-        if (Array.isArray(data)) setPendingAdminChanges(data);
-      })
-      .catch((err) => {
-        console.warn('Failed to fetch pending changes:', err);
-      });
-  }, []);
 
   const submitAdminChange = useCallback((change: Omit<PendingAdminChange, 'id' | 'submittedAt' | 'status'>) => {
     const newChange: PendingAdminChange = {

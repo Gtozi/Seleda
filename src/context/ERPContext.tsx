@@ -674,15 +674,18 @@ const ERPContextWrapper: React.FC<{ children: React.ReactNode }> = ({ children }
   );
 };
 
-export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+export const ERPProvider: React.FC<{ enabled?: boolean; children: React.ReactNode }> = ({
+  enabled = true,
+  children,
+}) => {
   return (
-    <SystemProvider>
-      <GuestProvider>
-        <ReservationProvider>
-          <InventoryProvider>
-            <FinanceProvider>
-              <PricingProvider>
-                <OperationsProvider>
+    <SystemProvider enabled={enabled}>
+      <GuestProvider enabled={enabled}>
+        <ReservationProvider enabled={enabled}>
+          <InventoryProvider enabled={enabled}>
+            <FinanceProvider enabled={enabled}>
+              <PricingProvider enabled={enabled}>
+                <OperationsProvider enabled={enabled}>
                   <ERPContextWrapper>
                     {children}
                   </ERPContextWrapper>

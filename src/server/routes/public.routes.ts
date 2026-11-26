@@ -2,7 +2,7 @@ import { Router, type Response } from 'express';
 import { createHash, randomUUID } from 'crypto';
 import { z } from 'zod';
 import { hasSupabaseAdminConfig, supabaseAdmin } from '../supabaseAdmin';
-import { getTypeAvailability, getRoomImageUrl, autoAssignRoomsForPublicBookings, writeAuditEvent } from '../services/sharedServices';
+import { getTypeAvailability, getRoomImageUrl, autoAssignRoomsForPublicBookings, writeAuditEvent, resolveTenantPortalFlags } from '../services/sharedServices';
 import { computeFees, getSeasonMultiplier, getRatePlanModifier, getEffectiveNightlyRate, type FeeComponent, type SeasonRow, type RatePlanRow } from '../../utils/pricing';
 import { getGlobalSettings } from '../services/settingsService';
 import { getRequestTenantId, getTenantPropertyIds, getTenantRoomTypeIds, scopeTenant, scopeProperty, tenantOwnsProperty } from '../services/tenantScope';
@@ -152,12 +152,10 @@ router.get('/settings', async (req, res) => {
   if (!data) return res.json({ settings: {} });
 
   // Tenant subdomains (<tenant>.seledabet.com): req.tenant is resolved by the
-  // resolveTenant middleware — merge that tenant's portal/module toggles over
-  // the global map and expose tenant branding.
-  const tenantToggles = req.tenant?.settings?.moduleToggles;
-  const moduleToggles = tenantToggles
-    ? { ...(data.module_toggles || {}), ...tenantToggles }
-    : (data.module_toggles || {});
+  // resolveTenant middleware — overlay that tenant's portal/module flags
+  // onto global_settings so publicBookingEnabled / guestPortalEnabled apply per tenant.
+  const flags = resolveTenantPortalFlags(data, req.tenant?.settings);
+  const moduleToggles = flags.effectiveModuleToggles;
 
   const feeComponents = data.fee_components || [];
   const vatFee = feeComponents.find((f: any) => f.name.toLowerCase().includes('vat') && f.isEnabled);
@@ -177,8 +175,8 @@ router.get('/settings', async (req, res) => {
       taxPercent: vatFee ? vatFee.value : (data.tax_percent || 0),
       serviceChargePercent: scFee ? scFee.value : (data.service_charge_percent || 0),
       exchangeRate: data.exchange_rate || 1,
-      publicBookingEnabled: data.public_booking_enabled ?? true,
-      guestPortalEnabled: data.guest_portal_enabled ?? true,
+      publicBookingEnabled: flags.publicBookingEnabled,
+      guestPortalEnabled: flags.guestPortalEnabled,
       moduleToggles,
       tenant: req.tenant ? { id: req.tenant.id, name: req.tenant.name, code: req.tenant.code } : null,
       maintenanceMode: data.maintenance_mode ?? false,
@@ -1100,9 +1098,10 @@ router.post('/bookings', publicBookingLimiter, async (req, res) => {
       return res.status(400).json({ error: 'At least one room is required' });
     }
 
-    // Check if public booking is enabled and not in maintenance mode
+    // Check if public booking is enabled (tenant override or global) and not in maintenance mode
     const settings = await getGlobalSettings();
-    if (!settings?.public_booking_enabled) {
+    const portalFlags = resolveTenantPortalFlags(settings, req.tenant?.settings);
+    if (!portalFlags.publicBookingEnabled) {
       return res.status(503).json({ error: 'Public booking is currently disabled' });
     }
     if (settings?.maintenance_mode) {

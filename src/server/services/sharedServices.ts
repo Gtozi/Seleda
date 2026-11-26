@@ -586,3 +586,80 @@ export async function autoAssignRoomsForPublicBookings(
 
   return assignedRooms;
 }
+
+// ─── Tenant Portal Flag Resolution ───────────────────────────────────────
+
+export interface ResolvedPortalFlags {
+  publicPortalEnabled: boolean;
+  publicBookingEnabled: boolean;
+  guestPortalEnabled: boolean;
+  portalSettings: {
+    enabled: boolean;
+    customDomain: string | null;
+    publicBookingEnabled: boolean | null;
+    guestPortalEnabled: boolean | null;
+    features: Record<string, any>;
+  };
+  effectiveModuleToggles: Record<string, boolean>;
+}
+
+/**
+ * Compute effective public-booking and guest-portal availability by layering
+ * a tenant's settings (`portal.*` and `moduleToggles.*`) onto `global_settings`.
+ */
+export function resolveTenantPortalFlags(
+  globalSettings: Record<string, any> | null | undefined,
+  tenantSettings: Record<string, any> | null | undefined
+): ResolvedPortalFlags {
+  const globalToggles: Record<string, boolean> = { ...(globalSettings?.module_toggles || {}) };
+  const tenantToggles: Record<string, boolean> = { ...(tenantSettings?.moduleToggles || {}) };
+  const portal = (tenantSettings?.portal && typeof tenantSettings.portal === 'object')
+    ? tenantSettings.portal
+    : {};
+
+  const globalPublicBooking = (globalSettings?.public_booking_enabled ?? true) !== false && globalToggles.public_booking !== false;
+  const globalGuestPortal = (globalSettings?.guest_portal_enabled ?? true) !== false && globalToggles.guest !== false;
+
+  const portalMasterEnabled = portal.enabled !== false;
+
+  const bookingOverride = typeof tenantToggles.public_booking === 'boolean'
+    ? tenantToggles.public_booking
+    : (typeof portal.publicBookingEnabled === 'boolean' ? portal.publicBookingEnabled : undefined);
+
+  const guestOverride = typeof tenantToggles.guest === 'boolean'
+    ? tenantToggles.guest
+    : (typeof portal.guestPortalEnabled === 'boolean' ? portal.guestPortalEnabled : undefined);
+
+  const effectiveModuleToggles: Record<string, boolean> = {
+    ...globalToggles,
+    ...tenantToggles,
+  };
+
+  const publicPortalEnabled = portalMasterEnabled && effectiveModuleToggles.public !== false;
+  const publicBookingEnabled = portalMasterEnabled && (bookingOverride !== undefined ? bookingOverride : globalPublicBooking);
+  const guestPortalEnabled = portalMasterEnabled && (guestOverride !== undefined ? guestOverride : globalGuestPortal);
+
+  if (bookingOverride !== undefined || !publicBookingEnabled) {
+    effectiveModuleToggles.public_booking = publicBookingEnabled;
+  }
+  if (guestOverride !== undefined || !guestPortalEnabled) {
+    effectiveModuleToggles.guest = guestPortalEnabled;
+  }
+  if (!portalMasterEnabled) {
+    effectiveModuleToggles.public = false;
+  }
+
+  return {
+    publicPortalEnabled,
+    publicBookingEnabled,
+    guestPortalEnabled,
+    portalSettings: {
+      enabled: portalMasterEnabled,
+      customDomain: typeof portal.customDomain === 'string' && portal.customDomain.trim() ? portal.customDomain.trim() : null,
+      publicBookingEnabled: typeof portal.publicBookingEnabled === 'boolean' ? portal.publicBookingEnabled : null,
+      guestPortalEnabled: typeof portal.guestPortalEnabled === 'boolean' ? portal.guestPortalEnabled : null,
+      features: (portal.features && typeof portal.features === 'object') ? portal.features : {},
+    },
+    effectiveModuleToggles,
+  };
+}

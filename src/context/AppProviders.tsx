@@ -13,10 +13,13 @@ import { ModalReturnProvider } from './ModalReturnContext';
  * ERPProvider internally composes System, Guest, Reservation, Inventory,
  * Finance, Pricing, and Operations providers.
  */
-export const AppProviders: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+export const AppProviders: React.FC<{ enabled?: boolean; children: React.ReactNode }> = ({
+  enabled = true,
+  children,
+}) => {
   return (
-    <ERPProvider>
-      <GroupProvider>
+    <ERPProvider enabled={enabled}>
+      <GroupProvider enabled={enabled}>
         <ModalReturnProvider>
           {children}
         </ModalReturnProvider>
