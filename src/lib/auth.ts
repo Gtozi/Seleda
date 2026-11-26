@@ -267,6 +267,31 @@ export const requestPasswordReset = async (
 };
 
 /**
+ * Staff forgot-password — notifies the tenant's admins, who issue a
+ * temporary password from the Admin portal.
+ */
+export const forgotPassword = async (
+  identifier: string
+): Promise<{ success: boolean; error?: string; message?: string }> => {
+  try {
+    const apiBase = getApiBaseUrl();
+    const response = await fetch(`${apiBase}/api/auth/forgot-password`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ identifier }),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      return { success: false, error: data.error || 'Request failed' };
+    }
+    return { success: true, message: data.message };
+  } catch (error) {
+    console.error('Forgot password error:', error);
+    return { success: false, error: 'Network error. Please try again.' };
+  }
+};
+
+/**
  * Reset password with token
  */
 export const resetPassword = async (

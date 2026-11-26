@@ -149,7 +149,7 @@ const TENANT_TABLES = new Set([
   'inventory_suppliers', 'journal_entries', 'journal_lines', 'lost_found', 'menu_items',
   'allotments', 'allotment_pickup_log', 'pre_registrations', 'vouchers',
   'work_requests', 'guest_communications', 'guest_feedback',
-  'metric_history', 'mobile_check_ins', 'orders', 'outlets', 'packages', 'pm_schedules',
+  'metric_history', 'mobile_check_ins', 'orders', 'outlets', 'packages', 'password_reset_requests', 'pm_schedules',
   'properties', 'rate_plans', 'recipes', 'reconciliation_batches', 'report_schedules',
   'reporting_snapshots', 'requisitions', 'reservations', 'rooms', 'sales_contracts',
   'sales_leads', 'sales_proposals', 'seasons', 'security_incidents', 'spa_appointments',

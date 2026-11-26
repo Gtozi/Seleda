@@ -7,9 +7,23 @@ import { Router } from 'express';
 import { authenticate, requirePermission } from '../middleware/auth';
 import { hasSupabaseAdminConfig, supabaseAdmin } from '../supabaseAdmin';
 import { writeAuditEvent, processApiIntegrationsOnRead, processApiIntegrationsOnWrite } from '../services/sessionService';
+import { getGlobalSettings, invalidateGlobalSettingsCache } from '../services/settingsService';
+import { isValidTenantCode, invalidateTenantCache } from '../middleware/tenant';
+import { invalidateTenantScopeCache, runWithTenantStore, getTenantStore } from '../services/tenantScope';
+import {
+  camelToSnakeRecord,
+  snakeToCamelRecord,
+  filterKnownColumns,
+  mapSystemUserFromDb,
+  enrichUserWithDerivedPermissions,
+  fetchPasswordPolicy,
+  ensurePendingAdminChangesTable,
+  resolveTenantPortalFlags,
+} from '../services/sharedServices';
 import { userApiSchema, roleApiSchema } from '../../schemas/userSchema';
 import { processBackupJob, startBackupWorker } from '../services/backupService';
 import { validatePassword } from '../../lib/passwordPolicy';
+import { dispatchEmail, dispatchSMS } from '../services/salesMessageDispatch';
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 
@@ -1490,7 +1504,7 @@ router.patch('/platform-settings', authenticate, requireSuperAdmin, async (req, 
 
 // ── Users ──────────────────────────────────────────────────────
 
-router.get('/users', authenticate, requirePermission('users:manage'), async (req, res) => {
+router.get('/users', authenticate, requirePermission('users:manage'), async (_req, res) => {
   if (hasSupabaseAdminConfig && supabaseAdmin) {
     const { data, error } = await supabaseAdmin.from('system_users').select('*').order('name');
     if (error) return res.status(500).json({ error: error.message });
@@ -1675,7 +1689,7 @@ router.post('/users/create', authenticate, requirePermission('users:manage'), as
 
 // ── Roles ──────────────────────────────────────────────────────
 
-router.get('/roles', authenticate, requirePermission('roles:manage'), async (req, res) => {
+router.get('/roles', authenticate, requirePermission('roles:manage'), async (_req, res) => {
   if (hasSupabaseAdminConfig && supabaseAdmin) {
     const { data, error } = await supabaseAdmin
       .from('roles')
@@ -1810,7 +1824,7 @@ router.post('/custom-roles', authenticate, requirePermission('roles:manage'), as
   if (!name || !displayName) return res.status(400).json({ error: 'name and displayName are required' });
   try {
     const roleId = `ROLE-${Date.now()}`;
-    const { data, error } = await supabaseAdmin.from('roles').insert({
+    const { error } = await supabaseAdmin.from('roles').insert({
       id: roleId, name, display_name: displayName, description: description || '',
       category: category || 'custom', permissions: permissions || {},
       is_system: false, is_superuser: false, is_active: true, created_by: req.user?.id || null
@@ -2929,6 +2943,324 @@ router.patch('/public-booking-content', authenticate, requirePermission('setting
     }
   }
   return res.status(503).json({ error: 'Database not configured' });
+});
+
+// ── Password Reset Requests (staff self-service queue) ─────────────
+// Staff submit via POST /api/auth/forgot-password; tenant admins review and
+// approve here. Approving issues a temporary password with
+// force_password_change = true so the staff member must set a real password
+// at first login (ForcedPasswordChangeScreen).
+
+// Tenant whose queue the caller may manage: subdomain tenant wins, else the
+// caller's active tenant.
+function callerTenantId(req: any): string | null {
+  return req.tenant?.id || req.user?.activeTenantId || null;
+}
+
+// Enrich reset-request rows with requester + resolver user info.
+async function enrichResetRequests(rows: any[]) {
+  const requests = rows || [];
+  const userIds = [...new Set(requests.flatMap((r: any) => [r.user_id, r.resolved_by].filter(Boolean)))];
+  const { data: users } = userIds.length
+    ? await supabaseAdmin!.from('system_users').select('id, name, email, username, role').in('id', userIds)
+    : { data: [] };
+  const userById = new Map((users || []).map((u: any) => [u.id, u]));
+  return requests.map((r: any) => ({
+    ...r,
+    user: userById.get(r.user_id) || null,
+    resolvedBy: r.resolved_by ? userById.get(r.resolved_by) || null : null,
+  }));
+}
+
+// Shared approve flow: issue a temporary password (force_password_change),
+// dispatch via the configured providers, mark the request fulfilled.
+// Returns { ok:false, status, error } on failure or { ok:true, tempPassword, delivery }.
+async function approveResetRequest(
+  request: any,
+  method: string,
+  req: any
+): Promise<{ ok: boolean; status?: number; error?: string; tempPassword?: string; delivery?: any }> {
+  const { data: user } = await supabaseAdmin!
+    .from('system_users')
+    .select('id, name, email, username, mobile_number, status')
+    .eq('id', request.user_id)
+    .maybeSingle();
+  if (!user) return { ok: false, status: 404, error: 'User not found' };
+  if (user.status !== 'Active') {
+    return { ok: false, status: 400, error: `Cannot reset password for a ${user.status} account` };
+  }
+
+  // Tenant name for the message — request.tenant_id is authoritative since
+  // platform approvals happen on the admin subdomain (no req.tenant).
+  let tenantName = req.tenant?.name || '';
+  if (!tenantName && request.tenant_id) {
+    const { data: t } = await supabaseAdmin!
+      .from('tenants')
+      .select('name')
+      .eq('id', request.tenant_id)
+      .maybeSingle();
+    tenantName = t?.name || '';
+  }
+
+  // Temporary password — the user is forced to replace it on first login.
+  const tempPassword = `Tmp-${crypto.randomBytes(4).toString('base64url')}`;
+  const passwordHash = await bcrypt.hash(tempPassword, 10);
+  const { error: updateError } = await supabaseAdmin!
+    .from('system_users')
+    .update({
+      password_hash: passwordHash,
+      password_updated_at: new Date().toISOString(),
+      force_password_change: true,
+      failed_login_count: 0,
+      locked_until: null,
+      password_reset_token: null,
+      password_reset_expires: null,
+    })
+    .eq('id', user.id);
+  if (updateError) return { ok: false, status: 500, error: updateError.message };
+
+  // Dispatch via configured providers. 'manual' skips delivery — the admin
+  // copies the returned tempPassword and sends it themselves.
+  const delivery: Record<string, any> = { method };
+  const message = `Your temporary ${tenantName ? `${tenantName} ` : ''}ERP password is: ${tempPassword}. You will be required to set a new password when you sign in.`;
+
+  if (method === 'email' || method === 'both') {
+    if (user.email) {
+      delivery.email = await dispatchEmail(
+        `Temporary password — ${tenantName || 'ERP'}`,
+        `<p>${message}</p><p style="color:#64748b;font-size:12px">If you did not request this, contact your administrator.</p>`,
+        [user.email],
+      );
+    } else {
+      delivery.email = { provider: 'none', delivered: 0, failed: 0, reason: 'user has no email' };
+    }
+  }
+  if (method === 'sms' || method === 'both') {
+    if (user.mobile_number) {
+      delivery.sms = await dispatchSMS(message, [user.mobile_number]);
+    } else {
+      delivery.sms = { provider: 'none', delivered: 0, failed: 0, reason: 'user has no mobile number' };
+    }
+  }
+
+  const { error: resolveError } = await supabaseAdmin!
+    .from('password_reset_requests')
+    .update({
+      status: 'fulfilled',
+      resolved_at: new Date().toISOString(),
+      resolved_by: req.user!.id,
+      delivery_method: method,
+      delivery_result: delivery,
+    })
+    .eq('id', request.id);
+  if (resolveError) console.error('Failed to mark reset request fulfilled:', resolveError);
+
+  await writeAuditEvent({
+    req,
+    user: req.user!,
+    action: 'password.reset_request_approved',
+    entityType: 'password_reset_request',
+    entityId: request.id,
+    module: 'admin',
+    details: { userId: user.id, method, delivery, audience: request.audience || 'tenant' },
+  });
+
+  return { ok: true, tempPassword, delivery };
+}
+
+// Shared cancel flow.
+async function cancelResetRequest(requestId: string, req: any): Promise<{ ok: boolean; status?: number; error?: string }> {
+  const { error } = await supabaseAdmin!
+    .from('password_reset_requests')
+    .update({
+      status: 'cancelled',
+      resolved_at: new Date().toISOString(),
+      resolved_by: req.user!.id,
+    })
+    .eq('id', requestId);
+  if (error) return { ok: false, status: 500, error: error.message };
+
+  await writeAuditEvent({
+    req,
+    user: req.user!,
+    action: 'password.reset_request_cancelled',
+    entityType: 'password_reset_request',
+    entityId: requestId,
+    module: 'admin',
+  });
+  return { ok: true };
+}
+
+function parseDeliveryMethod(body: any): string {
+  return ['email', 'sms', 'both', 'manual'].includes(body?.method) ? body.method : 'both';
+}
+
+// ── Tenant queue (tenant admins, users:manage) ─────────────────────
+
+router.get('/password-reset-requests', authenticate, requirePermission('users:manage'), async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) {
+    return res.status(503).json({ error: 'Database not configured' });
+  }
+  const tenantId = callerTenantId(req);
+  if (!tenantId) return res.json({ requests: [] });
+
+  try {
+    const { data: rows, error } = await supabaseAdmin
+      .from('password_reset_requests')
+      .select('*')
+      .eq('tenant_id', tenantId)
+      .eq('audience', 'tenant')
+      .order('requested_at', { ascending: false })
+      .limit(200);
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ requests: await enrichResetRequests(rows || []) });
+  } catch (error) {
+    console.error('Error listing password reset requests:', error);
+    res.status(500).json({ error: 'Failed to load password reset requests' });
+  }
+});
+
+router.post('/password-reset-requests/:id/approve', authenticate, requirePermission('users:manage'), async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) {
+    return res.status(503).json({ error: 'Database not configured' });
+  }
+  const tenantId = callerTenantId(req);
+  if (!tenantId) return res.status(400).json({ error: 'No tenant context' });
+
+  try {
+    const { data: request, error: fetchError } = await supabaseAdmin
+      .from('password_reset_requests')
+      .select('*')
+      .eq('id', req.params.id)
+      .eq('tenant_id', tenantId)
+      .eq('audience', 'tenant')
+      .maybeSingle();
+    if (fetchError || !request) return res.status(404).json({ error: 'Request not found' });
+    if (request.status !== 'pending') {
+      return res.status(409).json({ error: `Request already ${request.status}` });
+    }
+
+    const result = await approveResetRequest(request, parseDeliveryMethod(req.body), req);
+    if (!result.ok) return res.status(result.status || 500).json({ error: result.error });
+    res.json({ success: true, tempPassword: result.tempPassword, delivery: result.delivery });
+  } catch (error) {
+    console.error('Error approving password reset request:', error);
+    res.status(500).json({ error: 'Failed to approve password reset request' });
+  }
+});
+
+router.post('/password-reset-requests/:id/cancel', authenticate, requirePermission('users:manage'), async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) {
+    return res.status(503).json({ error: 'Database not configured' });
+  }
+  const tenantId = callerTenantId(req);
+  if (!tenantId) return res.status(400).json({ error: 'No tenant context' });
+
+  try {
+    const { data: request } = await supabaseAdmin
+      .from('password_reset_requests')
+      .select('id, status')
+      .eq('id', req.params.id)
+      .eq('tenant_id', tenantId)
+      .eq('audience', 'tenant')
+      .maybeSingle();
+    if (!request) return res.status(404).json({ error: 'Request not found' });
+    if (request.status !== 'pending') {
+      return res.status(409).json({ error: `Request already ${request.status}` });
+    }
+
+    const result = await cancelResetRequest(request.id, req);
+    if (!result.ok) return res.status(result.status || 500).json({ error: result.error });
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Error cancelling password reset request:', error);
+    res.status(500).json({ error: 'Failed to cancel password reset request' });
+  }
+});
+
+// ── Platform queue (platform super-admins on admin.<domain>) ───────
+// Admin-role users' reset requests land here — their own tenant admins may
+// be the reason they can't sign in.
+
+// The platform queue is cross-tenant: lift the ALS tenant scope installed by
+// resolveTenant/authenticate so the supabaseAdmin interceptor doesn't filter
+// rows down to the caller's active tenant.
+const bypassTenantScope = (_req: any, _res: any, next: any) => {
+  const store = getTenantStore();
+  if (store) store.scope = null;
+  next();
+};
+
+router.get('/platform-password-reset-requests', authenticate, requireSuperAdmin, bypassTenantScope, async (_req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) {
+    return res.status(503).json({ error: 'Database not configured' });
+  }
+
+  try {
+    const { data: rows, error } = await supabaseAdmin
+      .from('password_reset_requests')
+      .select('*')
+      .eq('audience', 'platform')
+      .order('requested_at', { ascending: false })
+      .limit(200);
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ requests: await enrichResetRequests(rows || []) });
+  } catch (error) {
+    console.error('Error listing platform password reset requests:', error);
+    res.status(500).json({ error: 'Failed to load password reset requests' });
+  }
+});
+
+router.post('/platform-password-reset-requests/:id/approve', authenticate, requireSuperAdmin, bypassTenantScope, async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) {
+    return res.status(503).json({ error: 'Database not configured' });
+  }
+
+  try {
+    const { data: request, error: fetchError } = await supabaseAdmin
+      .from('password_reset_requests')
+      .select('*')
+      .eq('id', req.params.id)
+      .eq('audience', 'platform')
+      .maybeSingle();
+    if (fetchError || !request) return res.status(404).json({ error: 'Request not found' });
+    if (request.status !== 'pending') {
+      return res.status(409).json({ error: `Request already ${request.status}` });
+    }
+
+    const result = await approveResetRequest(request, parseDeliveryMethod(req.body), req);
+    if (!result.ok) return res.status(result.status || 500).json({ error: result.error });
+    res.json({ success: true, tempPassword: result.tempPassword, delivery: result.delivery });
+  } catch (error) {
+    console.error('Error approving platform password reset request:', error);
+    res.status(500).json({ error: 'Failed to approve password reset request' });
+  }
+});
+
+router.post('/platform-password-reset-requests/:id/cancel', authenticate, requireSuperAdmin, bypassTenantScope, async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) {
+    return res.status(503).json({ error: 'Database not configured' });
+  }
+
+  try {
+    const { data: request } = await supabaseAdmin
+      .from('password_reset_requests')
+      .select('id, status')
+      .eq('id', req.params.id)
+      .eq('audience', 'platform')
+      .maybeSingle();
+    if (!request) return res.status(404).json({ error: 'Request not found' });
+    if (request.status !== 'pending') {
+      return res.status(409).json({ error: `Request already ${request.status}` });
+    }
+
+    const result = await cancelResetRequest(request.id, req);
+    if (!result.ok) return res.status(result.status || 500).json({ error: result.error });
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Error cancelling platform password reset request:', error);
+    res.status(500).json({ error: 'Failed to cancel password reset request' });
+  }
 });
 
 export default router;

@@ -5,7 +5,7 @@ import { getRequestUser } from '../services/sessionService';
 import { enrichUserWithDerivedPermissions, writeAuditEvent, hasSupabaseAdminConfig, supabaseAdmin, mapSystemUserFromDb } from '../services/sharedServices';
 import {
   authenticateUser, createSession, revokeRequestSession, clearSessionCookie,
-  fetchPasswordPolicy, IS_FALLBACK_MODE, switchTenant,
+  fetchPasswordPolicy, IS_FALLBACK_MODE, switchTenant, getUserDefaultTenantId,
 } from '../services/sessionService';
 import { validatePassword } from '../../lib/passwordPolicy';
 import bcrypt from 'bcryptjs';
@@ -246,6 +246,200 @@ router.post('/request-reset', async (req, res) => {
   }
   return res.status(503).json({ error: 'Database not configured' });
 });
+
+// Staff forgot-password → queues a reset request for the tenant's admins.
+// The admin approves it in ERP Admin → User Management & Security → Password
+// Resets, which generates a temporary password (force_password_change) and
+// optionally dispatches it via the configured email/SMS provider.
+// Always returns a generic success so the endpoint can't enumerate accounts.
+router.post('/forgot-password', async (req, res) => {
+  const generic = {
+    success: true,
+    message: 'If an account exists for that email or username, your administrator has been notified.',
+  };
+  const identifier = String(req.body?.identifier || req.body?.email || '').trim();
+  if (!identifier) return res.status(400).json({ error: 'Email or username is required' });
+
+  if (IS_FALLBACK_MODE || !hasSupabaseAdminConfig || !supabaseAdmin) {
+    return res.json(generic);
+  }
+
+  try {
+    const escaped = identifier.replace(/[%_\\]/g, '\\$&');
+    const { data: users } = await supabaseAdmin
+      .from('system_users')
+      .select('id, name, email, username, role, status')
+      .or(`email.ilike.${escaped},username.ilike.${escaped}`)
+      .limit(2);
+    const user = (users || [])[0];
+
+    if (user) {
+      // Tenant context: the subdomain wins; on the main domain fall back to
+      // the user's default tenant assignment so the request still lands in
+      // a tenant admin's queue.
+      const tenantId = req.tenant?.id || (await getUserDefaultTenantId(user.id));
+
+      // Admin-role requesters (and tenant super-admins) can't be helped by
+      // the tenant queue — their own admins may be the problem — so their
+      // requests escalate to the platform super-admins on admin.<domain>.
+      const audience = await isAdminLevelUser(user, tenantId) ? 'platform' : 'tenant';
+
+      if (tenantId) {
+        const { data: existing } = await supabaseAdmin
+          .from('password_reset_requests')
+          .select('id')
+          .eq('user_id', user.id)
+          .eq('tenant_id', tenantId)
+          .eq('audience', audience)
+          .eq('status', 'pending')
+          .maybeSingle();
+
+        if (existing) {
+          await supabaseAdmin
+            .from('password_reset_requests')
+            .update({ requested_at: new Date().toISOString() })
+            .eq('id', existing.id);
+        } else {
+          const { data: inserted, error: insertError } = await supabaseAdmin
+            .from('password_reset_requests')
+            .insert({
+              tenant_id: tenantId,
+              user_id: user.id,
+              requested_identifier: identifier,
+              audience,
+            })
+            .select('id')
+            .single();
+
+          if (!insertError && inserted) {
+            if (audience === 'platform') {
+              await notifyPlatformSuperAdminsOfResetRequest(user);
+            } else {
+              await notifyTenantAdminsOfResetRequest(tenantId, user);
+            }
+          }
+        }
+      }
+
+      await writeAuditEvent({
+        req,
+        action: 'password.reset_request_created',
+        module: 'auth',
+        details: { userId: user.id, tenantId: tenantId || null, audience },
+      });
+    }
+  } catch (error) {
+    console.error('[auth] forgot-password failed:', error);
+  }
+
+  return res.json(generic);
+});
+
+// True when the requester is themselves an administrator — admin-like role
+// or a super-admin assignment on the resolved tenant. Their reset request is
+// escalated to platform super-admins instead of the tenant queue.
+async function isAdminLevelUser(
+  user: { id: string; role?: string | null },
+  tenantId: string | null
+): Promise<boolean> {
+  if (['admin', 'administrator'].includes(String(user.role || '').toLowerCase())) return true;
+  if (!tenantId || !hasSupabaseAdminConfig || !supabaseAdmin) return false;
+  try {
+    const { data } = await supabaseAdmin
+      .from('tenant_user_assignments')
+      .select('is_super_admin')
+      .eq('user_id', user.id)
+      .eq('tenant_id', tenantId)
+      .maybeSingle();
+    return data?.is_super_admin === true;
+  } catch {
+    return false;
+  }
+}
+
+// Notify platform super-admins (is_super_admin on any tenant assignment)
+// that an admin-level user requested a password reset.
+async function notifyPlatformSuperAdminsOfResetRequest(
+  requester: { id: string; name?: string | null; email?: string | null; role?: string | null }
+) {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) return;
+  try {
+    const { data: assignments } = await supabaseAdmin
+      .from('tenant_user_assignments')
+      .select('user_id')
+      .eq('is_super_admin', true);
+    const ids = [...new Set((assignments || []).map((a: any) => a.user_id).filter(Boolean))];
+    if (ids.length === 0) return;
+
+    const { data: users } = await supabaseAdmin
+      .from('system_users')
+      .select('id, name, property_id')
+      .in('id', ids);
+
+    const rows = (users || [])
+      .filter((u: any) => u.property_id)
+      .map((u: any) => ({
+        id: crypto.randomUUID(),
+        property_id: u.property_id,
+        message: `Admin password reset requested by ${requester.name || requester.email || 'an administrator'} (${requester.role || 'admin'}). Review it in the Super Admin Portal → Password Resets.`,
+        type: 'warning',
+        department: 'Admin',
+        read: false,
+      }));
+
+    if (rows.length > 0) {
+      await supabaseAdmin.from('notifications').insert(rows);
+    }
+  } catch (error) {
+    console.error('[auth] failed to notify platform super-admins of reset request:', error);
+  }
+}
+
+// Best-effort bell notification to the tenant's admin-role users (and tenant
+// super-admins) so the request is visible outside the Admin portal queue.
+async function notifyTenantAdminsOfResetRequest(
+  tenantId: string,
+  requester: { id: string; name?: string | null }
+) {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) return;
+  try {
+    const { data: assignments } = await supabaseAdmin
+      .from('tenant_user_assignments')
+      .select('user_id, is_super_admin')
+      .eq('tenant_id', tenantId);
+    const ids = (assignments || []).map((a: any) => a.user_id).filter(Boolean);
+    if (ids.length === 0) return;
+
+    const superAdminIds = new Set(
+      (assignments || []).filter((a: any) => a.is_super_admin).map((a: any) => a.user_id)
+    );
+    const { data: users } = await supabaseAdmin
+      .from('system_users')
+      .select('id, name, role, property_id')
+      .in('id', ids);
+
+    const admins = (users || []).filter((u: any) =>
+      superAdminIds.has(u.id) || ['admin', 'administrator'].includes(String(u.role || '').toLowerCase())
+    );
+
+    const rows = admins
+      .filter((u: any) => u.property_id)
+      .map((u: any) => ({
+        id: crypto.randomUUID(),
+        property_id: u.property_id,
+        message: `Password reset requested by ${requester.name || 'a staff member'}. Review it in Admin → User Management & Security → Password Resets.`,
+        type: 'warning',
+        department: 'Admin',
+        read: false,
+      }));
+
+    if (rows.length > 0) {
+      await supabaseAdmin.from('notifications').insert(rows);
+    }
+  } catch (error) {
+    console.error('[auth] failed to notify tenant admins of reset request:', error);
+  }
+}
 
 // Reset password
 router.post('/reset-password', async (req, res) => {

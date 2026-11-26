@@ -16,7 +16,7 @@ import {
   AlertCircle
 } from 'lucide-react';
 import { User } from '../types/erp';
-import { login } from '../lib/auth';
+import { login, forgotPassword } from '../lib/auth';
 import { loginSchema } from '../schemas/validationSchemas';
 import { z } from 'zod';
 
@@ -32,6 +32,11 @@ export default function LoginPage({ onLoginSuccess }: LoginPageProps) {
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [success, setSuccess] = useState(false);
+  const [showForgot, setShowForgot] = useState(false);
+  const [forgotIdentifier, setForgotIdentifier] = useState('');
+  const [forgotLoading, setForgotLoading] = useState(false);
+  const [forgotMessage, setForgotMessage] = useState<string | null>(null);
+  const [forgotError, setForgotError] = useState<string | null>(null);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -57,6 +62,24 @@ export default function LoginPage({ onLoginSuccess }: LoginPageProps) {
     setTimeout(() => {
       onLoginSuccess(result.user!, result.forcePasswordChange);
     }, 500);
+  };
+
+  const handleForgotPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setForgotError(null);
+    setForgotMessage(null);
+    if (!forgotIdentifier.trim()) {
+      setForgotError('Enter your email or username');
+      return;
+    }
+    setForgotLoading(true);
+    const result = await forgotPassword(forgotIdentifier.trim());
+    setForgotLoading(false);
+    if (!result.success) {
+      setForgotError(result.error || 'Request failed. Please try again.');
+      return;
+    }
+    setForgotMessage(result.message || 'Your administrator has been notified.');
   };
 
   return (
@@ -118,6 +141,13 @@ export default function LoginPage({ onLoginSuccess }: LoginPageProps) {
               <div className="space-y-1.5">
                 <div className="flex justify-between items-center">
                   <label className="text-sm font-medium text-slate-900 dark:text-white block font-serif" htmlFor="password-input">Password</label>
+                  <button
+                    type="button"
+                    onClick={() => { setShowForgot(v => !v); setForgotError(null); setForgotMessage(null); }}
+                    className="text-xs font-medium text-indigo-600 dark:text-indigo-400 hover:underline transition smooth-transition"
+                  >
+                    Forgot password?
+                  </button>
                 </div>
                 <div className="relative">
                   <Lock size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
@@ -141,6 +171,43 @@ export default function LoginPage({ onLoginSuccess }: LoginPageProps) {
                   </button>
                 </div>
               </div>
+
+              {showForgot && (
+                <div className="p-4 bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 rounded-xl space-y-3">
+                  <p className="text-xs text-slate-500 dark:text-slate-400">
+                    Enter your email or username. Your administrator will be notified and can issue you a temporary password.
+                  </p>
+                  {forgotError && (
+                    <div className="p-2.5 bg-rose-50 dark:bg-rose-950/20 border border-rose-200 dark:border-rose-800 text-rose-700 dark:text-rose-400 rounded-lg flex items-center gap-2 text-xs">
+                      <AlertCircle size={14} className="flex-shrink-0" />
+                      <span>{forgotError}</span>
+                    </div>
+                  )}
+                  {forgotMessage && (
+                    <div className="p-2.5 bg-emerald-50 dark:bg-emerald-950/20 border border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-400 rounded-lg flex items-center gap-2 text-xs">
+                      <CheckCircle2 size={14} className="flex-shrink-0" />
+                      <span>{forgotMessage}</span>
+                    </div>
+                  )}
+                  <form onSubmit={handleForgotPassword} className="flex gap-2">
+                    <input
+                      type="text"
+                      value={forgotIdentifier}
+                      onChange={(e) => setForgotIdentifier(e.target.value)}
+                      placeholder="Email or username"
+                      disabled={forgotLoading || !!forgotMessage}
+                      className="flex-1 px-3 py-2 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white placeholder-slate-400 focus:outline-none focus:border-indigo-500 text-sm"
+                    />
+                    <button
+                      type="submit"
+                      disabled={forgotLoading || !!forgotMessage}
+                      className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-lg transition disabled:opacity-50"
+                    >
+                      {forgotLoading ? 'Sending…' : 'Request reset'}
+                    </button>
+                  </form>
+                </div>
+              )}
             </div>
 
             <button

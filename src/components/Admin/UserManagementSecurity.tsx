@@ -12,7 +12,7 @@ import {
   Save, CheckCircle2, AlertTriangle, Search,
   Globe, ChevronRight, Activity,
   ShieldAlert, Download, Plus, Edit2, Trash2, X,
-  UserCircle2, Clock, Mail, Building2, UserCheck, UserX, RefreshCw,
+  UserCircle2, Clock, Mail, Building2, UserCheck, UserX, RefreshCw, KeyRound,
 } from 'lucide-react';
 import StatCard from '../FrontOffice/StatCard';
 import { PageHeader, SectionCard, Badge } from '../FrontOffice/ui';
@@ -29,14 +29,16 @@ import {
 } from '../Shared/PermissionChecklist';
 import { useERP } from '../../context/ERPContext';
 import { User, SystemAuditLog } from '../../types/erp';
+import PasswordResetRequests from './PasswordResetRequests';
 
-type SecurityTab = 'rbac' | 'users' | 'audit' | 'security_settings';
+type SecurityTab = 'rbac' | 'users' | 'audit' | 'security_settings' | 'password_resets';
 
 const TAB_META: { id: SecurityTab; label: string; icon: React.ReactNode }[] = [
   { id: 'users', label: 'User Profiles', icon: <Users size={14} /> },
   { id: 'rbac', label: 'Role & Permissions', icon: <Key size={14} /> },
   { id: 'audit', label: 'Audit Logs', icon: <FileSearch size={14} /> },
   { id: 'security_settings', label: 'Security Settings', icon: <Shield size={14} /> },
+  { id: 'password_resets', label: 'Password Resets', icon: <KeyRound size={14} /> },
 ];
 
 function deriveSeverity(action: string): string {
@@ -73,6 +75,7 @@ export default function UserManagementSecurity({ initialTab = 'users' }: { initi
         {activeTab === 'rbac' && <RBACModule />}
         {activeTab === 'audit' && <AuditLogsModule />}
         {activeTab === 'security_settings' && <SecuritySettingsModule />}
+        {activeTab === 'password_resets' && <PasswordResetRequests />}
       </div>
     </div>
   );

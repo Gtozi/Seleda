@@ -5,13 +5,14 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Building2, Users, Settings, BarChart3, Shield, LogOut, ChevronRight, ChevronDown, Plus, Edit, Trash2, X, Save, Loader2, Download, Upload, Database, UserMinus, UserPlus, Unlock, Globe, RotateCcw } from 'lucide-react';
+import { Building2, Users, Settings, BarChart3, Shield, LogOut, ChevronRight, ChevronDown, Plus, Edit, Trash2, X, Save, Loader2, Download, Upload, Database, UserMinus, UserPlus, Unlock, Globe, RotateCcw, KeyRound } from 'lucide-react';
 import { User } from '../../types/erp';
 import { BASE_DOMAIN, getApiBaseUrl } from '../../lib/subdomain';
 import { DEPARTMENTS } from '../../config/departments';
 import { getTabsForDepartment } from '../../config/departmentTabs';
 import { CORE_ADMIN_MODULES } from './adminModules';
 import { PUBLIC_PORTAL_MODULES, GUEST_PORTAL_MODULES } from '../../config/portalModules';
+import PasswordResetRequests from './PasswordResetRequests';
 
 const ROLE_OPTIONS: readonly { value: string; label: string }[] = [
   { value: 'admin', label: 'Admin (full access)' },
@@ -97,7 +98,7 @@ export const SuperAdminPortal: React.FC<AdminPortalProps> = ({ currentUser, onLo
   const [health, setHealth] = useState<PlatformHealth | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<'overview' | 'tenants' | 'users' | 'portal' | 'settings'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'tenants' | 'users' | 'portal' | 'settings' | 'password_resets'>('overview');
 
   // Redirect non-super-admins
   useEffect(() => {
@@ -192,6 +193,7 @@ export const SuperAdminPortal: React.FC<AdminPortalProps> = ({ currentUser, onLo
             { id: 'users', label: 'Users', icon: Users },
             { id: 'portal', label: 'Portal Management', icon: Shield },
             { id: 'settings', label: 'Settings', icon: Settings },
+            { id: 'password_resets', label: 'Password Resets', icon: KeyRound },
           ].map((tab) => (
             <button
               key={tab.id}
@@ -221,6 +223,7 @@ export const SuperAdminPortal: React.FC<AdminPortalProps> = ({ currentUser, onLo
         {activeTab === 'users' && <UsersTab tenants={tenants} onUsersChanged={fetchTenants} />}
         {activeTab === 'portal' && <PortalManagementTab tenants={tenants} />}
         {activeTab === 'settings' && <SettingsTab />}
+        {activeTab === 'password_resets' && <PasswordResetRequests apiPath="/api/admin/platform-password-reset-requests" />}
       </main>
     </div>
   );
