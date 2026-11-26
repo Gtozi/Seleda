@@ -112,4 +112,20 @@ router.get('/events', authenticate, async (req, res) => {
   return res.status(503).json({ error: 'Database not configured' });
 });
 
+// System error logging from ErrorBoundary
+router.post('/system-error', async (req, res) => {
+  const body = req.body || {};
+  try {
+    if (hasSupabaseAdminConfig && supabaseAdmin) {
+      await supabaseAdmin.from('error_logs').insert({
+        level: body.severity || 'error',
+        message: body.action || 'SYSTEM_ERROR',
+        details: body.details,
+        timestamp: new Date().toISOString(),
+      }).catch(() => {});
+    }
+  } catch {}
+  res.json({ success: true });
+});
+
 export default router;

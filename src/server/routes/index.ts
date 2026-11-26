@@ -362,4 +362,13 @@ apiRouter.use('/hr', hrRoutes);
 apiRouter.use('/sales', salesRoutes);
 apiRouter.use('/banquet-events', banquetEventsRoutes);
 
+// Client-side error logging
+apiRouter.post('/errors/log', (req, res) => {
+  const { message, stack, componentStack, url } = req.body || {};
+  console.warn(`[CLIENT_ERROR] ${message} at ${url || 'unknown'}`);
+  if (stack) console.debug(stack);
+  if (componentStack) console.debug(componentStack);
+  res.json({ success: true });
+});
+
 export default apiRouter;

@@ -197,6 +197,10 @@ function MasterHotelERP({ onErpAuthChange }: { onErpAuthChange?: (authenticated:
   const [sessionChecked, setSessionChecked] = useState(false);
   const [mustChangePassword, setMustChangePassword] = useState(false);
 
+  // POS Authentication state
+  const [posUser, setPosUser] = useState<any>(null);
+  const [posSessionChecked, setPosSessionChecked] = useState(false);
+
   // Redirect to appropriate subdomain based on user access
   React.useEffect(() => {
     if (sessionChecked && currentUser) {
@@ -215,10 +219,6 @@ function MasterHotelERP({ onErpAuthChange }: { onErpAuthChange?: (authenticated:
       navigate('/admin', { replace: true });
     }
   }, [isAdminSubdomain, location.pathname, navigate]);
-
-  // POS Authentication state
-  const [posUser, setPosUser] = useState<any>(null);
-  const [posSessionChecked, setPosSessionChecked] = useState(false);
 
   // Active department + tab — derived from the URL (Phase 3 route-driven navigation)
   const erpPathMatch = React.useMemo(() => {
