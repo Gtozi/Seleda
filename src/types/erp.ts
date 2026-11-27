@@ -867,6 +867,14 @@ export interface GlobalHotelSettings {
   bookingConfirmButtonText?: string;
   bookingSecureBookingText?: string;
   moduleToggles?: Record<string, boolean>;
+  superAdminLockedToggles?: Record<string, boolean>;
+  superAdminBoundaries?: {
+    forceMfa?: boolean;
+    strictPasswordRotation?: boolean;
+    minPasswordComplexity?: 'low' | 'medium' | 'high';
+    maxSessionTimeout?: number | null;
+    platformMaintenanceMode?: boolean;
+  };
   allowedIps?: string[];
   backupFrequency?: 'daily' | 'weekly' | 'manual';
   systemLogLevel?: 'info' | 'detailed' | 'debug';

@@ -63,9 +63,12 @@ function modulesForDepartment(deptKey: string): ModuleRef[] {
  *     assignment), edit label/icon/description/sort order, and delete.
  */
 const PortalManagementLive: React.FC = () => {
-  const { globalHotelSettings, submitGlobalSettingsChange } = useERP();
+  const { globalHotelSettings, submitGlobalSettingsChange, userProfile } = useERP();
+  const isSuperAdmin = Boolean((userProfile as any)?.isSuperAdmin);
+  const superAdminLocked = useMemo(() => ({ ...(globalHotelSettings.superAdminLockedToggles || {}) } as Record<string, boolean>), [globalHotelSettings.superAdminLockedToggles]);
   const saved = useMemo(() => ({ ...(globalHotelSettings.moduleToggles || {}) } as Record<string, boolean>), [globalHotelSettings]);
   const [draft, setDraft] = useState<Record<string, boolean>>(saved);
+  useEffect(() => { setDraft(saved); }, [saved]);
   const [status, setStatus] = useState<'idle' | 'saving' | 'success' | 'error'>('idle');
   const [expandedDepartments, setExpandedDepartments] = useState<Set<string>>(new Set());
   // Real global_settings flags driven by portal toggles (one toggle, both
@@ -109,7 +112,8 @@ const PortalManagementLive: React.FC = () => {
   }, []);
   const orphanModules = useMemo(() => registry.filter(m => !knownModIds.has(m.id)), [registry, knownModIds]);
 
-  const enabled = (key: string) => draft[key] !== false;
+  const enabled = (key: string) => !superAdminLocked[key] && draft[key] !== false;
+  const isLockedBySuperAdmin = (key: string) => Boolean(superAdminLocked[key]);
 
   // Every manageable portal: ERP departments + the public & guest portals.
   const portalEntries = useMemo(() => [
@@ -159,6 +163,7 @@ const PortalManagementLive: React.FC = () => {
 
   const toggleModule = (deptKey: string, tabId: string) => {
     const key = `${deptKey}_${tabId}`;
+    if (isLockedBySuperAdmin(deptKey) || isLockedBySuperAdmin(key)) return;
     const next = !enabled(key);
     setDraft(f => ({ ...f, [key]: next }));
     // Book Rooms also drives the server-enforced public_booking_enabled flag.
@@ -168,6 +173,7 @@ const PortalManagementLive: React.FC = () => {
   };
 
   const togglePortal = (key: string, next: boolean) => {
+    if (isLockedBySuperAdmin(key)) return;
     setDraft(f => ({ ...f, [key]: next }));
     // The Guest Portal card also drives guest_portal_enabled.
     if (key === 'guest') {
@@ -259,6 +265,13 @@ const PortalManagementLive: React.FC = () => {
   /** Registry status + action buttons rendered on every module row. */
   const renderRegistryActions = (modId: string, label: string, deptKey: string) => {
     const reg = regById.get(modId);
+    if (!isSuperAdmin) {
+      return reg ? (
+        <div className="flex items-center gap-2 shrink-0">
+          <Badge tone={reg.is_active ? 'success' : 'danger'}>{reg.is_active ? 'Active' : 'Inactive'}</Badge>
+        </div>
+      ) : null;
+    }
     return (
       <div className="flex items-center gap-2 shrink-0">
         {reg ? (
@@ -337,9 +350,10 @@ const PortalManagementLive: React.FC = () => {
       <SectionCard title="Portals & Modules" subtitle={`${portalEntries.length - off} of ${portalEntries.length} portals enabled · registry actions on each module row`} icon={Layers} tone="accent" pad="none">
         <div className="divide-y divide-gray-100 dark:divide-slate-700">
           {portalEntries.map(e => {
-            const locked = e.locked;
+            const saLocked = isLockedBySuperAdmin(e.key);
+            const locked = e.locked || saLocked;
             const modules = e.modules;
-            const on = locked || enabled(e.key);
+            const on = e.locked || (!saLocked && enabled(e.key));
             const isExpanded = expandedDepartments.has(e.key);
 
             return (
@@ -358,7 +372,8 @@ const PortalManagementLive: React.FC = () => {
                     <div className="flex-1">
                       <div className="flex items-center gap-2">
                         <span className="text-sm font-bold text-gray-900 dark:text-white">{e.label}</span>
-                        {locked && <Badge tone="warning">Protected</Badge>}
+                        {e.locked && <Badge tone="warning">Protected</Badge>}
+                        {saLocked && <Badge tone="danger">Locked by Super Admin</Badge>}
                         {on && !locked && <Badge tone="success">Enabled</Badge>}
                         {!on && !locked && <Badge tone="danger">Disabled</Badge>}
                       </div>
@@ -382,15 +397,19 @@ const PortalManagementLive: React.FC = () => {
                     <div className="space-y-2">
                       {modules.map(m => {
                         const moduleKey = `${e.key}_${m.tabId}`;
-                        const moduleOn = enabled(moduleKey);
-                        const moduleLocked = e.locked;
+                        const modSaLocked = saLocked || isLockedBySuperAdmin(moduleKey);
+                        const moduleOn = !modSaLocked && enabled(moduleKey);
+                        const moduleLocked = e.locked || modSaLocked;
                         return (
                           <div
                             key={m.tabId}
                             className="flex items-center justify-between gap-3 p-2.5 bg-slate-50 dark:bg-slate-900/40 rounded-lg border border-slate-100 dark:border-slate-700"
                           >
                             <div className="flex-1 min-w-0">
-                              <div className="text-xs font-bold text-gray-900 dark:text-white truncate">{m.label}</div>
+                              <div className="flex items-center gap-2">
+                                <span className="text-xs font-bold text-gray-900 dark:text-white truncate">{m.label}</span>
+                                {modSaLocked && <Badge tone="danger">Super Admin Locked</Badge>}
+                              </div>
                               <div className="text-[10px] text-gray-500 dark:text-gray-400 font-mono mt-0.5">
                                 {m.modId}
                               </div>

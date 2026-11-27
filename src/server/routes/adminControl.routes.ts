@@ -5,6 +5,7 @@ import { writeAuditEvent } from '../services/sharedServices';
 import { getFeatureFlags, getEnabledLocales, invalidateAdminConfigCache, getTaxRates, evaluateBusinessRules } from '../services/adminConfigService';
 import { validateAction, parseCondition, resolveEffects, evaluateCondition } from '../services/ruleEngine';
 import { validateSteps, advanceWorkflow } from '../services/workflowEngine';
+import { getTenantPropertyIds, tenantOwnsProperty } from '../services/tenantScope';
 
 const router = Router();
 
@@ -191,9 +192,42 @@ const resolve = (req: any, res: any): ResourceDef | null => {
   return def;
 };
 
+const SUPERADMIN_WRITE_ONLY_RESOURCES = new Set(['licenses']);
+
+async function assertResourceAccess(req: any, res: any, def: ResourceDef, id?: string): Promise<boolean> {
+  if (SUPERADMIN_WRITE_ONLY_RESOURCES.has(req.params.resource) && !req.user?.isSuperAdmin) {
+    res.status(403).json({ error: 'Licenses are managed by Super Admin' });
+    return false;
+  }
+  if (id && def.columns.includes('property_id')) {
+    const propIds = await getTenantPropertyIds(req);
+    if (propIds !== null) {
+      const { data: existing } = await supabaseAdmin!.from(def.table).select('property_id').eq('id', id).maybeSingle();
+      if (!existing) {
+        res.status(404).json({ error: 'Record not found' });
+        return false;
+      }
+      if (existing.property_id && !propIds.includes(existing.property_id)) {
+        res.status(403).json({ error: 'Access denied for this property' });
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
 router.get('/:resource', ...guard, async (req, res) => {
   const def = resolve(req, res); if (!def || !dbReady(res)) return;
-  const { data, error } = await supabaseAdmin!.from(def.table).select('*').order(def.orderBy, { ascending: !def.descending });
+  let query = supabaseAdmin!.from(def.table).select('*').order(def.orderBy, { ascending: !def.descending });
+  if (def.columns.includes('property_id')) {
+    const propIds = await getTenantPropertyIds(req);
+    if (propIds !== null) {
+      query = propIds.length > 0
+        ? query.or(`property_id.is.null,property_id.in.(${propIds.join(',')})`)
+        : query.is('property_id', null);
+    }
+  }
+  const { data, error } = await query;
   if (error) return res.status(500).json({ error: error.message });
   return res.json({ items: (data || []).map(camelRow) });
 });
@@ -201,7 +235,11 @@ router.get('/:resource', ...guard, async (req, res) => {
 router.post('/:resource', ...guard, async (req, res) => {
   const def = resolve(req, res); if (!def || !dbReady(res)) return;
   if (def.readOnly) return res.status(405).json({ error: 'Read-only resource' });
+  if (!(await assertResourceAccess(req, res, def))) return;
   const row = pickWritable(def, req.body);
+  if (def.columns.includes('property_id') && row.property_id && !(await tenantOwnsProperty(req, row.property_id))) {
+    return res.status(403).json({ error: 'Property does not belong to your tenant' });
+  }
   const invalid = def.validate?.(row);
   if (invalid) return res.status(400).json({ error: invalid });
   const missing = (def.required || []).filter(c => row[c] === undefined || row[c] === null);
@@ -216,7 +254,11 @@ router.post('/:resource', ...guard, async (req, res) => {
 router.patch('/:resource/:id', ...guard, async (req, res) => {
   const def = resolve(req, res); if (!def || !dbReady(res)) return;
   if (def.readOnly) return res.status(405).json({ error: 'Read-only resource' });
+  if (!(await assertResourceAccess(req, res, def, req.params.id))) return;
   const row = pickWritable(def, req.body);
+  if (def.columns.includes('property_id') && row.property_id && !(await tenantOwnsProperty(req, row.property_id))) {
+    return res.status(403).json({ error: 'Property does not belong to your tenant' });
+  }
   const invalid = def.validate?.(row);
   if (invalid) return res.status(400).json({ error: invalid });
   if (!Object.keys(row).length) return res.status(400).json({ error: 'No valid fields to update' });
@@ -230,6 +272,7 @@ router.patch('/:resource/:id', ...guard, async (req, res) => {
 router.delete('/:resource/:id', ...guard, async (req, res) => {
   const def = resolve(req, res); if (!def || !dbReady(res)) return;
   if (def.readOnly) return res.status(405).json({ error: 'Read-only resource' });
+  if (!(await assertResourceAccess(req, res, def, req.params.id))) return;
   const { error } = await supabaseAdmin!.from(def.table).delete().eq('id', req.params.id);
   if (error) return res.status(500).json({ error: error.message });
   invalidateAdminConfigCache();

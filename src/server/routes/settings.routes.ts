@@ -8,15 +8,70 @@ import { resolveTenantPortalFlags } from '../services/sharedServices';
 
 const router = Router();
 
+const COMPLEXITY_RANK: Record<string, number> = { low: 1, medium: 2, high: 3 };
+
+/**
+ * Merge `tenants.settings.erpSettings` (snake_case) onto `global_settings`
+ * while enforcing SuperAdmin hard boundaries (MFA, password complexity,
+ * rotation, session timeout ceiling, platform maintenance mode).
+ */
+export function mergeTenantErpSettings(
+  rawGlobal: Record<string, any>,
+  tenantSettings: Record<string, any> | null | undefined
+): Record<string, any> {
+  const data: Record<string, any> = { ...rawGlobal };
+  const erp = (tenantSettings?.erpSettings && typeof tenantSettings.erpSettings === 'object')
+    ? tenantSettings.erpSettings
+    : null;
+
+  if (erp) {
+    for (const [k, v] of Object.entries(erp)) {
+      if (v !== undefined) data[k] = v;
+    }
+  }
+
+  // Enforce SuperAdmin security & platform boundaries
+  const globalForceMfa = Boolean(rawGlobal.force_mfa);
+  const globalStrictRotation = Boolean(rawGlobal.strict_password_rotation);
+  const globalMinComplexity = COMPLEXITY_RANK[rawGlobal.password_complexity] ? rawGlobal.password_complexity : 'medium';
+  const globalMaxTimeout = Number(rawGlobal.session_timeout) || 0;
+  const platformMaintenance = Boolean(rawGlobal.maintenance_mode);
+
+  if (globalForceMfa) data.force_mfa = true;
+  if (globalStrictRotation) data.strict_password_rotation = true;
+  if ((COMPLEXITY_RANK[data.password_complexity] || 0) < COMPLEXITY_RANK[globalMinComplexity]) {
+    data.password_complexity = globalMinComplexity;
+  }
+  if (globalMaxTimeout > 0) {
+    const tenantTimeout = Number(data.session_timeout) || globalMaxTimeout;
+    data.session_timeout = Math.min(tenantTimeout, globalMaxTimeout);
+  }
+  if (platformMaintenance) {
+    data.maintenance_mode = true;
+    if (rawGlobal.maintenance_message) data.maintenance_message = rawGlobal.maintenance_message;
+  }
+
+  const flags = resolveTenantPortalFlags(rawGlobal, tenantSettings);
+  data.module_toggles = flags.effectiveModuleToggles;
+  data.public_booking_enabled = flags.publicBookingEnabled;
+  data.guest_portal_enabled = flags.guestPortalEnabled;
+  data.super_admin_locked_toggles = flags.superAdminLockedToggles;
+  data.super_admin_boundaries = {
+    forceMfa: globalForceMfa,
+    strictPasswordRotation: globalStrictRotation,
+    minPasswordComplexity: globalMinComplexity,
+    maxSessionTimeout: globalMaxTimeout > 0 ? globalMaxTimeout : null,
+    platformMaintenanceMode: platformMaintenance,
+  };
+
+  return data;
+}
+
 // Single settings read endpoint with a lightweight checksum for stale-context detection
 router.get('/', authenticate, async (req, res) => {
   if (hasSupabaseAdminConfig && supabaseAdmin) {
     const rawData = await getGlobalSettings();
     if (!rawData) return res.json({ settings: null, checksum: null });
-
-    // Shallow-clone the cached global_settings row so per-tenant toggle merging
-    // and API key masking never mutate the in-memory cache across requests.
-    const data: Record<string, any> = { ...rawData };
 
     const activeTenantId = req.user?.activeTenantId || req.tenant?.id;
     let tenantSettings: Record<string, any> | null = req.tenant?.settings || null;
@@ -29,10 +84,8 @@ router.get('/', authenticate, async (req, res) => {
       tenantSettings = tenantRow?.settings || null;
     }
 
-    const flags = resolveTenantPortalFlags(rawData, tenantSettings);
-    data.module_toggles = flags.effectiveModuleToggles;
-    data.public_booking_enabled = flags.publicBookingEnabled;
-    data.guest_portal_enabled = flags.guestPortalEnabled;
+    // Shallow-clone & merge tenant overrides within SuperAdmin boundaries
+    const data = mergeTenantErpSettings(rawData, tenantSettings);
 
     // Mask API keys on read — use encrypted_api_integrations if available, fall back to api_integrations
     const encryptedIntegrations = data.encrypted_api_integrations || data.api_integrations;

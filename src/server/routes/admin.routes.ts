@@ -9,6 +9,8 @@ import { hasSupabaseAdminConfig, supabaseAdmin } from '../supabaseAdmin';
 import { writeAuditEvent, processApiIntegrationsOnRead, processApiIntegrationsOnWrite } from '../services/sessionService';
 import { getGlobalSettings, invalidateGlobalSettingsCache } from '../services/settingsService';
 import { isValidTenantCode, invalidateTenantCache } from '../middleware/tenant';
+import { isAdminSubdomain } from '../middleware/subdomain';
+import { mergeTenantErpSettings } from './settings.routes';
 import { invalidateTenantScopeCache, runWithTenantStore, getTenantStore } from '../services/tenantScope';
 import {
   camelToSnakeRecord,
@@ -628,8 +630,9 @@ router.delete('/tenants/:tenantId/users/:userId', authenticate, requireSuperAdmi
   }
 });
 
-// Completely delete a user from system_users and all tenant assignments (super-admin only)
-router.delete('/users/:userId', authenticate, requireSuperAdmin, async (req, res) => {
+// Delete a user: SuperAdmin on admin.* deletes globally; tenant admin removes
+// the user from their tenant and only deletes system_users if no other tenants remain.
+router.delete('/users/:userId', authenticate, requireSuperAdminOrSettingsManage, async (req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) {
     return res.status(503).json({ error: 'Database not configured' });
   }
@@ -639,6 +642,8 @@ router.delete('/users/:userId', authenticate, requireSuperAdmin, async (req, res
   if (userId === req.user?.id) {
     return res.status(400).json({ error: 'Cannot delete your own account' });
   }
+
+  const tenantId = resolveScopedTenantId(req);
 
   try {
     const { data: targetUser, error: lookupError } = await supabaseAdmin
@@ -654,19 +659,63 @@ router.delete('/users/:userId', authenticate, requireSuperAdmin, async (req, res
       return res.status(404).json({ error: 'User not found' });
     }
 
-    // Delete all tenant assignments first
+    if (tenantId) {
+      const { data: membership } = await supabaseAdmin
+        .from('tenant_user_assignments')
+        .select('user_id')
+        .eq('tenant_id', tenantId)
+        .eq('user_id', userId)
+        .maybeSingle();
+      if (!membership) {
+        return res.status(404).json({ error: 'User not found in this tenant' });
+      }
+
+      await supabaseAdmin
+        .from('tenant_user_assignments')
+        .delete()
+        .eq('tenant_id', tenantId)
+        .eq('user_id', userId);
+
+      await supabaseAdmin
+        .from('user_sessions')
+        .delete()
+        .eq('user_id', userId)
+        .eq('active_tenant_id', tenantId);
+
+      const { count: remaining } = await supabaseAdmin
+        .from('tenant_user_assignments')
+        .select('*', { count: 'exact', head: true })
+        .eq('user_id', userId);
+
+      if ((remaining || 0) === 0) {
+        await supabaseAdmin.from('user_sessions').delete().eq('user_id', userId);
+        await supabaseAdmin.from('system_users').delete().eq('id', userId);
+      }
+
+      await writeAuditEvent({
+        req,
+        user: req.user,
+        action: 'tenant.user_remove',
+        entityType: 'system_user',
+        entityId: userId,
+        module: 'admin',
+        details: { tenantId, email: targetUser.email, name: targetUser.name },
+      });
+
+      return res.json({ success: true });
+    }
+
+    // Platform-wide delete (SuperAdmin on admin subdomain)
     await supabaseAdmin
       .from('tenant_user_assignments')
       .delete()
       .eq('user_id', userId);
 
-    // Delete user sessions
     await supabaseAdmin
       .from('user_sessions')
       .delete()
       .eq('user_id', userId);
 
-    // Delete the user from system_users
     const { error } = await supabaseAdmin
       .from('system_users')
       .delete()
@@ -1266,9 +1315,21 @@ router.patch('/platform-settings', authenticate, requireSuperAdmin, async (req, 
 
 // ── Users ──────────────────────────────────────────────────────
 
-router.get('/users', authenticate, requirePermission('users:manage'), async (_req, res) => {
+router.get('/users', authenticate, requirePermission('users:manage'), async (req, res) => {
   if (hasSupabaseAdminConfig && supabaseAdmin) {
-    const { data, error } = await supabaseAdmin.from('system_users').select('*').order('name');
+    const tenantId = resolveScopedTenantId(req);
+    let query = supabaseAdmin.from('system_users').select('*').order('name');
+    if (tenantId) {
+      const { data: assignments, error: assignErr } = await supabaseAdmin
+        .from('tenant_user_assignments')
+        .select('user_id')
+        .eq('tenant_id', tenantId);
+      if (assignErr) return res.status(500).json({ error: assignErr.message });
+      const userIds = (assignments || []).map((a: any) => a.user_id).filter(Boolean);
+      if (userIds.length === 0) return res.json({ users: [] });
+      query = query.in('id', userIds);
+    }
+    const { data, error } = await query;
     if (error) return res.status(500).json({ error: error.message });
     const mapped = (data || []).map(mapSystemUserFromDb);
     const enriched = await Promise.all(mapped.map(u => enrichUserWithDerivedPermissions(u)));
@@ -1341,7 +1402,24 @@ router.post('/users', authenticate, requirePermission('users:manage'), async (re
       auth_user_id: authUserId,
     }).select().single();
     if (error) return res.status(500).json({ error: error.message });
-    await writeAuditEvent({ req, user: req.user!, action: 'user.created', entityType: 'User', entityId: newId, module: 'admin', details: { name: body.full_name, email: body.email, role: body.role } });
+
+    // Bind newly created user to the caller's tenant so they can sign in on this subdomain
+    const tenantId = resolveScopedTenantId(req);
+    if (tenantId) {
+      const { error: assignErr } = await supabaseAdmin.from('tenant_user_assignments').upsert({
+        user_id: newId,
+        tenant_id: tenantId,
+        is_default: true,
+        is_super_admin: false,
+        created_at: new Date().toISOString(),
+      }, { onConflict: 'user_id,tenant_id' });
+      if (assignErr) {
+        await supabaseAdmin.from('system_users').delete().eq('id', newId);
+        return res.status(500).json({ error: assignErr.message });
+      }
+    }
+
+    await writeAuditEvent({ req, user: req.user!, action: 'user.created', entityType: 'User', entityId: newId, module: 'admin', details: { name: body.full_name, email: body.email, role: body.role, tenantId } });
     return res.json({ success: true, user: mapSystemUserFromDb(data), temporaryPassword: generatedPassword ? password : undefined });
   }
   return res.status(503).json({ error: 'Database not configured' });
@@ -1386,6 +1464,21 @@ router.patch('/users/:id', authenticate, requirePermission('users:manage'), asyn
     if (!pv.valid) return res.status(400).json({ error: pv.errors.join('; ') });
   }
   if (hasSupabaseAdminConfig && supabaseAdmin) {
+    const tenantId = resolveScopedTenantId(req);
+    if (tenantId) {
+      const { data: membership } = await supabaseAdmin
+        .from('tenant_user_assignments')
+        .select('user_id')
+        .eq('tenant_id', tenantId)
+        .eq('user_id', targetId)
+        .maybeSingle();
+      if (!membership) {
+        return res.status(404).json({ error: 'User not found in this tenant' });
+      }
+    }
+    if (!req.user?.isSuperAdmin && updates.role && String(updates.role).toLowerCase() === 'super_admin') {
+      return res.status(403).json({ error: 'Cannot assign super_admin role' });
+    }
     const payload: any = {};
     if (updates.full_name !== undefined) payload.name = updates.full_name;
     if (updates.email !== undefined) payload.email = String(updates.email).toLowerCase();
@@ -1430,12 +1523,16 @@ router.patch('/users/:id', authenticate, requirePermission('users:manage'), asyn
 
 // ── Roles ──────────────────────────────────────────────────────
 
-router.get('/roles', authenticate, requirePermission('roles:manage'), async (_req, res) => {
+router.get('/roles', authenticate, requirePermission('roles:manage'), async (req, res) => {
   if (hasSupabaseAdminConfig && supabaseAdmin) {
-    const { data, error } = await supabaseAdmin
+    let query = supabaseAdmin
       .from('roles')
       .select('id, name, display_name, description, is_superuser, is_system, is_active, category, department, role_label, parent_role_id, module_access, permissions, role_permissions ( permissions ( code ) )')
       .order('name');
+    if (!req.user?.isSuperAdmin) {
+      query = query.eq('is_superuser', false);
+    }
+    const { data, error } = await query;
     if (error) return res.status(500).json({ error: error.message });
     const roles = (data || []).map((r: any) => ({
       id: r.id, name: r.name, display_name: r.display_name || r.name,
@@ -1459,6 +1556,9 @@ router.post('/roles', authenticate, requirePermission('roles:manage'), async (re
   }
   const body = validation.data;
   if (hasSupabaseAdminConfig && supabaseAdmin) {
+    if (!req.user?.isSuperAdmin && body.is_superuser) {
+      return res.status(403).json({ error: 'Only Super Admin can create superuser roles' });
+    }
     const roleId = body.id || `ROLE-${Date.now()}`;
     const { data, error } = await supabaseAdmin.from('roles').upsert({
       id: roleId, name: body.name, display_name: body.name, description: body.description || '',
@@ -1487,6 +1587,12 @@ router.patch('/roles/:id', authenticate, requirePermission('roles:manage'), asyn
   }
   const updates = validation.data;
   if (hasSupabaseAdminConfig && supabaseAdmin) {
+    if (!req.user?.isSuperAdmin) {
+      const { data: existingRole } = await supabaseAdmin.from('roles').select('is_superuser, is_system').eq('id', roleId).maybeSingle();
+      if (existingRole?.is_superuser || existingRole?.is_system || updates.is_superuser) {
+        return res.status(403).json({ error: 'System and superuser roles are managed by Super Admin' });
+      }
+    }
     const payload: any = {};
     if (updates.name !== undefined) payload.name = updates.name;
     if (updates.name !== undefined) payload.display_name = updates.name;
@@ -1522,6 +1628,12 @@ router.patch('/roles/:id', authenticate, requirePermission('roles:manage'), asyn
 router.delete('/roles/:id', authenticate, requirePermission('roles:manage'), async (req, res) => {
   const roleId = req.params.id;
   if (hasSupabaseAdminConfig && supabaseAdmin) {
+    if (!req.user?.isSuperAdmin) {
+      const { data: existingRole } = await supabaseAdmin.from('roles').select('is_superuser, is_system').eq('id', roleId).maybeSingle();
+      if (existingRole?.is_superuser || existingRole?.is_system) {
+        return res.status(403).json({ error: 'System and superuser roles cannot be deleted by tenant admins' });
+      }
+    }
     await supabaseAdmin.from('role_permissions').delete().eq('role_id', roleId);
     const { error } = await supabaseAdmin.from('roles').delete().eq('id', roleId);
     if (error) return res.status(500).json({ error: error.message });
@@ -1556,6 +1668,20 @@ router.post('/users/:userId/roles', authenticate, requirePermission('roles:manag
   if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
   const { roleId, propertyId, organizationId, expiresAt } = req.body;
   if (!roleId) return res.status(400).json({ error: 'roleId is required' });
+  const tenantId = resolveScopedTenantId(req);
+  if (tenantId) {
+    const { data: membership } = await supabaseAdmin
+      .from('tenant_user_assignments')
+      .select('user_id')
+      .eq('tenant_id', tenantId)
+      .eq('user_id', req.params.userId)
+      .maybeSingle();
+    if (!membership) return res.status(404).json({ error: 'User not found in this tenant' });
+  }
+  if (!req.user?.isSuperAdmin) {
+    const { data: roleRow } = await supabaseAdmin.from('roles').select('is_superuser').eq('id', roleId).maybeSingle();
+    if (roleRow?.is_superuser) return res.status(403).json({ error: 'Only Super Admin can assign superuser roles' });
+  }
   try {
     const { data, error } = await supabaseAdmin.rpc('assign_role_to_user', {
       p_user_id: req.params.userId, p_role_id: roleId,
@@ -1589,7 +1715,7 @@ router.get('/modules', authenticate, requirePermission('roles:manage'), async (_
   return res.json({ modules: data || [] });
 });
 
-router.post('/modules', authenticate, requirePermission('roles:manage'), async (req, res) => {
+router.post('/modules', authenticate, requireSuperAdmin, async (req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
   const { id, department, label, icon, description, sortOrder } = req.body;
   if (!id || !label) return res.status(400).json({ error: 'id and label are required' });
@@ -1602,7 +1728,7 @@ router.post('/modules', authenticate, requirePermission('roles:manage'), async (
   return res.json({ module: data });
 });
 
-router.patch('/modules/:id', authenticate, requirePermission('roles:manage'), async (req, res) => {
+router.patch('/modules/:id', authenticate, requireSuperAdmin, async (req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
   const { label, icon, description, department, sortOrder, isActive } = req.body;
   const updates: any = { updated_at: new Date().toISOString() };
@@ -1618,7 +1744,7 @@ router.patch('/modules/:id', authenticate, requirePermission('roles:manage'), as
   return res.json({ module: data });
 });
 
-router.delete('/modules/:id', authenticate, requirePermission('roles:manage'), async (req, res) => {
+router.delete('/modules/:id', authenticate, requireSuperAdmin, async (req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
   const { error } = await supabaseAdmin.from('modules').delete().eq('id', req.params.id);
   if (error) return res.status(500).json({ error: error.message });
@@ -1757,21 +1883,150 @@ router.get('/properties/:id/footprint', authenticate, requirePermission('setting
 
 // ── Settings ───────────────────────────────────────────────────
 
-router.get('/settings', authenticate, requirePermission('settings:update'), async (_req, res) => {
+const COMPLEXITY_RANK: Record<string, number> = { low: 1, medium: 2, high: 3 };
+
+function resolveScopedTenantId(req: any): string | null {
+  if (req.user?.isSuperAdmin && isAdminSubdomain(req)) return null;
+  return req.tenant?.id || req.user?.activeTenantId || null;
+}
+
+router.get('/settings', authenticate, requirePermission('settings:update'), async (req, res) => {
   if (hasSupabaseAdminConfig && supabaseAdmin) {
-    const data = await getGlobalSettings();
-    if (data) {
-      const encryptedIntegrations = data.encrypted_api_integrations || data.api_integrations;
-      data.api_integrations = processApiIntegrationsOnRead(encryptedIntegrations);
-      if (data.encrypted_api_integrations) data.encrypted_api_integrations = undefined;
+    const rawData = await getGlobalSettings();
+    if (!rawData) return res.json({ settings: {} });
+
+    const tenantId = resolveScopedTenantId(req);
+    let data: Record<string, any> = { ...rawData };
+    if (tenantId) {
+      let tenantSettings: Record<string, any> | null = req.tenant?.id === tenantId ? (req.tenant?.settings || null) : null;
+      if (!tenantSettings) {
+        const { data: tRow } = await supabaseAdmin.from('tenants').select('settings').eq('id', tenantId).maybeSingle();
+        tenantSettings = tRow?.settings || null;
+      }
+      data = mergeTenantErpSettings(rawData, tenantSettings);
     }
-    return res.json({ settings: data ? snakeToCamelRecord(data) : {} });
+
+    const encryptedIntegrations = data.encrypted_api_integrations || data.api_integrations;
+    data.api_integrations = processApiIntegrationsOnRead(encryptedIntegrations);
+    if (data.encrypted_api_integrations) data.encrypted_api_integrations = undefined;
+    return res.json({ settings: snakeToCamelRecord(data) });
   }
   return res.status(503).json({ error: 'Database not configured' });
 });
 
 router.patch('/settings', authenticate, requirePermission('settings:update'), async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) {
+    return res.status(503).json({ error: 'Database not configured' });
+  }
+
+  const tenantId = resolveScopedTenantId(req);
   const updates = await filterKnownColumns(camelToSnakeRecord(req.body || {}));
+
+  // Tenant-scoped admin: persist overrides inside tenants.settings within
+  // SuperAdmin boundaries; never mutate platform-wide global_settings.
+  if (tenantId) {
+    const [{ data: tenantRow, error: fetchErr }, rawGlobal] = await Promise.all([
+      supabaseAdmin.from('tenants').select('id, settings').eq('id', tenantId).maybeSingle(),
+      getGlobalSettings(),
+    ]);
+    if (fetchErr) return res.status(500).json({ error: fetchErr.message });
+    if (!tenantRow) return res.status(404).json({ error: 'Tenant not found' });
+
+    const currentSettings: Record<string, any> = tenantRow.settings || {};
+    const flags = resolveTenantPortalFlags(rawGlobal, currentSettings);
+    const nextAdminToggles: Record<string, boolean> = { ...(currentSettings.adminModuleToggles || {}) };
+    const nextErpSettings: Record<string, any> = { ...(currentSettings.erpSettings || {}) };
+
+    // 1. Clamp moduleToggles to SuperAdmin's boundary
+    if (updates.module_toggles && typeof updates.module_toggles === 'object') {
+      for (const [k, v] of Object.entries(updates.module_toggles)) {
+        if (typeof v !== 'boolean') continue;
+        // If SuperAdmin locked this key off, tenant admin cannot re-enable it.
+        nextAdminToggles[k] = flags.superAdminLockedToggles[k] ? false : v;
+      }
+      delete updates.module_toggles;
+    }
+
+    // 2. Clamp public_booking_enabled & guest_portal_enabled to SuperAdmin boundary
+    if (updates.public_booking_enabled !== undefined) {
+      nextAdminToggles.public_booking = flags.superAdminLockedToggles.public_booking
+        ? false
+        : Boolean(updates.public_booking_enabled);
+      delete updates.public_booking_enabled;
+    }
+    if (updates.guest_portal_enabled !== undefined) {
+      nextAdminToggles.guest = flags.superAdminLockedToggles.guest
+        ? false
+        : Boolean(updates.guest_portal_enabled);
+      delete updates.guest_portal_enabled;
+    }
+
+    // 3. Enforce SuperAdmin security & platform boundaries on remaining fields
+    const globalForceMfa = Boolean(rawGlobal?.force_mfa);
+    const globalStrictRotation = Boolean(rawGlobal?.strict_password_rotation);
+    const globalMinComplexity = COMPLEXITY_RANK[rawGlobal?.password_complexity] ? rawGlobal!.password_complexity : 'medium';
+    const globalMaxTimeout = Number(rawGlobal?.session_timeout) || 0;
+
+    if (updates.force_mfa !== undefined && globalForceMfa) {
+      updates.force_mfa = true;
+    }
+    if (updates.strict_password_rotation !== undefined && globalStrictRotation) {
+      updates.strict_password_rotation = true;
+    }
+    if (updates.password_complexity !== undefined) {
+      if ((COMPLEXITY_RANK[updates.password_complexity] || 0) < COMPLEXITY_RANK[globalMinComplexity]) {
+        updates.password_complexity = globalMinComplexity;
+      }
+    }
+    if (updates.session_timeout !== undefined && globalMaxTimeout > 0) {
+      const val = Number(updates.session_timeout) || globalMaxTimeout;
+      updates.session_timeout = Math.min(val, globalMaxTimeout);
+    }
+    if (updates.api_integrations) {
+      try {
+        updates.encrypted_api_integrations = processApiIntegrationsOnWrite(updates.api_integrations);
+        updates.api_integrations = [];
+      } catch (e) { console.error('[CRYPTO] Failed to encrypt API integrations on write:', e); }
+    }
+
+    // Never allow tenant admin to override platform-locked maintenance mode if platform is in maintenance
+    if (rawGlobal?.maintenance_mode && updates.maintenance_mode === false) {
+      updates.maintenance_mode = true;
+    }
+
+    for (const [k, v] of Object.entries(updates)) {
+      if (v !== undefined) nextErpSettings[k] = v;
+    }
+
+    const updatedSettings = {
+      ...currentSettings,
+      adminModuleToggles: nextAdminToggles,
+      erpSettings: nextErpSettings,
+    };
+
+    const { error: updateErr } = await supabaseAdmin
+      .from('tenants')
+      .update({ settings: updatedSettings, updated_at: new Date().toISOString() })
+      .eq('id', tenantId);
+    if (updateErr) return res.status(500).json({ error: updateErr.message });
+
+    invalidateTenantCache();
+    invalidateTenantScopeCache(tenantId);
+
+    await writeAuditEvent({
+      req, user: req.user!, action: 'tenant.settings_updated',
+      entityType: 'Tenant', entityId: tenantId, module: 'admin',
+      details: { updates: Object.keys(updates), toggleUpdates: Object.keys(nextAdminToggles) },
+    });
+
+    const merged = mergeTenantErpSettings(rawGlobal || {}, updatedSettings);
+    const encryptedIntegrations = merged.encrypted_api_integrations || merged.api_integrations;
+    merged.api_integrations = processApiIntegrationsOnRead(encryptedIntegrations);
+    if (merged.encrypted_api_integrations) merged.encrypted_api_integrations = undefined;
+    return res.json({ success: true, settings: snakeToCamelRecord(merged) });
+  }
+
+  // Platform-wide global_settings update (SuperAdmin on admin subdomain)
   if (updates.api_integrations) {
     try {
       const encrypted = processApiIntegrationsOnWrite(updates.api_integrations);
@@ -1779,29 +2034,26 @@ router.patch('/settings', authenticate, requirePermission('settings:update'), as
       updates.api_integrations = [];
     } catch (e) { console.error('[CRYPTO] Failed to encrypt API integrations on write:', e); }
   }
-  if (hasSupabaseAdminConfig && supabaseAdmin) {
-    const { data: existing } = await supabaseAdmin.from('global_settings').select('id').maybeSingle();
-    if (existing) {
-      const { data, error } = await supabaseAdmin.from('global_settings').update({
-        ...updates, updated_at: new Date().toISOString(), updated_by: req.user!.id
-      }).eq('id', existing.id).select().single();
-      if (error) return res.status(500).json({ error: error.message });
-      invalidateGlobalSettingsCache();
-      await writeAuditEvent({ req, user: req.user!, action: 'settings.updated', entityType: 'GlobalSettings', entityId: existing.id, module: 'admin', details: { updates: Object.keys(updates) } });
-      return res.json({ success: true, settings: data ? snakeToCamelRecord(data) : {} });
-    } else {
-      const newId = crypto.randomUUID();
-      const { data, error } = await supabaseAdmin.from('global_settings').insert({
-        id: newId, ...updates, created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(), created_by: req.user!.id, updated_by: req.user!.id
-      }).select().single();
-      if (error) return res.status(500).json({ error: error.message });
-      invalidateGlobalSettingsCache();
-      await writeAuditEvent({ req, user: req.user!, action: 'settings.created', entityType: 'GlobalSettings', entityId: newId, module: 'admin', details: { updates: Object.keys(updates) } });
-      return res.json({ success: true, settings: data ? snakeToCamelRecord(data) : {} });
-    }
+  const { data: existing } = await supabaseAdmin.from('global_settings').select('id').maybeSingle();
+  if (existing) {
+    const { data, error } = await supabaseAdmin.from('global_settings').update({
+      ...updates, updated_at: new Date().toISOString(), updated_by: req.user!.id
+    }).eq('id', existing.id).select().single();
+    if (error) return res.status(500).json({ error: error.message });
+    invalidateGlobalSettingsCache();
+    await writeAuditEvent({ req, user: req.user!, action: 'settings.updated', entityType: 'GlobalSettings', entityId: existing.id, module: 'admin', details: { updates: Object.keys(updates) } });
+    return res.json({ success: true, settings: data ? snakeToCamelRecord(data) : {} });
+  } else {
+    const newId = crypto.randomUUID();
+    const { data, error } = await supabaseAdmin.from('global_settings').insert({
+      id: newId, ...updates, created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(), created_by: req.user!.id, updated_by: req.user!.id
+    }).select().single();
+    if (error) return res.status(500).json({ error: error.message });
+    invalidateGlobalSettingsCache();
+    await writeAuditEvent({ req, user: req.user!, action: 'settings.created', entityType: 'GlobalSettings', entityId: newId, module: 'admin', details: { updates: Object.keys(updates) } });
+    return res.json({ success: true, settings: data ? snakeToCamelRecord(data) : {} });
   }
-  return res.status(503).json({ error: 'Database not configured' });
 });
 
 // ── Pending Admin Changes — Executive Governance Approval Queue ──
@@ -2223,7 +2475,7 @@ async function listPublicRelations(): Promise<string[]> {
   return names;
 }
 
-router.get('/health/db-stats', authenticate, requirePermission('settings:manage'), async (_req, res) => {
+router.get('/health/db-stats', authenticate, requireSuperAdmin, async (_req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
   if (dbStatsCache && Date.now() - dbStatsCache.at < DB_STATS_TTL_MS) return res.json(dbStatsCache.payload);
   try {

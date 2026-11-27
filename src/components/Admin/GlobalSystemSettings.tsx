@@ -241,6 +241,7 @@ function NightAuditModule() {
 
 function SystemModule() {
   const { globalHotelSettings, submitGlobalSettingsChange } = useERP();
+  const boundaries = globalHotelSettings.superAdminBoundaries;
   const [form, setForm] = useState({
     maintenanceMode: globalHotelSettings.maintenanceMode ?? false,
     maintenanceMessage:
@@ -290,9 +291,9 @@ function SystemModule() {
         </h2>
         <ToggleRow
           label="Enable maintenance mode"
-          description="Displays a system-wide banner to every signed-in user. Administrators retain full access."
-          enabled={form.maintenanceMode}
-          onChange={v => setForm(f => ({ ...f, maintenanceMode: v }))}
+          description={boundaries?.platformMaintenanceMode ? 'Locked ON by Super Admin platform maintenance.' : 'Displays a banner to every signed-in user in this subdomain. Administrators retain full access.'}
+          enabled={boundaries?.platformMaintenanceMode ? true : form.maintenanceMode}
+          onChange={v => !boundaries?.platformMaintenanceMode && setForm(f => ({ ...f, maintenanceMode: v }))}
         />
         <div className="mt-3 space-y-1.5">
           <label className="text-xs font-mono uppercase text-slate-400 font-bold">Banner message</label>

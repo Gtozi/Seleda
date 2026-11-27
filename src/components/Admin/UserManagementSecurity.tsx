@@ -1050,6 +1050,9 @@ function AuditLogsModule() {
 // ---------- SECURITY SETTINGS ----------
 function SecuritySettingsModule() {
   const { globalHotelSettings, submitGlobalSettingsChange } = useERP();
+  const boundaries = globalHotelSettings.superAdminBoundaries;
+  const complexityRank: Record<string, number> = { low: 1, medium: 2, high: 3 };
+  const minRank = boundaries?.minPasswordComplexity ? (complexityRank[boundaries.minPasswordComplexity] || 1) : 1;
   const [form, setForm] = useState({
     passwordComplexity: globalHotelSettings.passwordComplexity || 'medium',
     forceMfa: globalHotelSettings.forceMfa ?? false,
@@ -1147,8 +1150,8 @@ function SecuritySettingsModule() {
             <label className="text-xs font-medium text-gray-700 dark:text-gray-300">Password Complexity</label>
             <select value={form.passwordComplexity} onChange={e => setForm(f => ({ ...f, passwordComplexity: e.target.value as 'low' | 'medium' | 'high' }))}
               className="w-full px-3 py-2 text-sm border border-gray-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-gray-900 dark:text-white outline-none focus:ring-1 focus:ring-[var(--color-accent-operations)]">
-              <option value="low">Low — Minimum 6 characters</option>
-              <option value="medium">Medium — 8 chars, mixed case & number</option>
+              <option value="low" disabled={minRank > 1}>Low — Minimum 6 characters{minRank > 1 ? ' (Blocked by Super Admin)' : ''}</option>
+              <option value="medium" disabled={minRank > 2}>Medium — 8 chars, mixed case & number{minRank > 2 ? ' (Blocked by Super Admin)' : ''}</option>
               <option value="high">High — 12 chars, symbols, no dictionary words</option>
             </select>
             <div className="flex gap-1.5">
@@ -1163,22 +1166,26 @@ function SecuritySettingsModule() {
           </div>
           <div className="space-y-2">
             <label className="text-xs font-medium text-gray-700 dark:text-gray-300">Session Timeout (minutes)</label>
-            <input type="number" min={5} max={480} value={form.sessionTimeout}
+            <input type="number" min={5} max={boundaries?.maxSessionTimeout || 480} value={form.sessionTimeout}
               onChange={e => setForm(f => ({ ...f, sessionTimeout: Number(e.target.value) }))}
               className="w-full px-3 py-2 text-sm border border-gray-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-gray-900 dark:text-white outline-none focus:ring-1 focus:ring-[var(--color-accent-operations)]" />
-            <p className="text-xs text-gray-500 dark:text-gray-400">Recommended: 30-60 minutes for sensitive systems</p>
+            <p className="text-xs text-gray-500 dark:text-gray-400">
+              {boundaries?.maxSessionTimeout
+                ? `Super Admin cap: max ${boundaries.maxSessionTimeout} minutes`
+                : 'Recommended: 30-60 minutes for sensitive systems'}
+            </p>
           </div>
         </div>
       </SectionCard>
 
       <SectionCard title="Multi-Factor Authentication (MFA)" icon={Smartphone} tone="success" pad="md">
         <div className="space-y-1">
-          <ToggleRow label="Enforce MFA for all users" description="Require authenticator app or SMS OTP at every login."
-            enabled={form.forceMfa} onChange={v => setForm(f => ({ ...f, forceMfa: v }))} />
+          <ToggleRow label="Enforce MFA for all users" description={boundaries?.forceMfa ? 'Locked ON by Super Admin platform policy.' : 'Require authenticator app or SMS OTP at every login.'}
+            enabled={boundaries?.forceMfa ? true : form.forceMfa} disabled={Boolean(boundaries?.forceMfa)} onChange={v => setForm(f => ({ ...f, forceMfa: v }))} />
           <ToggleRow label="Biometric Re-authentication" description="Prompt for biometric verification on sensitive actions."
             enabled={form.biometricReauth} onChange={v => setForm(f => ({ ...f, biometricReauth: v }))} />
-          <ToggleRow label="Mandatory Password Rotation" description="Force password change every 90 days."
-            enabled={form.strictPasswordRotation} onChange={v => setForm(f => ({ ...f, strictPasswordRotation: v }))} />
+          <ToggleRow label="Mandatory Password Rotation" description={boundaries?.strictPasswordRotation ? 'Locked ON by Super Admin platform policy.' : 'Force password change every 90 days.'}
+            enabled={boundaries?.strictPasswordRotation ? true : form.strictPasswordRotation} disabled={Boolean(boundaries?.strictPasswordRotation)} onChange={v => setForm(f => ({ ...f, strictPasswordRotation: v }))} />
         </div>
       </SectionCard>
 
@@ -1199,7 +1206,7 @@ function SecuritySettingsModule() {
   );
 }
 
-function ToggleRow({ label, description, enabled, onChange }: { label: string; description?: string; enabled: boolean; onChange: (v: boolean) => void }) {
+function ToggleRow({ label, description, enabled, disabled, onChange }: { label: string; description?: string; enabled: boolean; disabled?: boolean; onChange: (v: boolean) => void }) {
   return (
     <div className="flex items-center justify-between gap-4 py-3.5 border-b border-gray-100 dark:border-slate-700 last:border-0">
       <div className="flex items-center gap-3 min-w-0">
@@ -1209,8 +1216,8 @@ function ToggleRow({ label, description, enabled, onChange }: { label: string; d
           {description && <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">{description}</p>}
         </div>
       </div>
-      <button type="button" role="switch" aria-checked={enabled} onClick={() => onChange(!enabled)}
-        className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${enabled ? 'bg-emerald-500' : 'bg-slate-300 dark:bg-slate-600'}`}>
+      <button type="button" role="switch" aria-checked={enabled} disabled={disabled} onClick={() => !disabled && onChange(!enabled)}
+        className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors disabled:opacity-50 ${enabled ? 'bg-emerald-500' : 'bg-slate-300 dark:bg-slate-600'}`}>
         <span className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ${enabled ? 'translate-x-5' : 'translate-x-0.5'}`} />
       </button>
     </div>

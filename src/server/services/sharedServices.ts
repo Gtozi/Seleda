@@ -601,18 +601,26 @@ export interface ResolvedPortalFlags {
     features: Record<string, any>;
   };
   effectiveModuleToggles: Record<string, boolean>;
+  /** Keys locked to false by SuperAdmin (global_settings or tenants.settings.moduleToggles / portal). */
+  superAdminLockedToggles: Record<string, boolean>;
 }
 
 /**
- * Compute effective public-booking and guest-portal availability by layering
- * a tenant's settings (`portal.*` and `moduleToggles.*`) onto `global_settings`.
+ * Compute effective public-booking, guest-portal, and module availability by
+ * layering:
+ *   1. global_settings (platform-wide defaults & hard disables)
+ *   2. tenants.settings.moduleToggles & portal.* (SuperAdmin tenant boundary)
+ *   3. tenants.settings.adminModuleToggles (Tenant Admin choices within boundary)
+ *
+ * Anything disabled at layer 1 or 2 is locked off and cannot be re-enabled by layer 3.
  */
 export function resolveTenantPortalFlags(
   globalSettings: Record<string, any> | null | undefined,
   tenantSettings: Record<string, any> | null | undefined
 ): ResolvedPortalFlags {
   const globalToggles: Record<string, boolean> = { ...(globalSettings?.module_toggles || {}) };
-  const tenantToggles: Record<string, boolean> = { ...(tenantSettings?.moduleToggles || {}) };
+  const superAdminTenantToggles: Record<string, boolean> = { ...(tenantSettings?.moduleToggles || {}) };
+  const tenantAdminToggles: Record<string, boolean> = { ...(tenantSettings?.adminModuleToggles || {}) };
   const portal = (tenantSettings?.portal && typeof tenantSettings.portal === 'object')
     ? tenantSettings.portal
     : {};
@@ -622,27 +630,52 @@ export function resolveTenantPortalFlags(
 
   const portalMasterEnabled = portal.enabled !== false;
 
-  const bookingOverride = typeof tenantToggles.public_booking === 'boolean'
-    ? tenantToggles.public_booking
+  const superAdminBookingOverride = typeof superAdminTenantToggles.public_booking === 'boolean'
+    ? superAdminTenantToggles.public_booking
     : (typeof portal.publicBookingEnabled === 'boolean' ? portal.publicBookingEnabled : undefined);
 
-  const guestOverride = typeof tenantToggles.guest === 'boolean'
-    ? tenantToggles.guest
+  const superAdminGuestOverride = typeof superAdminTenantToggles.guest === 'boolean'
+    ? superAdminTenantToggles.guest
     : (typeof portal.guestPortalEnabled === 'boolean' ? portal.guestPortalEnabled : undefined);
+
+  const superAdminPublicBooking = portalMasterEnabled && (superAdminBookingOverride !== undefined ? superAdminBookingOverride : globalPublicBooking);
+  const superAdminGuestPortal = portalMasterEnabled && (superAdminGuestOverride !== undefined ? superAdminGuestOverride : globalGuestPortal);
+
+  const superAdminLockedToggles: Record<string, boolean> = {};
+  for (const [k, v] of Object.entries(globalToggles)) {
+    if (v === false) superAdminLockedToggles[k] = true;
+  }
+  for (const [k, v] of Object.entries(superAdminTenantToggles)) {
+    if (v === false) superAdminLockedToggles[k] = true;
+  }
+  if (!portalMasterEnabled) {
+    superAdminLockedToggles.public = true;
+    superAdminLockedToggles.public_booking = true;
+    superAdminLockedToggles.guest = true;
+  } else {
+    if (!superAdminPublicBooking) superAdminLockedToggles.public_booking = true;
+    if (!superAdminGuestPortal) superAdminLockedToggles.guest = true;
+  }
 
   const effectiveModuleToggles: Record<string, boolean> = {
     ...globalToggles,
-    ...tenantToggles,
+    ...superAdminTenantToggles,
+    ...tenantAdminToggles,
   };
 
-  const publicPortalEnabled = portalMasterEnabled && effectiveModuleToggles.public !== false;
-  const publicBookingEnabled = portalMasterEnabled && (bookingOverride !== undefined ? bookingOverride : globalPublicBooking);
-  const guestPortalEnabled = portalMasterEnabled && (guestOverride !== undefined ? guestOverride : globalGuestPortal);
+  // Re-apply SuperAdmin hard locks so tenantAdminToggles can never re-enable a locked key
+  for (const lockedKey of Object.keys(superAdminLockedToggles)) {
+    effectiveModuleToggles[lockedKey] = false;
+  }
 
-  if (bookingOverride !== undefined || !publicBookingEnabled) {
+  const publicPortalEnabled = portalMasterEnabled && effectiveModuleToggles.public !== false;
+  const publicBookingEnabled = superAdminPublicBooking && tenantAdminToggles.public_booking !== false;
+  const guestPortalEnabled = superAdminGuestPortal && tenantAdminToggles.guest !== false;
+
+  if (!publicBookingEnabled || superAdminBookingOverride !== undefined || tenantAdminToggles.public_booking !== undefined) {
     effectiveModuleToggles.public_booking = publicBookingEnabled;
   }
-  if (guestOverride !== undefined || !guestPortalEnabled) {
+  if (!guestPortalEnabled || superAdminGuestOverride !== undefined || tenantAdminToggles.guest !== undefined) {
     effectiveModuleToggles.guest = guestPortalEnabled;
   }
   if (!portalMasterEnabled) {
@@ -661,5 +694,6 @@ export function resolveTenantPortalFlags(
       features: (portal.features && typeof portal.features === 'object') ? portal.features : {},
     },
     effectiveModuleToggles,
+    superAdminLockedToggles,
   };
 }

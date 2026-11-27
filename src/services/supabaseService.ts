@@ -922,6 +922,8 @@ export const supabaseService = {
         publicBookingEnabled: data.public_booking_enabled ?? true,
         guestPortalEnabled: data.guest_portal_enabled ?? true,
         moduleToggles: data.module_toggles || {},
+        superAdminLockedToggles: data.super_admin_locked_toggles || {},
+        superAdminBoundaries: data.super_admin_boundaries || undefined,
         allowedIps: data.allowed_ips || [],
         backupFrequency: data.backup_frequency || 'daily',
         systemLogLevel: data.system_log_level || 'info',
