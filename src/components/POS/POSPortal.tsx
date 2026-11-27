@@ -125,7 +125,7 @@ export default function POSPortal({ user, onLogout }: POSPortalProps) {
   return (
     <div className="flex flex-col h-full space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between bg-slate-900 text-white p-6 rounded-3xl border border-slate-800 shadow-xl">
+      <div className="flex items-center justify-between bg-slate-900 text-white p-6 rounded-2xl border border-slate-800 shadow-xl">
         <div className="flex items-center gap-4">
           <div className="w-12 h-12 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-2xl flex items-center justify-center text-white shadow-lg shadow-indigo-500/20">
             <ShoppingCart size={24} />

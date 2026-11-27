@@ -595,20 +595,20 @@ export default function InventoryModule({ forcedStore }: { forcedStore?: string 
              </div>
              <div className="space-y-1 relative z-10">
                <h4 className="text-[10px] font-black uppercase tracking-[0.2em] text-indigo-400">Store Valuation</h4>
-               <p className="text-3xl font-black tabular-nums">{formatAmount(stats.totalValue)}</p>
+               <p className="text-3xl font-bold tabular-nums">{formatAmount(stats.totalValue)}</p>
              </div>
              <div className="grid grid-cols-2 gap-5 relative z-10">
                <div className="space-y-1">
                  <p className="text-[9px] font-black text-slate-500 uppercase tracking-[0.1em]">Stock Alerts</p>
                  <div className="flex items-center gap-2">
-                    <p className="text-2xl font-black text-rose-500">{stats.lowStock}</p>
+                    <p className="text-2xl font-bold text-rose-500">{stats.lowStock}</p>
                     <ArrowUpRight size={14} className="text-rose-500" />
                  </div>
                </div>
                <div className="space-y-1">
                  <p className="text-[9px] font-black text-slate-500 uppercase tracking-[0.1em]">Out of Stock</p>
                  <div className="flex items-center gap-2">
-                    <p className="text-2xl font-black text-slate-400">{stats.stockouts}</p>
+                    <p className="text-2xl font-bold text-slate-400">{stats.stockouts}</p>
                  </div>
                </div>
              </div>
@@ -938,7 +938,7 @@ export default function InventoryModule({ forcedStore }: { forcedStore?: string 
            onClick={() => addNotification('Opening Stock Requisition form...', 'info', 'Sub-Store')}
           >
             <div className="flex items-center gap-5 relative z-10">
-               <div className="p-4 bg-indigo-50 dark:bg-indigo-950/20 text-indigo-600 rounded-3xl shadow-sm border border-indigo-100/50 group-hover:scale-110 transition-transform">
+               <div className="p-4 bg-indigo-50 dark:bg-indigo-950/20 text-indigo-600 rounded-2xl shadow-sm border border-indigo-100/50 group-hover:scale-110 transition-transform">
                   <ArrowDownToLine size={28} />
                </div>
                <div>
@@ -957,7 +957,7 @@ export default function InventoryModule({ forcedStore }: { forcedStore?: string 
            onClick={() => setShowAudit(!showAudit)}
          >
             <div className="flex items-center gap-5 relative z-10">
-               <div className="p-4 bg-amber-50 dark:bg-amber-950/20 text-amber-600 rounded-3xl shadow-sm border border-amber-100/50 group-hover:scale-110 transition-transform">
+               <div className="p-4 bg-amber-50 dark:bg-amber-950/20 text-amber-600 rounded-2xl shadow-sm border border-amber-100/50 group-hover:scale-110 transition-transform">
                   <ClipboardCheck size={28} />
                </div>
                <div>

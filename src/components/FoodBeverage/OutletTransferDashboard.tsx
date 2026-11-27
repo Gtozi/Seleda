@@ -134,7 +134,7 @@ export function OutletTransferDashboard({ outletId }: Props) {
   };
 
   if (loading) {
-    return <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-3xl p-12 text-center text-slate-400 text-sm animate-pulse">Loading transfers...</div>;
+    return <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-2xl p-12 text-center text-slate-400 text-sm animate-pulse">Loading transfers...</div>;
   }
 
   return (
@@ -161,7 +161,7 @@ export function OutletTransferDashboard({ outletId }: Props) {
 
       {/* Create Form */}
       {showCreate && (
-        <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-3xl p-6 space-y-4">
+        <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-2xl p-6 space-y-4">
           <h4 className="text-xs font-black text-slate-900 dark:text-white uppercase">New Cross-Outlet Transfer</h4>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             <div>
@@ -239,7 +239,7 @@ export function OutletTransferDashboard({ outletId }: Props) {
 
       {/* Active Transfers Table */}
       {activeTab === 'active' && (
-        <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-3xl overflow-hidden overflow-x-auto">
+        <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-2xl overflow-hidden overflow-x-auto">
           <table className="w-full text-xs">
             <thead className="bg-slate-50/50 dark:bg-slate-950/20 text-[10px] font-black text-slate-400 uppercase tracking-widest">
               <tr>
@@ -296,7 +296,7 @@ export function OutletTransferDashboard({ outletId }: Props) {
 
       {/* History Table */}
       {activeTab === 'history' && (
-        <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-3xl overflow-hidden overflow-x-auto">
+        <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-2xl overflow-hidden overflow-x-auto">
           <table className="w-full text-xs">
             <thead className="bg-slate-50/50 dark:bg-slate-950/20 text-[10px] font-black text-slate-400 uppercase tracking-widest">
               <tr>

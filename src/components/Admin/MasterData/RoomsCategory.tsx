@@ -39,7 +39,7 @@ export default function RoomsCategory({
       </div>
 
       {/* Properties List */}
-      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl shadow-xs overflow-hidden">
+      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-xs overflow-hidden">
         <div className="p-6 border-b border-slate-50 dark:border-slate-850 flex justify-between items-center">
           <h3 className="text-xs font-black text-slate-900 dark:text-white uppercase tracking-wider">Registered Property Inventory ({filteredRooms.length})</h3>
           <button

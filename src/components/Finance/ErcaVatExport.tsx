@@ -114,7 +114,7 @@ const ErcaVatExport = () => {
               { label: 'VAT Input', value: `$${vatExport.summary.total_vat_input.toLocaleString()}`, sub: 'VAT paid on purchases', icon: Receipt, color: 'text-indigo-500' },
               { label: 'Net VAT Payable', value: `$${vatExport.summary.total_net_vat.toLocaleString()}`, sub: vatExport.summary.total_net_vat >= 0 ? 'Payable to ERCA' : 'Receivable from ERCA', icon: DollarSign, color: vatExport.summary.total_net_vat >= 0 ? 'text-rose-500' : 'text-emerald-500' },
             ].map((stat, i) => (
-              <div key={i} className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 p-6 rounded-3xl shadow-3xs">
+              <div key={i} className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 p-6 rounded-2xl shadow-3xs">
                 <div className={`p-2 w-fit rounded-lg bg-slate-50 dark:bg-slate-800 ${stat.color} mb-3`}>
                   <stat.icon size={18} />
                 </div>
@@ -125,7 +125,7 @@ const ErcaVatExport = () => {
             ))}
           </div>
 
-          <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 p-6 rounded-3xl shadow-3xs">
+          <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 p-6 rounded-2xl shadow-3xs">
             <div className="flex items-center justify-between mb-6">
               <h3 className="text-sm font-black text-slate-900 dark:text-white uppercase tracking-tight">VAT Account Breakdown</h3>
               <div className="flex items-center gap-2 text-[10px] font-bold text-slate-500">
@@ -180,12 +180,12 @@ const ErcaVatExport = () => {
                 filterable
                 filterPlaceholder="Search VAT accounts..."
                 filterKeys={['account_code', 'account_name']}
-                containerClassName="rounded-3xl border-0 shadow-none"
+                containerClassName="rounded-2xl border-0 shadow-none"
               />
             )}
           </div>
 
-          <div className="bg-amber-50 dark:bg-amber-500/10 border border-amber-100 dark:border-amber-500/20 p-6 rounded-3xl">
+          <div className="bg-amber-50 dark:bg-amber-500/10 border border-amber-100 dark:border-amber-500/20 p-6 rounded-2xl">
             <div className="flex items-start gap-4">
               <div className="p-2 bg-amber-100 dark:bg-amber-500/20 rounded-lg">
                 <AlertCircle size={20} className="text-amber-600 dark:text-amber-400" />

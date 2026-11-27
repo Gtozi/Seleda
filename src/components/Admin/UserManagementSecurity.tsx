@@ -30,6 +30,7 @@ import {
 import { useERP } from '../../context/ERPContext';
 import { User, SystemAuditLog } from '../../types/erp';
 import PasswordResetRequests from './PasswordResetRequests';
+import { AdminSubTabBar } from './shared/AdminSubTabBar';
 
 type SecurityTab = 'rbac' | 'users' | 'audit' | 'security_settings' | 'password_resets';
 
@@ -53,24 +54,12 @@ export default function UserManagementSecurity({ initialTab = 'users' }: { initi
   const [activeTab, setActiveTab] = useState<SecurityTab>(initialTab);
 
   return (
-    <div className="h-full flex flex-col bg-slate-50">
-      <div className="px-6 pt-4 flex justify-center">
-        <div className="flex bg-slate-100 p-1 border border-slate-200 rounded-xl">
-          {TAB_META.map(t => (
-            <button
-              key={t.id}
-              onClick={() => setActiveTab(t.id)}
-              className={`px-4 py-2 flex items-center justify-center gap-2 rounded-lg text-xs font-sans font-bold transition-all ${
-                activeTab === t.id ? 'bg-indigo-600 text-white shadow-md' : 'text-slate-600 hover:text-slate-900 bg-white'
-              }`}
-            >
-              {t.icon} {t.label}
-            </button>
-          ))}
-        </div>
+    <div className="space-y-6">
+      <div>
+        <AdminSubTabBar tabs={TAB_META} activeTab={activeTab} onChange={setActiveTab} />
       </div>
 
-      <div className="flex-1 overflow-y-auto px-6 pb-6">
+      <div>
         {activeTab === 'users' && <UserProfilesModule />}
         {activeTab === 'rbac' && <RBACModule />}
         {activeTab === 'audit' && <AuditLogsModule />}
@@ -728,7 +717,7 @@ function RoleCard({ role, onDelete, onEdit, registry }: { role: any; onDelete: (
   const iconColor = DEPT_ICON_COLORS[role.department] || 'bg-indigo-100 text-indigo-600';
 
   return (
-    <div className="bg-white border border-slate-200 rounded-3xl p-5 shadow-sm hover:shadow-md hover:border-slate-300 transition group">
+    <div className="bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-2xl p-5 shadow-sm hover:shadow-md hover:border-slate-300 transition group">
       <div className="flex justify-between items-start mb-3">
         <div className="flex items-center gap-2.5">
           <div className={`w-10 h-10 rounded-xl ${iconColor} flex items-center justify-center`}>
@@ -1118,7 +1107,7 @@ function SecuritySettingsModule() {
       <SectionCard title="Security Posture" subtitle={`Current strength: ${strengthLabel}`} icon={Shield} tone={strengthPct >= 80 ? 'success' : strengthPct >= 50 ? 'warning' : 'danger'} pad="md">
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-2">
-            <span className={`text-2xl font-black ${strengthPct >= 80 ? 'text-emerald-600 dark:text-emerald-400' : strengthPct >= 50 ? 'text-amber-600 dark:text-amber-400' : 'text-rose-600 dark:text-rose-400'}`}>{strengthPct}%</span>
+            <span className={`text-2xl font-bold ${strengthPct >= 80 ? 'text-emerald-600 dark:text-emerald-400' : strengthPct >= 50 ? 'text-amber-600 dark:text-amber-400' : 'text-rose-600 dark:text-rose-400'}`}>{strengthPct}%</span>
             <span className={`text-sm font-bold ${strengthPct >= 80 ? 'text-emerald-600 dark:text-emerald-400' : strengthPct >= 50 ? 'text-amber-600 dark:text-amber-400' : 'text-rose-600 dark:text-rose-400'}`}>{strengthLabel}</span>
           </div>
         </div>
@@ -1263,16 +1252,16 @@ function AddUserModal({ onClose, onAddUser, loading }: { onClose: () => void; on
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-3xl w-full max-w-md shadow-2xl max-h-[90vh] overflow-y-auto">
-        <div className="sticky top-0 bg-white px-6 py-4 border-b border-slate-100 flex justify-between items-center z-10">
+      <div className="bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-2xl w-full max-w-md shadow-2xl max-h-[90vh] overflow-y-auto">
+        <div className="sticky top-0 bg-white dark:bg-slate-800 px-6 py-4 border-b border-gray-100 dark:border-slate-700 flex justify-between items-center z-10">
           <div className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded-xl bg-indigo-50 flex items-center justify-center">
-              <UserCircle2 size={16} className="text-indigo-600" />
+            <div className="w-8 h-8 rounded-xl bg-[var(--color-accent-operations)]/10 flex items-center justify-center">
+              <UserCircle2 size={16} className="text-[var(--color-accent-operations)]" />
             </div>
-            <h3 className="text-base font-black text-slate-900">Add New User</h3>
+            <h3 className="text-base font-black text-gray-900 dark:text-white">Add New User</h3>
           </div>
-          <button onClick={onClose} className="p-2 hover:bg-slate-100 rounded-lg transition">
-            <X size={18} className="text-slate-500" />
+          <button onClick={onClose} className="p-2 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg transition">
+            <X size={18} className="text-slate-500 dark:text-slate-400" />
           </button>
         </div>
 
@@ -1477,7 +1466,7 @@ function EditUserModal({ user, onClose, onUpdateUser, loading }: { user: any; on
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-3xl w-full max-w-md shadow-2xl max-h-[90vh] overflow-y-auto">
+      <div className="bg-white rounded-2xl w-full max-w-md shadow-2xl max-h-[90vh] overflow-y-auto">
         <div className="sticky top-0 bg-white px-6 py-4 border-b border-slate-100 flex justify-between items-center z-10">
           <div className="flex items-center gap-2">
             <div className="w-8 h-8 rounded-xl bg-indigo-50 flex items-center justify-center">
@@ -1734,16 +1723,16 @@ function AddRoleModal({ onClose, onAddRole, loading, registry, allPermissions }:
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-3xl w-full max-w-2xl shadow-2xl max-h-[90vh] overflow-y-auto">
-        <div className="sticky top-0 bg-white px-6 py-4 border-b border-slate-100 flex justify-between items-center z-10">
+      <div className="bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-2xl w-full max-w-2xl shadow-2xl max-h-[90vh] overflow-y-auto">
+        <div className="sticky top-0 bg-white dark:bg-slate-800 px-6 py-4 border-b border-gray-100 dark:border-slate-700 flex justify-between items-center z-10">
           <div className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded-xl bg-indigo-50 flex items-center justify-center">
-              <Key size={16} className="text-indigo-600" />
+            <div className="w-8 h-8 rounded-xl bg-[var(--color-accent-operations)]/10 flex items-center justify-center">
+              <Key size={16} className="text-[var(--color-accent-operations)]" />
             </div>
-            <h3 className="text-base font-black text-slate-900">Create Department Sub-Role</h3>
+            <h3 className="text-base font-black text-gray-900 dark:text-white">Create Department Sub-Role</h3>
           </div>
-          <button onClick={onClose} className="p-2 hover:bg-slate-100 rounded-lg transition">
-            <X size={18} className="text-slate-500" />
+          <button onClick={onClose} className="p-2 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg transition">
+            <X size={18} className="text-slate-500 dark:text-slate-400" />
           </button>
         </div>
 
@@ -2008,16 +1997,16 @@ function EditRoleModal({ role, allPermissions, onClose, onUpdateRole, loading, r
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-3xl w-full max-w-2xl shadow-2xl max-h-[90vh] overflow-y-auto">
-        <div className="sticky top-0 bg-white px-6 py-4 border-b border-slate-100 flex justify-between items-center z-10">
+      <div className="bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-2xl w-full max-w-2xl shadow-2xl max-h-[90vh] overflow-y-auto">
+        <div className="sticky top-0 bg-white dark:bg-slate-800 px-6 py-4 border-b border-gray-100 dark:border-slate-700 flex justify-between items-center z-10">
           <div className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded-xl bg-indigo-50 flex items-center justify-center">
-              <Edit2 size={16} className="text-indigo-600" />
+            <div className="w-8 h-8 rounded-xl bg-[var(--color-accent-operations)]/10 flex items-center justify-center">
+              <Edit2 size={16} className="text-[var(--color-accent-operations)]" />
             </div>
-            <h3 className="text-base font-black text-slate-900">Edit Role</h3>
+            <h3 className="text-base font-black text-gray-900 dark:text-white">Edit Role</h3>
           </div>
-          <button onClick={onClose} className="p-2 hover:bg-slate-100 rounded-lg transition">
-            <X size={18} className="text-slate-500" />
+          <button onClick={onClose} className="p-2 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg transition">
+            <X size={18} className="text-slate-500 dark:text-slate-400" />
           </button>
         </div>
 

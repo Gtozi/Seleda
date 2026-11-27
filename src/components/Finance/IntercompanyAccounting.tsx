@@ -823,7 +823,7 @@ const IntercompanyAccounting = () => {
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-1">Amount</span>
-                  <span className="text-2xl font-black text-indigo-600">{formatAmount(Number(selectedInvoice.amount))}</span>
+                  <span className="text-2xl font-bold text-indigo-600">{formatAmount(Number(selectedInvoice.amount))}</span>
                 </div>
                 <div>
                   <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-1">Status</span>

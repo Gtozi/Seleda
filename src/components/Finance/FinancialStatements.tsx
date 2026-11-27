@@ -133,7 +133,7 @@ const FinancialStatements = ({ initialTab = 'profit-loss' }: FinancialStatements
               { label: 'Total Expenses', value: `$${profitLoss.summary.total_expenses.toLocaleString()}`, sub: 'Operating costs', icon: TrendingDown, color: 'text-rose-500' },
               { label: 'Net Profit', value: `$${profitLoss.summary.net_profit.toLocaleString()}`, sub: 'Bottom line', icon: DollarSign, color: profitLoss.summary.net_profit >= 0 ? 'text-emerald-500' : 'text-rose-500' },
             ].map((stat, i) => (
-              <div key={i} className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 p-6 rounded-3xl shadow-3xs">
+              <div key={i} className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 p-6 rounded-2xl shadow-3xs">
                 <div className={`p-2 w-fit rounded-lg bg-slate-50 dark:bg-slate-800 ${stat.color} mb-3`}>
                   <stat.icon size={18} />
                 </div>
@@ -145,7 +145,7 @@ const FinancialStatements = ({ initialTab = 'profit-loss' }: FinancialStatements
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 p-6 rounded-3xl shadow-3xs">
+            <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 p-6 rounded-2xl shadow-3xs">
               <h3 className="text-sm font-black text-slate-900 dark:text-white uppercase tracking-tight mb-6">Revenue</h3>
               <div className="space-y-3">
                 {profitLoss.revenue.length === 0 ? (
@@ -165,7 +165,7 @@ const FinancialStatements = ({ initialTab = 'profit-loss' }: FinancialStatements
               </div>
             </div>
 
-            <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 p-6 rounded-3xl shadow-3xs">
+            <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 p-6 rounded-2xl shadow-3xs">
               <h3 className="text-sm font-black text-slate-900 dark:text-white uppercase tracking-tight mb-6">Expenses</h3>
               <div className="space-y-3">
                 {profitLoss.expenses.length === 0 ? (
@@ -237,7 +237,7 @@ const FinancialStatements = ({ initialTab = 'profit-loss' }: FinancialStatements
                 color: balanceSheet.summary.is_balanced ? 'text-emerald-500' : 'text-rose-500',
               },
             ].map((stat, i) => (
-              <div key={i} className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 p-6 rounded-3xl shadow-3xs">
+              <div key={i} className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 p-6 rounded-2xl shadow-3xs">
                 <div className={`p-2 w-fit rounded-lg bg-slate-50 dark:bg-slate-800 ${stat.color} mb-3`}>
                   <stat.icon size={18} />
                 </div>
@@ -249,7 +249,7 @@ const FinancialStatements = ({ initialTab = 'profit-loss' }: FinancialStatements
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 p-6 rounded-3xl shadow-3xs">
+            <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 p-6 rounded-2xl shadow-3xs">
               <h3 className="text-sm font-black text-slate-900 dark:text-white uppercase tracking-tight mb-6">Assets</h3>
               <div className="space-y-3">
                 {balanceSheet.assets.length === 0 ? (
@@ -269,7 +269,7 @@ const FinancialStatements = ({ initialTab = 'profit-loss' }: FinancialStatements
               </div>
             </div>
 
-            <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 p-6 rounded-3xl shadow-3xs">
+            <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 p-6 rounded-2xl shadow-3xs">
               <h3 className="text-sm font-black text-slate-900 dark:text-white uppercase tracking-tight mb-6">Liabilities</h3>
               <div className="space-y-3">
                 {balanceSheet.liabilities.length === 0 ? (
@@ -289,7 +289,7 @@ const FinancialStatements = ({ initialTab = 'profit-loss' }: FinancialStatements
               </div>
             </div>
 
-            <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 p-6 rounded-3xl shadow-3xs">
+            <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 p-6 rounded-2xl shadow-3xs">
               <h3 className="text-sm font-black text-slate-900 dark:text-white uppercase tracking-tight mb-6">Equity</h3>
               <div className="space-y-3">
                 {balanceSheet.equity.length === 0 ? (
@@ -369,7 +369,7 @@ const FinancialStatements = ({ initialTab = 'profit-loss' }: FinancialStatements
                 color: cashFlow.summary.net_cash_change >= 0 ? 'text-emerald-500' : 'text-rose-500',
               },
             ].map((stat, i) => (
-              <div key={i} className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 p-6 rounded-3xl shadow-3xs">
+              <div key={i} className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 p-6 rounded-2xl shadow-3xs">
                 <div className={`p-2 w-fit rounded-lg bg-slate-50 dark:bg-slate-800 ${stat.color} mb-3`}>
                   <stat.icon size={18} />
                 </div>
@@ -382,7 +382,7 @@ const FinancialStatements = ({ initialTab = 'profit-loss' }: FinancialStatements
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
             {/* Operating Activities */}
-            <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 p-6 rounded-3xl shadow-3xs">
+            <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 p-6 rounded-2xl shadow-3xs">
               <h3 className="text-sm font-black text-slate-900 dark:text-white uppercase tracking-tight mb-6">Operating Activities</h3>
               <div className="space-y-3">
                 <div className="flex items-center justify-between p-4 bg-emerald-50 dark:bg-emerald-500/10 rounded-2xl">
@@ -405,7 +405,7 @@ const FinancialStatements = ({ initialTab = 'profit-loss' }: FinancialStatements
             </div>
 
             {/* Investing Activities */}
-            <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 p-6 rounded-3xl shadow-3xs">
+            <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 p-6 rounded-2xl shadow-3xs">
               <h3 className="text-sm font-black text-slate-900 dark:text-white uppercase tracking-tight mb-6">Investing Activities</h3>
               <div className="space-y-3">
                 {cashFlow.investing_activities.items.length === 0 ? (
@@ -430,7 +430,7 @@ const FinancialStatements = ({ initialTab = 'profit-loss' }: FinancialStatements
             </div>
 
             {/* Financing Activities */}
-            <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 p-6 rounded-3xl shadow-3xs">
+            <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 p-6 rounded-2xl shadow-3xs">
               <h3 className="text-sm font-black text-slate-900 dark:text-white uppercase tracking-tight mb-6">Financing Activities</h3>
               <div className="space-y-3">
                 {cashFlow.financing_activities.items.length === 0 ? (

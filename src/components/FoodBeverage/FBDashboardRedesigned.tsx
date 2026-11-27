@@ -112,7 +112,7 @@ export default function FBDashboardRedesigned() {
     return (
       <div className="flex items-center justify-center min-h-[600px]">
         <div className="text-center space-y-4">
-          <div className="w-16 h-16 bg-indigo-100 dark:bg-indigo-900/30 rounded-3xl flex items-center justify-center mx-auto animate-pulse">
+          <div className="w-16 h-16 bg-indigo-100 dark:bg-indigo-900/30 rounded-2xl flex items-center justify-center mx-auto animate-pulse">
             <ChefHat className="w-8 h-8 text-indigo-600" />
           </div>
           <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600 mx-auto" />
@@ -127,7 +127,7 @@ export default function FBDashboardRedesigned() {
       {/* HEADER BAR */}
       <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-black text-slate-900 dark:text-white tracking-tight">F&B Command Center</h1>
+          <h1 className="text-2xl font-bold text-slate-900 dark:text-white tracking-tight">F&B Command Center</h1>
           <p className="text-xs text-slate-400 font-bold uppercase tracking-wider mt-1">Unified Operations Dashboard</p>
         </div>
         <div className="flex items-center gap-3">
@@ -181,7 +181,7 @@ export default function FBDashboardRedesigned() {
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            <div className="lg:col-span-2 bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-3xl p-6 shadow-sm">
+            <div className="lg:col-span-2 bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-2xl p-6 shadow-sm">
               <div className="flex items-center justify-between mb-6">
                 <div>
                   <h3 className="text-sm font-black text-slate-900 dark:text-white uppercase tracking-tight">Revenue & Orders</h3>
@@ -210,7 +210,7 @@ export default function FBDashboardRedesigned() {
               </ResponsiveContainer>
             </div>
 
-            <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-3xl p-6 shadow-sm">
+            <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-2xl p-6 shadow-sm">
               <h3 className="text-sm font-black text-slate-900 dark:text-white uppercase tracking-tight mb-1">Sales Mix</h3>
               <p className="text-[10px] text-slate-400 font-bold uppercase mb-4">By Category</p>
               <div className="h-40 relative">
@@ -248,7 +248,7 @@ export default function FBDashboardRedesigned() {
               {(filteredOutlets.length > 0 ? filteredOutlets : outletKPIs).map((outlet) => {
                 const Icon = outletIcons[outlet.outletType?.toLowerCase()] || UtensilsCrossed;
                 return (
-                  <div key={outlet.outletId} className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-3xl p-5 shadow-sm hover:shadow-md transition group cursor-pointer">
+                  <div key={outlet.outletId} className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-2xl p-5 shadow-sm hover:shadow-md transition group cursor-pointer">
                     <div className="flex items-center justify-between mb-4">
                       <div className="w-10 h-10 bg-indigo-50 dark:bg-indigo-900/20 rounded-2xl flex items-center justify-center group-hover:scale-110 transition-transform">
                         <Icon className="w-5 h-5 text-indigo-600" />
@@ -276,7 +276,7 @@ export default function FBDashboardRedesigned() {
               ].map((o, i) => {
                 const Icon = outletIcons[o.type] || UtensilsCrossed;
                 return (
-                  <div key={i} className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-3xl p-5 shadow-sm">
+                  <div key={i} className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-2xl p-5 shadow-sm">
                     <div className="flex items-center justify-between mb-4">
                       <div className="w-10 h-10 bg-indigo-50 dark:bg-indigo-900/20 rounded-2xl flex items-center justify-center">
                         <Icon className="w-5 h-5 text-indigo-600" />
@@ -293,7 +293,7 @@ export default function FBDashboardRedesigned() {
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            <div className="lg:col-span-2 bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-3xl p-6 shadow-sm">
+            <div className="lg:col-span-2 bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-2xl p-6 shadow-sm">
               <h3 className="text-sm font-black text-slate-900 dark:text-white uppercase tracking-tight mb-4">Operational Metrics</h3>
               <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
                 <OpMetric icon={Users} label="Forecasted Guests" value="124" color="text-indigo-600" bg="bg-indigo-50 dark:bg-indigo-900/20" />
@@ -304,7 +304,7 @@ export default function FBDashboardRedesigned() {
                 <OpMetric icon={Package} label="Stock Alerts" value="3" color="text-slate-600" bg="bg-slate-50 dark:bg-slate-900/20" />
               </div>
             </div>
-            <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-3xl p-6 shadow-sm">
+            <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-2xl p-6 shadow-sm">
               <h3 className="text-sm font-black text-slate-900 dark:text-white uppercase tracking-tight mb-4">Cost & Wastage</h3>
               <div className="space-y-3">
                 <CostBar label="Total COGS" value={formatAmount(kpis?.totalCOGS || 8200)} color="bg-amber-500" />
@@ -321,7 +321,7 @@ export default function FBDashboardRedesigned() {
       {view === 'operations' && (
         <div className="space-y-6">
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-3xl p-6 shadow-sm">
+            <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-2xl p-6 shadow-sm">
               <div className="flex items-center justify-between mb-4">
                 <h3 className="text-sm font-black text-slate-900 dark:text-white uppercase">POS Sync Health</h3>
                 {syncHealth?.totalPending > 0 ? <WifiOff className="w-5 h-5 text-amber-500" /> : <Wifi className="w-5 h-5 text-emerald-500" />}
@@ -334,7 +334,7 @@ export default function FBDashboardRedesigned() {
               </div>
             </div>
 
-            <div className="lg:col-span-2 bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-3xl p-6 shadow-sm">
+            <div className="lg:col-span-2 bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-2xl p-6 shadow-sm">
               <div className="flex items-center justify-between mb-4">
                 <h3 className="text-sm font-black text-slate-900 dark:text-white uppercase">Recent Sync Queue</h3>
                 <span className="text-[10px] font-mono text-slate-400">Last 5 items</span>
@@ -389,7 +389,7 @@ export default function FBDashboardRedesigned() {
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-3xl p-6 shadow-sm">
+            <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-2xl p-6 shadow-sm">
               <div className="flex items-center justify-between mb-4">
                 <h3 className="text-sm font-black text-slate-900 dark:text-white uppercase">Kitchen Status</h3>
                 <Flame className="w-5 h-5 text-rose-500" />
@@ -418,7 +418,7 @@ export default function FBDashboardRedesigned() {
               </div>
             </div>
 
-            <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-3xl p-6 shadow-sm">
+            <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-2xl p-6 shadow-sm">
               <div className="flex items-center justify-between mb-4">
                 <h3 className="text-sm font-black text-slate-900 dark:text-white uppercase">Bar Status</h3>
                 <Wine className="w-5 h-5 text-purple-500" />
@@ -460,7 +460,7 @@ export default function FBDashboardRedesigned() {
             <ComplianceCard icon={CreditCard} title="Payment Terminals" status="active" detail="0 offline" color="emerald" />
           </div>
 
-          <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-3xl p-6 shadow-sm">
+          <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-2xl p-6 shadow-sm">
             <h3 className="text-sm font-black text-slate-900 dark:text-white uppercase tracking-tight mb-4">Security & RLS Status</h3>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <SecurityRow label="RLS on F&B Tables" status="enabled" detail="All 51 core tables protected" />
@@ -470,7 +470,7 @@ export default function FBDashboardRedesigned() {
             </div>
           </div>
 
-          <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-3xl p-6 shadow-sm">
+          <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-2xl p-6 shadow-sm">
             <h3 className="text-sm font-black text-slate-900 dark:text-white uppercase tracking-tight mb-4">Menu Enhancement Features</h3>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
               <FeatureStatus icon={UtensilsCrossed} label="Modifier Groups" desc="Single/multi/quantity selection" />
@@ -480,7 +480,7 @@ export default function FBDashboardRedesigned() {
             </div>
           </div>
 
-          <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-3xl p-6 shadow-sm">
+          <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-2xl p-6 shadow-sm">
             <h3 className="text-sm font-black text-slate-900 dark:text-white uppercase tracking-tight mb-4">Hardware Integration</h3>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <HardwareRow icon={Printer} label="Thermal Printers" desc="ESC/POS, network/USB, kitchen tickets" status="ready" />
@@ -497,7 +497,7 @@ function HeroKpiCard({ label, value, trend, isPositive, icon: Icon, gradient }: 
   label: string; value: string; trend: string; isPositive: boolean; icon: any; gradient: string;
 }) {
   return (
-    <div className="relative bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-3xl p-5 shadow-sm overflow-hidden">
+    <div className="relative bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-2xl p-5 shadow-sm overflow-hidden">
       <div className={`absolute -top-8 -right-8 w-24 h-24 bg-gradient-to-br ${gradient} opacity-10 rounded-full`} />
       <div className="flex items-start justify-between mb-3">
         <div className={`w-10 h-10 bg-gradient-to-br ${gradient} rounded-2xl flex items-center justify-center shadow-lg`}>
@@ -581,7 +581,7 @@ function ComplianceCard({ icon: Icon, title, status, detail, color }: {
     active: 'Active', not_set: 'Not Set', warning: 'Warning', ready: 'Ready',
   };
   return (
-    <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-3xl p-5 shadow-sm">
+    <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-2xl p-5 shadow-sm">
       <div className="flex items-center justify-between mb-3">
         <div className={`w-10 h-10 ${colorMap[color] || colorMap.emerald} rounded-2xl flex items-center justify-center`}>
           <Icon className="w-5 h-5" />

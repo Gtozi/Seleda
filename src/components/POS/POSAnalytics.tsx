@@ -216,7 +216,7 @@ export default function POSAnalytics({ outletId, outletName }: POSAnalyticsProps
             <span className="text-xs font-bold">{metric.change > 0 ? '+' : ''}{metric.change}%</span>
           </div>
         </div>
-        <h3 className="text-2xl font-black text-slate-900 dark:text-white mb-1">
+        <h3 className="text-2xl font-bold text-slate-900 dark:text-white mb-1">
           {metric.value}
         </h3>
         <p className="text-xs text-slate-500 dark:text-slate-400 font-medium uppercase tracking-wider">

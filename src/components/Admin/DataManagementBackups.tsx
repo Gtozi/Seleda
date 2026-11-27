@@ -16,6 +16,7 @@ import StatCard from '../FrontOffice/StatCard';
 import { PageHeader, SectionCard, Badge } from '../FrontOffice/ui';
 import { button } from '../FrontOffice/brandTheme';
 import { adminAuthHeaders } from './shared/ResourceManager';
+import { AdminSubTabBar } from './shared/AdminSubTabBar';
 
 type BackupTab = 'backups' | 'retention' | 'exports';
 
@@ -59,30 +60,17 @@ export default function DataManagementBackups() {
   const [activeTab, setActiveTab] = useState<BackupTab>('backups');
 
   return (
-    <div className="h-full flex flex-col bg-slate-50 dark:bg-slate-900">
-      <div className="px-6 pt-4">
-        <PageHeader
-          title="Data Management & Backups"
-          subtitle="Live backup jobs, schedules, retention policies, and data exports"
-          icon={Database}
-        />
-      </div>
-      <div className="px-6 pt-2 flex justify-center">
-        <div className="flex bg-slate-100 dark:bg-slate-800 p-1 border border-slate-200 dark:border-slate-700 rounded-xl">
-          {TAB_META.map(t => (
-            <button key={t.id} onClick={() => setActiveTab(t.id)}
-              className={`px-4 py-2 flex items-center justify-center gap-2 rounded-lg text-xs font-sans font-bold transition-all ${
-                activeTab === t.id
-                  ? 'bg-indigo-600 text-white shadow-md'
-                  : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white bg-white dark:bg-slate-700'
-              }`}>
-              {t.icon} {t.label}
-            </button>
-          ))}
-        </div>
+    <div className="space-y-6 animate-fade-in">
+      <PageHeader
+        title="Data Management & Backups"
+        subtitle="Live backup jobs, schedules, retention policies, and data exports"
+        icon={Database}
+      />
+      <div>
+        <AdminSubTabBar tabs={TAB_META} activeTab={activeTab} onChange={setActiveTab} />
       </div>
 
-      <div className="flex-1 overflow-y-auto px-6 pb-6">
+      <div>
         {activeTab === 'backups' && <BackupsModule />}
         {activeTab === 'retention' && <RetentionModule />}
         {activeTab === 'exports' && <ExportsModule />}

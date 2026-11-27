@@ -240,7 +240,7 @@ const StatCard = ({ title, value, change, icon: Icon, color }: {
   icon: any;
   color: string;
 }) => (
-  <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-6 rounded-3xl shadow-3xs">
+  <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-6 rounded-2xl shadow-3xs">
     <div className="flex items-center justify-between mb-4">
       <div className={`w-12 h-12 rounded-2xl flex items-center justify-center ${color}`}>
         <Icon size={24} className="text-white" />
@@ -252,7 +252,7 @@ const StatCard = ({ title, value, change, icon: Icon, color }: {
         </div>
       )}
     </div>
-    <h3 className="text-2xl font-black text-slate-900 dark:text-white mb-1">{value}</h3>
+    <h3 className="text-2xl font-bold text-slate-900 dark:text-white mb-1">{value}</h3>
     <p className="text-sm text-slate-600 dark:text-slate-400">{title}</p>
   </div>
 );
@@ -271,7 +271,7 @@ export default function BusinessIntelligenceDashboard() {
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <div>
           <span className="text-[10px] font-mono font-black text-indigo-500 uppercase tracking-widest">Advanced Analytics</span>
-          <h2 className="text-2xl font-black text-slate-900 dark:text-white">Business Intelligence</h2>
+          <h2 className="text-2xl font-bold text-slate-900 dark:text-white">Business Intelligence</h2>
         </div>
         <div className="flex gap-2">
           <div className="flex bg-slate-100 dark:bg-slate-800 rounded-xl p-1">
@@ -356,7 +356,7 @@ export default function BusinessIntelligenceDashboard() {
 
           {/* Predictive Models Status */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-6 rounded-3xl shadow-3xs">
+            <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-6 rounded-2xl shadow-3xs">
               <div className="flex items-center gap-2 mb-6">
                 <Brain size={20} className="text-indigo-500" />
                 <h3 className="text-lg font-bold text-slate-900 dark:text-white">AI Model Performance</h3>
@@ -376,7 +376,7 @@ export default function BusinessIntelligenceDashboard() {
                       </p>
                     </div>
                     <div className="text-right">
-                      <div className={`text-2xl font-black ${model.accuracy > 0.8 ? 'text-emerald-600' : model.accuracy > 0.75 ? 'text-amber-600' : 'text-rose-600'}`}>
+                      <div className={`text-2xl font-bold ${model.accuracy > 0.8 ? 'text-emerald-600' : model.accuracy > 0.75 ? 'text-amber-600' : 'text-rose-600'}`}>
                         {(model.accuracy * 100).toFixed(0)}%
                       </div>
                       <p className="text-[10px] text-slate-500 dark:text-slate-400">Accuracy</p>
@@ -386,7 +386,7 @@ export default function BusinessIntelligenceDashboard() {
               </div>
             </div>
 
-            <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-6 rounded-3xl shadow-3xs">
+            <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-6 rounded-2xl shadow-3xs">
               <div className="flex items-center gap-2 mb-6">
                 <Zap size={20} className="text-amber-500" />
                 <h3 className="text-lg font-bold text-slate-900 dark:text-white">Quick Insights</h3>
@@ -427,7 +427,7 @@ export default function BusinessIntelligenceDashboard() {
 
       {/* Guest LTV Tab */}
       {activeTab === 'ltv' && (
-        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-6 rounded-3xl shadow-3xs">
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-6 rounded-2xl shadow-3xs">
           <div className="flex items-center justify-between mb-6">
             <h3 className="text-lg font-bold text-slate-900 dark:text-white">Guest Lifetime Value Analysis</h3>
             <div className="flex gap-2">
@@ -496,7 +496,7 @@ export default function BusinessIntelligenceDashboard() {
       {activeTab === 'segments' && (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           {mockMarketSegments.map((segment) => (
-            <div key={segment.segmentId} className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-6 rounded-3xl shadow-3xs">
+            <div key={segment.segmentId} className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-6 rounded-2xl shadow-3xs">
               <div className="flex items-center justify-between mb-4">
                 <div>
                   <h3 className="text-lg font-bold text-slate-900 dark:text-white">{segment.segmentName}</h3>
@@ -543,7 +543,7 @@ export default function BusinessIntelligenceDashboard() {
 
       {/* Channel Attribution Tab */}
       {activeTab === 'channels' && (
-        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-6 rounded-3xl shadow-3xs">
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-6 rounded-2xl shadow-3xs">
           <div className="flex items-center justify-between mb-6">
             <h3 className="text-lg font-bold text-slate-900 dark:text-white">Channel Attribution Analysis</h3>
             <button className="px-3 py-1 bg-slate-100 dark:bg-slate-800 rounded-lg text-xs font-bold text-slate-600 dark:text-slate-400 flex items-center gap-1">
@@ -597,7 +597,7 @@ export default function BusinessIntelligenceDashboard() {
       {/* AI Predictions Tab */}
       {activeTab === 'predictions' && (
         <div className="space-y-6">
-          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-6 rounded-3xl shadow-3xs">
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-6 rounded-2xl shadow-3xs">
             <div className="flex items-center gap-2 mb-6">
               <Brain size={20} className="text-indigo-500" />
               <h3 className="text-lg font-bold text-slate-900 dark:text-white">Predictive Models</h3>

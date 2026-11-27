@@ -1406,7 +1406,7 @@ export default function RoomInspectionsModule() {
         <>
           {/* Inspection list table — grouped by room */}
           {filtered.length === 0 ? (
-            <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-8 rounded-3xl text-center text-[10px] font-bold text-slate-400 uppercase">
+            <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-8 rounded-2xl text-center text-[10px] font-bold text-slate-400 uppercase">
               {search || filter !== 'All' ? 'No inspections match the filters.' : 'No inspections found.'}
             </div>
           ) : (

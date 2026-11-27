@@ -2709,7 +2709,7 @@ const EventExecutionView = ({ events, beos, loading, onRefresh, getStatusColor, 
   if (inProgressEvents.length === 0) {
     return (
       <div className="space-y-6">
-        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-12 text-center">
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-12 text-center">
           <Activity size={32} className="mx-auto text-slate-300 dark:text-slate-600 mb-3" />
           <p className="text-sm text-slate-500">No events are currently in progress.</p>
           <p className="text-xs text-slate-400 mt-1">Events with status "In Progress" will appear here for on-event-day execution tracking.</p>
@@ -3066,7 +3066,7 @@ const RoomBlocksView = ({ events, loading, onRefresh, addNotification }: any) =>
       </div>
 
       {showForm && (
-        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-6">
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-6">
           <form onSubmit={handleSubmit} className="space-y-4">
             <div>
               <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-2">Event</label>
@@ -3337,7 +3337,7 @@ const DepartmentCoordinationView = ({ events, loading, onRefresh, getStatusColor
       </div>
 
       {showCoordForm && (
-        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-6">
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-6">
           <form onSubmit={handleCoordSubmit} className="space-y-4">
             <div className="grid grid-cols-2 gap-4">
               <div>
@@ -3429,7 +3429,7 @@ const DepartmentCoordinationView = ({ events, loading, onRefresh, getStatusColor
       </div>
 
       {/* Recent Coordination Requests — live from banquet_dept_coordination */}
-      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-6">
+      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-6">
         <h4 className="text-xs font-bold text-slate-900 dark:text-white mb-4">Coordination Requests</h4>
         <div className="space-y-3">
           {requestsLoading ? (
@@ -4446,7 +4446,7 @@ const EventBookingView = ({ venues, events, loading, onRefresh, addNotification 
       </div>
 
       {showForm && (
-        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-6">
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-6">
           <form onSubmit={handleSubmit} className="space-y-6">
             {/* Event Type Selection */}
             <div>
@@ -4909,7 +4909,7 @@ const FunctionSpaceView = ({ venues, loading, onRefresh, addNotification }: any)
       </div>
 
       {showForm && (
-        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-6">
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-6">
           <form onSubmit={handleSubmit} className="space-y-6">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
@@ -6465,7 +6465,7 @@ const BEOView = ({ beos, events, loading, onRefresh, addNotification }: any) => 
       )}
 
       {showForm && selectedBEO && (
-        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-6">
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-6">
           <form onSubmit={handleSubmit} className="space-y-6">
             <div className="text-xs text-slate-500">
               Editing BEO for <strong>{selectedBEO.eventName}</strong>. Menu, beverages, and equipment
@@ -6736,7 +6736,7 @@ const ResourceManagementView = ({ events, loading, onRefresh, getStatusColor, ad
       </div>
 
       {showResourceForm && (
-        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-6">
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-6">
           <form onSubmit={handleResourceSubmit} className="space-y-4">
             <div className="grid grid-cols-2 gap-4">
               <div>
@@ -7805,7 +7805,7 @@ const EquipmentManagementView = ({ events, loading, onRefresh, getStatusColor, a
       </div>
 
       {showCatalogForm && (
-        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-6">
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-6">
           <form onSubmit={handleCatalogSubmit} className="grid grid-cols-2 md:grid-cols-5 gap-4 items-end">
             <div>
               <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-2">Item Name</label>
@@ -7900,7 +7900,7 @@ const EquipmentManagementView = ({ events, loading, onRefresh, getStatusColor, a
       </SectionCard>
 
       {showEquipmentForm && (
-        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-6">
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-6">
           <form onSubmit={handleEquipmentSubmit} className="space-y-4">
             <div className="grid grid-cols-2 gap-4">
               <div>
@@ -8212,7 +8212,7 @@ const VendorCoordinationView = ({ events, loading, onRefresh, getStatusColor, ad
       </div>
 
       {showVendorForm && (
-        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-6">
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-6">
           <form onSubmit={handleVendorSubmit} className="space-y-4">
             <div className="grid grid-cols-2 gap-4">
               <div>
@@ -8546,7 +8546,7 @@ const TransportationCoordinationView = ({ events, loading, onRefresh, getStatusC
       </div>
 
       {showTransportForm && (
-        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-6">
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-6">
           <form onSubmit={handleTransportSubmit} className="space-y-4">
             <div className="grid grid-cols-2 gap-4">
               <div>

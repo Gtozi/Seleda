@@ -298,12 +298,12 @@ export default function AccountSettingsModule() {
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -10 }}
-                className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-8 shadow-sm space-y-8"
+                className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-8 shadow-sm space-y-8"
               >
                 {/* Avatar + Identity Header */}
                 <div className="flex items-center gap-6">
                   <div className="relative group shrink-0">
-                    <div className={`w-24 h-24 rounded-full border-4 border-slate-50 dark:border-slate-800 shadow-sm bg-gradient-to-br ${avatarGradient} flex items-center justify-center text-2xl font-black text-white`}>
+                    <div className={`w-24 h-24 rounded-full border-4 border-slate-50 dark:border-slate-800 shadow-sm bg-gradient-to-br ${avatarGradient} flex items-center justify-center text-2xl font-bold text-white`}>
                       {avatarInitials}
                     </div>
                     <button className="absolute bottom-0 right-0 p-2 bg-white dark:bg-slate-800 rounded-full border border-slate-200 dark:border-slate-700 shadow-sm opacity-0 group-hover:opacity-100 transition">
@@ -433,7 +433,7 @@ export default function AccountSettingsModule() {
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -10 }}
-                className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-8 shadow-sm space-y-8"
+                className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-8 shadow-sm space-y-8"
               >
                 <div>
                   <h2 className="text-xl font-sans font-bold text-slate-900 dark:text-white flex items-center gap-2">
@@ -566,7 +566,7 @@ export default function AccountSettingsModule() {
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -10 }}
-                className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-8 shadow-sm space-y-6"
+                className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-8 shadow-sm space-y-6"
               >
                 <div className="flex items-center justify-between">
                   <div>

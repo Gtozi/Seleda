@@ -567,7 +567,7 @@ export default function SalesRegistry() {
             
             <div className="p-8">
               {/* Info Grid */}
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-6 mb-8 p-6 bg-slate-50 dark:bg-slate-850 rounded-3xl">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-6 mb-8 p-6 bg-slate-50 dark:bg-slate-850 rounded-2xl">
                 <div>
                   <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest block mb-1">Invoice Number</label>
                   <p className="text-xs font-mono font-bold text-slate-900 dark:text-white">{selectedTx.invoiceNumber}</p>

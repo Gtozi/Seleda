@@ -467,7 +467,7 @@ const ComplianceModule: React.FC = () => {
 
       {/* General Health Score card (preserved from original design, now derived) */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div className="lg:col-span-2 bg-slate-900 text-white p-6 rounded-3xl flex flex-col sm:flex-row gap-6 relative overflow-hidden">
+        <div className="lg:col-span-2 bg-slate-900 text-white p-6 rounded-2xl flex flex-col sm:flex-row gap-6 relative overflow-hidden">
           <div className="absolute -top-4 -right-4 text-white/5 rotate-12">
             <ShieldCheck size={120} />
           </div>

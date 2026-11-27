@@ -451,7 +451,7 @@ const BusinessIntelligence = () => {
             {ratios.map(ratio => (
               <div key={ratio.id} className="bg-slate-50 dark:bg-slate-850/50 rounded-xl p-4 border border-slate-150 dark:border-slate-800">
                 <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">{ratio.display_name || ratio.name}</div>
-                <div className="text-2xl font-black text-slate-900 dark:text-white mb-2">
+                <div className="text-2xl font-bold text-slate-900 dark:text-white mb-2">
                   {ratio.unit === 'percent' ? `${Number(ratio.value).toFixed(1)}%` : Number(ratio.value).toFixed(2)}
                 </div>
                 <div className="flex items-center justify-between">

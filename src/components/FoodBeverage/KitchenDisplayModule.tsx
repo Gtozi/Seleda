@@ -498,7 +498,7 @@ export default function KitchenDisplayModule({ standalone = false, userName, onE
         ].map(item => {
           const Icon = item.icon;
           return (
-            <div key={item.label} className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 p-4 rounded-3xl shadow-sm transition-all hover:border-indigo-400">
+            <div key={item.label} className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 p-4 rounded-2xl shadow-sm transition-all hover:border-indigo-400">
               <div className="flex justify-between items-start mb-2">
                 <div className={'w-8 h-8 rounded-xl ' + item.color + ' flex items-center justify-center text-white shadow-lg'}>
                   <Icon size={16} />
@@ -506,7 +506,7 @@ export default function KitchenDisplayModule({ standalone = false, userName, onE
                 <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Active</span>
               </div>
               <div>
-                <p className="text-2xl font-black text-slate-850 dark:text-white leading-tight">{item.count}</p>
+                <p className="text-2xl font-bold text-slate-850 dark:text-white leading-tight">{item.count}</p>
                 <h4 className="text-[10px] font-black text-slate-500 uppercase tracking-tight">{item.label}</h4>
               </div>
             </div>
@@ -582,7 +582,7 @@ export default function KitchenDisplayModule({ standalone = false, userName, onE
       )}
 
       {/* Header + View Toggle + Station Filter */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-slate-900 border border-slate-800 p-5 rounded-3xl shadow-xl">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-slate-900 border border-slate-800 p-5 rounded-2xl shadow-xl">
         <div className="flex items-center gap-3">
           <div className="p-3 bg-amber-500 text-slate-950 rounded-2xl">
             <ChefHat size={24} />

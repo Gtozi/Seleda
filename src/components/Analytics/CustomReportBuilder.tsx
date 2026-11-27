@@ -109,7 +109,7 @@ const mockSavedReports: SavedReport[] = [
 const MetricWidget = ({ title, value, change }: { title: string; value: string; change: number }) => (
   <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-6 rounded-2xl shadow-3xs">
     <h4 className="text-sm font-bold text-slate-600 dark:text-slate-400 mb-2">{title}</h4>
-    <div className="text-3xl font-black text-slate-900 dark:text-white mb-2">{value}</div>
+    <div className="text-3xl font-bold text-slate-900 dark:text-white mb-2">{value}</div>
     <div className={`text-xs font-bold flex items-center gap-1 ${change > 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
       {change > 0 ? '↑' : '↓'} {Math.abs(change)}%
     </div>
@@ -198,7 +198,7 @@ export default function CustomReportBuilder() {
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <div>
           <span className="text-[10px] font-mono font-black text-purple-500 uppercase tracking-widest">Report Builder</span>
-          <h2 className="text-2xl font-black text-slate-900 dark:text-white">Custom Reports</h2>
+          <h2 className="text-2xl font-bold text-slate-900 dark:text-white">Custom Reports</h2>
         </div>
         <div className="flex gap-2">
           <button
@@ -231,7 +231,7 @@ export default function CustomReportBuilder() {
       {mode === 'builder' ? (
         <>
           {/* Report Configuration */}
-          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-6 rounded-3xl shadow-3xs">
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-6 rounded-2xl shadow-3xs">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
                 <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-2">Report Name</label>
@@ -260,7 +260,7 @@ export default function CustomReportBuilder() {
             <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
               {/* Widget Library */}
               <div className="lg:col-span-1">
-                <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-6 rounded-3xl shadow-3xs">
+                <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-6 rounded-2xl shadow-3xs">
                   <h3 className="text-sm font-bold text-slate-900 dark:text-white mb-4 flex items-center gap-2">
                     <LayoutDashboard size={16} />
                     Widget Library
@@ -292,7 +292,7 @@ export default function CustomReportBuilder() {
 
               {/* Canvas */}
               <div className="lg:col-span-3">
-                <div className="bg-slate-50 dark:bg-slate-950 border-2 border-dashed border-slate-200 dark:border-slate-800 p-6 rounded-3xl min-h-[500px]">
+                <div className="bg-slate-50 dark:bg-slate-950 border-2 border-dashed border-slate-200 dark:border-slate-800 p-6 rounded-2xl min-h-[500px]">
                   {widgets.length === 0 ? (
                     <div className="flex flex-col items-center justify-center h-96 text-center">
                       <LayoutDashboard size={48} className="text-slate-300 mb-4" />
@@ -327,7 +327,7 @@ export default function CustomReportBuilder() {
           )}
 
           {isPreview && (
-            <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-6 rounded-3xl shadow-3xs">
+            <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-6 rounded-2xl shadow-3xs">
               <h3 className="text-lg font-bold text-slate-900 dark:text-white mb-6">{reportName || 'Untitled Report'}</h3>
               {reportDescription && (
                 <p className="text-sm text-slate-600 dark:text-slate-400 mb-6">{reportDescription}</p>
@@ -353,7 +353,7 @@ export default function CustomReportBuilder() {
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {mockSavedReports.map((report) => (
-              <div key={report.reportId} className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-6 rounded-3xl shadow-3xs hover:border-purple-500 transition-all cursor-pointer">
+              <div key={report.reportId} className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-6 rounded-2xl shadow-3xs hover:border-purple-500 transition-all cursor-pointer">
                 <div className="flex items-start justify-between mb-4">
                   <div className="w-12 h-12 rounded-2xl bg-purple-100 dark:bg-purple-900/30 flex items-center justify-center">
                     <FileText size={24} className="text-purple-600 dark:text-purple-400" />

@@ -28,6 +28,7 @@ import AttributesCategory from './MasterData/AttributesCategory';
 import StatCard from '../FrontOffice/StatCard';
 import { PageHeader } from '../FrontOffice/ui';
 import { button } from '../FrontOffice/brandTheme';
+import { AdminSubTabBar } from './shared/AdminSubTabBar';
 
 export default function MasterData() {
   const {
@@ -125,7 +126,7 @@ export default function MasterData() {
             initial={{ opacity: 0, y: -20 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -20 }}
-            className="bg-emerald-500 text-white px-6 py-4 rounded-3xl shadow-lg flex items-center justify-between text-xs font-bold leading-normal tracking-wide"
+            className="bg-emerald-500 text-white px-6 py-4 rounded-2xl shadow-lg flex items-center justify-between text-xs font-bold leading-normal tracking-wide"
           >
             <div className="flex items-center gap-2">
               <Check size={16} />
@@ -165,27 +166,16 @@ export default function MasterData() {
       />
 
       {/* Category Tabs */}
-      <div className="flex gap-2 flex-wrap">
-        {CATEGORY_TABS.map(t => {
-          const Icon = t.icon;
-          return (
-            <button
-              key={t.id}
-              onClick={() => {
-                setCategory(t.id);
-                setSearchQuery('');
-                setInspectItem(null);
-              }}
-              className={`px-4 py-2 flex items-center gap-2 rounded-xl text-sm font-medium transition ${
-                category === t.id
-                  ? 'bg-slate-950 dark:bg-slate-700 text-white'
-                  : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
-              }`}
-            >
-              <Icon size={14} /> {t.label}
-            </button>
-          );
-        })}
+      <div>
+        <AdminSubTabBar
+          tabs={CATEGORY_TABS.map(t => ({ id: t.id, label: t.label, icon: <t.icon size={14} /> }))}
+          activeTab={category}
+          onChange={(id) => {
+            setCategory(id);
+            setSearchQuery('');
+            setInspectItem(null);
+          }}
+        />
       </div>
 
       {/* KPI Cards */}

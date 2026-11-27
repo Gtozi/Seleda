@@ -165,7 +165,7 @@ export function ProductionPlanningDashboard({ outletId }: Props) {
   return (
     <div className="space-y-6">
       {/* Planning Controls */}
-      <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-3xl p-6">
+      <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-2xl p-6">
         <div className="flex items-center gap-2 mb-4">
           <ClipboardList className="w-5 h-5 text-indigo-500" />
           <h3 className="text-sm font-black text-slate-900 dark:text-white uppercase tracking-tight">Central Production Planning</h3>
@@ -226,7 +226,7 @@ export function ProductionPlanningDashboard({ outletId }: Props) {
 
       {/* Generated Prep List */}
       {prepLines.length > 0 && (
-        <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-3xl overflow-hidden">
+        <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-2xl overflow-hidden">
           <div className="flex justify-between items-center p-4 border-b border-slate-100 dark:border-slate-800">
             <div>
               <h4 className="text-xs font-black text-slate-900 dark:text-white uppercase">Generated Prep List</h4>
@@ -289,7 +289,7 @@ export function ProductionPlanningDashboard({ outletId }: Props) {
       )}
 
       {/* Saved Prep Lists */}
-      <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-3xl overflow-hidden">
+      <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-2xl overflow-hidden">
         <div className="p-4 border-b border-slate-100 dark:border-slate-800">
           <h4 className="text-xs font-black text-slate-900 dark:text-white uppercase">Saved Prep Lists</h4>
         </div>

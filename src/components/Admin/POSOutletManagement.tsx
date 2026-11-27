@@ -30,6 +30,9 @@ import {
 } from 'lucide-react';
 import { useERP } from '../../context/ERPContext';
 import { PermissionChecklist, POS_PERMISSION_CATEGORIES } from '../Shared/PermissionChecklist';
+import { PageHeader } from '../FrontOffice/ui';
+import { button } from '../FrontOffice/brandTheme';
+import { AdminSubTabBar } from './shared/AdminSubTabBar';
 
 interface POSOutlet {
   id: string;
@@ -550,47 +553,28 @@ export default function POSOutletManagement() {
   });
 
   return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-2xl font-bold text-slate-900 dark:text-white">POS Outlet Management</h2>
-          <p className="text-sm text-slate-500 dark:text-slate-400">
-            Manage POS outlets and assign user roles
-          </p>
-        </div>
-        <button
-          onClick={() => setShowModal(true)}
-          className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold text-sm transition-all flex items-center gap-2"
-        >
-          <Plus size={16} />
-          Add Outlet
-        </button>
-      </div>
+    <div className="space-y-6 animate-fade-in">
+      <PageHeader
+        title="POS Outlet Management"
+        subtitle="Manage POS outlets, GL mappings, shift reconciliation, and user roles"
+        icon={Store}
+        actions={
+          <button onClick={() => setShowModal(true)} className={button.primary}>
+            <Plus size={16} /> Add Outlet
+          </button>
+        }
+      />
 
-      {/* Tab Navigation */}
-      <div className="flex gap-1 bg-slate-100 dark:bg-slate-800 rounded-xl p-1">
-        {[
-          { id: 'outlets', label: 'Outlets', icon: Store },
-          { id: 'gl-mappings', label: 'GL Mappings', icon: Settings },
-          { id: 'shifts', label: 'Shifts', icon: Clock },
-        ].map((tab) => {
-          const TabIcon = tab.icon;
-          return (
-            <button
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id)}
-              className={`flex-1 px-4 py-2 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-2 ${
-                activeTab === tab.id
-                  ? 'bg-white dark:bg-slate-700 text-indigo-600 dark:text-indigo-400 shadow-sm'
-                  : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'
-              }`}
-            >
-              <TabIcon size={14} />
-              {tab.label}
-            </button>
-          );
-        })}
+      <div>
+        <AdminSubTabBar
+          tabs={[
+            { id: 'outlets', label: 'Outlets', icon: <Store size={14} /> },
+            { id: 'gl-mappings', label: 'GL Mappings', icon: <Settings size={14} /> },
+            { id: 'shifts', label: 'Shifts', icon: <Clock size={14} /> },
+          ]}
+          activeTab={activeTab}
+          onChange={setActiveTab}
+        />
       </div>
 
       {/* Filters — only show on outlets tab */}

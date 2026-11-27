@@ -35,7 +35,7 @@ const ReimbursementClaims = () => {
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         {categories.map((cat, i) => (
           <div key={i} className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 p-8 rounded-[40px] shadow-3xs flex items-center gap-6">
-             <div className={`p-4 rounded-3xl ${cat.bg} ${cat.color}`}>
+             <div className={`p-4 rounded-2xl ${cat.bg} ${cat.color}`}>
                 <cat.icon size={24} />
              </div>
              <div>

@@ -1389,11 +1389,11 @@ const AccountsReceivable = () => {
               <div className="grid grid-cols-2 gap-6">
                 <div className="bg-indigo-50 dark:bg-indigo-500 border border-indigo-100 dark:border-indigo-500 rounded-lg p-4">
                   <span className="text-[10px] font-black text-indigo-600 uppercase tracking-widest block">Credit Limit</span>
-                  <span className="text-2xl font-black text-indigo-600">${selectedCustomer.credit_limit ? fmt(selectedCustomer.credit_limit) : '0.00'}</span>
+                  <span className="text-2xl font-bold text-indigo-600">${selectedCustomer.credit_limit ? fmt(selectedCustomer.credit_limit) : '0.00'}</span>
                 </div>
                 <div className={`rounded-lg p-4 border ${(selectedCustomer.current_balance ?? 0) > 0 ? 'bg-amber-50 dark:bg-amber-500 border-amber-100 dark:border-amber-500' : 'bg-emerald-50 dark:bg-emerald-500 border-emerald-100 dark:border-emerald-500'}`}>
                   <span className={`text-[10px] font-black uppercase tracking-widest block ${(selectedCustomer.current_balance ?? 0) > 0 ? 'text-amber-600' : 'text-emerald-600'}`}>Current Balance</span>
-                  <span className={`text-2xl font-black ${(selectedCustomer.current_balance ?? 0) > 0 ? 'text-amber-600' : 'text-emerald-600'}`}>${selectedCustomer.current_balance ? fmt(selectedCustomer.current_balance) : '0.00'}</span>
+                  <span className={`text-2xl font-bold ${(selectedCustomer.current_balance ?? 0) > 0 ? 'text-amber-600' : 'text-emerald-600'}`}>${selectedCustomer.current_balance ? fmt(selectedCustomer.current_balance) : '0.00'}</span>
                 </div>
               </div>
             </div>

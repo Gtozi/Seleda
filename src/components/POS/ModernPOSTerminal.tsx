@@ -868,7 +868,7 @@ export default function ModernPOSTerminal({ outlet, user, onOpenSettings }: Mode
                     className={`p-6 rounded-2xl border-2 transition-all ${getTableStatusColor(liveOrder ? 'occupied' : table.status)}`}
                   >
                     <div className="flex items-center justify-between mb-3">
-                      <h4 className="text-2xl font-black">{table.number}</h4>
+                      <h4 className="text-2xl font-bold">{table.number}</h4>
                       <div className="flex items-center gap-1 text-xs font-bold">
                         <Users size={12} />
                         {table.seats}

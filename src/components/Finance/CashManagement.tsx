@@ -160,7 +160,7 @@ const CashManagement = () => {
                       <div className="mt-8 pt-6 border-t border-slate-50 dark:border-slate-800 flex items-end justify-between">
                          <div>
                             <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest block mb-1">Functional Balance</span>
-                            <span className="text-2xl font-black text-slate-900 dark:text-white font-mono">{formatAmount(acc.balance || 0)}</span>
+                            <span className="text-2xl font-bold text-slate-900 dark:text-white font-mono">{formatAmount(acc.balance || 0)}</span>
                          </div>
                          <button className="p-2 bg-slate-50 dark:bg-slate-800 text-slate-400 rounded-lg hover:text-indigo-600 transition-colors">
                             <Download size={18} />

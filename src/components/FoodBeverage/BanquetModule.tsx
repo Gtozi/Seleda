@@ -179,7 +179,7 @@ export default function BanquetModule() {
 
   return (
     <div className="space-y-6 font-sans">
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 p-5 rounded-3xl shadow-3xs">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 p-5 rounded-2xl shadow-3xs">
         <div>
           <h3 className="text-sm font-bold text-slate-800 dark:text-white">Banquet & Event Management</h3>
           <p className="text-[10px] text-slate-400">Total Bookings: {events.length} | Upcoming Events (Next 30 Days): {events.filter(e => e.status !== 'Completed').length}</p>
@@ -206,7 +206,7 @@ export default function BanquetModule() {
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {filteredEvents.map(event => (
-          <div key={event.id} className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-3xl p-6 shadow-3xs hover:shadow-lg transition-all animate-fade-in group relative overflow-hidden">
+          <div key={event.id} className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-2xl p-6 shadow-3xs hover:shadow-lg transition-all animate-fade-in group relative overflow-hidden">
              {/* Gradient Accent */}
              <div className={`absolute top-0 left-0 w-1.5 h-full ${
                event.status === 'Confirmed' ? 'bg-indigo-500' :

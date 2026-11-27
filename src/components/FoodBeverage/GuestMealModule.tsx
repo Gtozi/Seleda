@@ -131,7 +131,7 @@ export default function GuestMealModule() {
 
   return (
     <div className="space-y-6 font-sans animate-fade-in">
-      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 p-5 rounded-3xl shadow-3xs">
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 p-5 rounded-2xl shadow-3xs">
          <div className="flex bg-slate-100 dark:bg-slate-800 p-1 rounded-xl gap-1">
             <button 
               onClick={() => setView('validator')}

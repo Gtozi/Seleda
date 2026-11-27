@@ -116,7 +116,7 @@ const TrialBalance = () => {
                 color: trialBalance.totals.is_balanced ? 'text-emerald-500' : 'text-rose-500',
               },
             ].map((stat, i) => (
-              <div key={i} className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 p-6 rounded-3xl shadow-3xs">
+              <div key={i} className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 p-6 rounded-2xl shadow-3xs">
                 <div className={`p-2 w-fit rounded-lg bg-slate-50 dark:bg-slate-800 ${stat.color} mb-3`}>
                   <stat.icon size={18} />
                 </div>
@@ -128,7 +128,7 @@ const TrialBalance = () => {
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 p-6 rounded-3xl shadow-3xs">
+            <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 p-6 rounded-2xl shadow-3xs">
               <h3 className="text-sm font-black text-slate-900 dark:text-white uppercase tracking-tight mb-6">Debit Balances</h3>
               <div className="space-y-3">
                 {debitAccounts.length === 0 ? (
@@ -149,7 +149,7 @@ const TrialBalance = () => {
               </div>
             </div>
 
-            <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 p-6 rounded-3xl shadow-3xs">
+            <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 p-6 rounded-2xl shadow-3xs">
               <h3 className="text-sm font-black text-slate-900 dark:text-white uppercase tracking-tight mb-6">Credit Balances</h3>
               <div className="space-y-3">
                 {creditAccounts.length === 0 ? (
@@ -171,7 +171,7 @@ const TrialBalance = () => {
             </div>
           </div>
 
-          <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-3xl overflow-hidden shadow-3xs">
+          <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-2xl overflow-hidden shadow-3xs">
             <div className="p-6 border-b border-slate-100 dark:border-slate-800">
               <h3 className="text-sm font-black text-slate-900 dark:text-white uppercase tracking-tight">Full Trial Balance</h3>
             </div>
@@ -221,7 +221,7 @@ const TrialBalance = () => {
               filterable
               filterPlaceholder="Search accounts..."
               filterKeys={['account_code', 'account_name', 'account_type']}
-              containerClassName="rounded-3xl border-0 shadow-none"
+              containerClassName="rounded-2xl border-0 shadow-none"
             />
           </div>
         </>

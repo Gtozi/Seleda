@@ -453,15 +453,15 @@ export default function EngineeringDashboard() {
               </div>
               <div className="grid grid-cols-3 gap-4 pt-2">
                 <div className="text-center">
-                  <div className="text-2xl font-black text-slate-900 dark:text-white">{pmStats?.active ?? 0}</div>
+                  <div className="text-2xl font-bold text-slate-900 dark:text-white">{pmStats?.active ?? 0}</div>
                   <div className="text-xs text-slate-400 uppercase font-bold">Active Schedules</div>
                 </div>
                 <div className="text-center">
-                  <div className="text-2xl font-black text-amber-500">{pmStats?.overdue ?? 0}</div>
+                  <div className="text-2xl font-bold text-amber-500">{pmStats?.overdue ?? 0}</div>
                   <div className="text-xs text-slate-400 uppercase font-bold">Overdue</div>
                 </div>
                 <div className="text-center">
-                  <div className="text-2xl font-black text-indigo-500">{pmStats?.dueToday ?? 0}</div>
+                  <div className="text-2xl font-bold text-indigo-500">{pmStats?.dueToday ?? 0}</div>
                   <div className="text-xs text-slate-400 uppercase font-bold">Due Today</div>
                 </div>
               </div>

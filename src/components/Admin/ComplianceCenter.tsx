@@ -8,6 +8,7 @@ import { PageHeader, SectionCard, Badge } from '../FrontOffice/ui';
 import { button } from '../FrontOffice/brandTheme';
 import { ModalSystem } from '../Shared/ModalSystem';
 import { adminAuthHeaders } from './shared/ResourceManager';
+import { AdminSubTabBar } from './shared/AdminSubTabBar';
 
 interface ConsentLog {
   id: string;
@@ -180,17 +181,8 @@ const ComplianceCenter: React.FC = () => {
       )}
 
       {/* Tabs */}
-      <div className="flex gap-1 border-b border-gray-200 dark:border-slate-700">
-        {TABS.map(t => (
-          <button key={t.id} onClick={() => setTab(t.id)}
-            className={`py-2.5 px-4 text-xs font-bold transition border-b-2 ${
-              tab === t.id
-                ? 'border-indigo-600 text-indigo-600 dark:text-indigo-400'
-                : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
-            }`}>
-            {t.label}
-          </button>
-        ))}
+      <div>
+        <AdminSubTabBar tabs={TABS} activeTab={tab} onChange={setTab} />
       </div>
 
       {/* Overview */}

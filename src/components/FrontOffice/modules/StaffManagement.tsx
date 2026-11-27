@@ -1275,19 +1275,19 @@ export default function StaffManagement() {
 
             <div className="grid grid-cols-4 gap-3 p-5 border-b border-slate-100 dark:border-slate-700">
               <div className="text-center">
-                <div className="text-2xl font-black text-slate-900 dark:text-white">{calendarStaff.attendanceRate}%</div>
+                <div className="text-2xl font-bold text-slate-900 dark:text-white">{calendarStaff.attendanceRate}%</div>
                 <div className="text-[10px] font-bold text-slate-400 uppercase">Attendance Rate</div>
               </div>
               <div className="text-center">
-                <div className="text-2xl font-black text-emerald-600">{calendarStaff.present}</div>
+                <div className="text-2xl font-bold text-emerald-600">{calendarStaff.present}</div>
                 <div className="text-[10px] font-bold text-slate-400 uppercase">Present</div>
               </div>
               <div className="text-center">
-                <div className="text-2xl font-black text-slate-900 dark:text-white">{calendarStaff.totalHours.toFixed(0)}h</div>
+                <div className="text-2xl font-bold text-slate-900 dark:text-white">{calendarStaff.totalHours.toFixed(0)}h</div>
                 <div className="text-[10px] font-bold text-slate-400 uppercase">Total Hours</div>
               </div>
               <div className="text-center">
-                <div className="text-2xl font-black text-amber-600">{calendarStaff.totalOvertime.toFixed(1)}h</div>
+                <div className="text-2xl font-bold text-amber-600">{calendarStaff.totalOvertime.toFixed(1)}h</div>
                 <div className="text-[10px] font-bold text-slate-400 uppercase">Overtime</div>
               </div>
             </div>

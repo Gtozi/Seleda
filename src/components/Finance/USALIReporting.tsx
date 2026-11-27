@@ -104,7 +104,7 @@ export default function USALIReporting() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-2xl font-black text-slate-900 dark:text-white uppercase tracking-tight">
+          <h2 className="text-2xl font-bold text-slate-900 dark:text-white uppercase tracking-tight">
             USALI Financial Reporting
           </h2>
           <p className="text-sm text-slate-500 dark:text-slate-400 font-mono tracking-wider">
@@ -138,7 +138,7 @@ export default function USALIReporting() {
             <span className="text-xs font-mono text-green-500 font-bold">+12.5%</span>
           </div>
           <p className="text-sm text-slate-500 dark:text-slate-400 font-medium uppercase tracking-wider">Total Revenue</p>
-          <p className="text-2xl font-black text-slate-900 dark:text-white mt-1">
+          <p className="text-2xl font-bold text-slate-900 dark:text-white mt-1">
             ${totalRevenue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
           </p>
         </div>
@@ -151,7 +151,7 @@ export default function USALIReporting() {
             <span className="text-xs font-mono text-red-500 font-bold">+8.3%</span>
           </div>
           <p className="text-sm text-slate-500 dark:text-slate-400 font-medium uppercase tracking-wider">Total Cost</p>
-          <p className="text-2xl font-black text-slate-900 dark:text-white mt-1">
+          <p className="text-2xl font-bold text-slate-900 dark:text-white mt-1">
             ${totalCost.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
           </p>
         </div>
@@ -164,7 +164,7 @@ export default function USALIReporting() {
             <span className="text-xs font-mono text-blue-500 font-bold">+15.2%</span>
           </div>
           <p className="text-sm text-slate-500 dark:text-slate-400 font-medium uppercase tracking-wider">Gross Profit</p>
-          <p className="text-2xl font-black text-slate-900 dark:text-white mt-1">
+          <p className="text-2xl font-bold text-slate-900 dark:text-white mt-1">
             ${grossProfit.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
           </p>
         </div>
@@ -177,7 +177,7 @@ export default function USALIReporting() {
             <span className="text-xs font-mono text-purple-500 font-bold">+2.1%</span>
           </div>
           <p className="text-sm text-slate-500 dark:text-slate-400 font-medium uppercase tracking-wider">Profit Margin</p>
-          <p className="text-2xl font-black text-slate-900 dark:text-white mt-1">
+          <p className="text-2xl font-bold text-slate-900 dark:text-white mt-1">
             {profitMargin.toFixed(1)}%
           </p>
         </div>

@@ -1139,7 +1139,7 @@ const AccountsPayable = () => {
                 <div className="flex justify-between items-center">
                   <div>
                     <span className="text-[10px] font-black text-indigo-600 uppercase tracking-widest block">Outstanding Balance</span>
-                    <span className="text-2xl font-black text-indigo-600">${(selectedVendor?.balance || 0).toLocaleString()}</span>
+                    <span className="text-2xl font-bold text-indigo-600">${(selectedVendor?.balance || 0).toLocaleString()}</span>
                   </div>
                   <div className="text-right">
                     <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest block">Category</span>

@@ -156,8 +156,8 @@ function DashboardTab() {
       .finally(() => setLoading(false));
   }, [selectedOutletId]);
 
-  if (loading) return <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-3xl p-12 text-center text-slate-400 text-sm animate-pulse">Loading dashboard...</div>;
-  if (!summary) return <div className="bg-rose-50 dark:bg-rose-500/10 border border-rose-200 dark:border-rose-500/20 rounded-3xl p-12 text-center text-rose-600 dark:text-rose-400 text-sm font-bold">Failed to load dashboard.</div>;
+  if (loading) return <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-2xl p-12 text-center text-slate-400 text-sm animate-pulse">Loading dashboard...</div>;
+  if (!summary) return <div className="bg-rose-50 dark:bg-rose-500/10 border border-rose-200 dark:border-rose-500/20 rounded-2xl p-12 text-center text-rose-600 dark:text-rose-400 text-sm font-bold">Failed to load dashboard.</div>;
 
   const kpiTiles: KpiTile[] = [
     { label: "Today's Batch Prep", value: String(summary.today_production_count ?? 0), icon: Factory, colorClass: 'text-blue-600', bgClass: 'bg-blue-50 dark:bg-blue-900/20', sub: `${summary.pending_production_count ?? 0} pending` },
@@ -220,11 +220,11 @@ function RecipesTab({ recipeType }: { recipeType: 'drink_item' | 'sub_recipe' })
       </div>
 
       {loading ? (
-        <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-3xl p-12 text-center text-slate-400 text-sm animate-pulse">Loading...</div>
+        <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-2xl p-12 text-center text-slate-400 text-sm animate-pulse">Loading...</div>
       ) : recipes.length === 0 ? (
-        <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-3xl p-12 text-center text-slate-400 text-sm">No recipes found. Create one to get started.</div>
+        <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-2xl p-12 text-center text-slate-400 text-sm">No recipes found. Create one to get started.</div>
       ) : (
-        <div className={"bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-3xl overflow-hidden shadow-3xs overflow-x-auto"}>
+        <div className={"bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-2xl overflow-hidden shadow-3xs overflow-x-auto"}>
           <table className="w-full text-xs">
             <thead className="bg-slate-50/50 dark:bg-slate-950/20 text-[10px] font-black text-slate-400 uppercase tracking-widest">
               <tr>
@@ -543,11 +543,11 @@ function ProductionTab() {
       </div>
 
       {loading ? (
-        <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-3xl p-12 text-center text-slate-400 text-sm animate-pulse">Loading...</div>
+        <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-2xl p-12 text-center text-slate-400 text-sm animate-pulse">Loading...</div>
       ) : orders.length === 0 ? (
-        <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-3xl p-12 text-center text-slate-400 text-sm">No batch prep orders yet.</div>
+        <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-2xl p-12 text-center text-slate-400 text-sm">No batch prep orders yet.</div>
       ) : (
-        <div className={"bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-3xl overflow-hidden shadow-3xs overflow-x-auto"}>
+        <div className={"bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-2xl overflow-hidden shadow-3xs overflow-x-auto"}>
           <table className="w-full text-xs">
             <thead className="bg-slate-50/50 dark:bg-slate-950/20 text-[10px] font-black text-slate-400 uppercase tracking-widest">
               <tr>
@@ -649,15 +649,15 @@ function InventoryTab() {
       .finally(() => setLoading(false));
   }, [selectedOutletId]);
 
-  if (loading) return <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-3xl p-12 text-center text-slate-400 text-sm animate-pulse">Loading...</div>;
+  if (loading) return <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-2xl p-12 text-center text-slate-400 text-sm animate-pulse">Loading...</div>;
 
   return (
     <div className="space-y-6">
       <h3 className="text-sm font-black text-slate-900 dark:text-white uppercase tracking-tight">Bar Inventory</h3>
       {items.length === 0 ? (
-        <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-3xl p-12 text-center text-slate-400 text-sm">No inventory items. Batch prep will auto-create items.</div>
+        <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-2xl p-12 text-center text-slate-400 text-sm">No inventory items. Batch prep will auto-create items.</div>
       ) : (
-        <div className={"bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-3xl overflow-hidden shadow-3xs overflow-x-auto"}>
+        <div className={"bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-2xl overflow-hidden shadow-3xs overflow-x-auto"}>
           <table className="w-full text-xs">
             <thead className="bg-slate-50/50 dark:bg-slate-950/20 text-[10px] font-black text-slate-400 uppercase tracking-widest">
               <tr>
@@ -717,7 +717,7 @@ function BatchesTab() {
       .finally(() => setLoading(false));
   }, [selectedOutletId]);
 
-  if (loading) return <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-3xl p-12 text-center text-slate-400 text-sm animate-pulse">Loading...</div>;
+  if (loading) return <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-2xl p-12 text-center text-slate-400 text-sm animate-pulse">Loading...</div>;
 
   const filtered = filter ? batches.filter(b => b.status === filter) : batches;
 
@@ -735,9 +735,9 @@ function BatchesTab() {
         </select>
       </div>
       {filtered.length === 0 ? (
-        <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-3xl p-12 text-center text-slate-400 text-sm">No batches found.</div>
+        <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-2xl p-12 text-center text-slate-400 text-sm">No batches found.</div>
       ) : (
-        <div className={"bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-3xl overflow-hidden shadow-3xs overflow-x-auto"}>
+        <div className={"bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-2xl overflow-hidden shadow-3xs overflow-x-auto"}>
           <table className="w-full text-xs">
             <thead className="bg-slate-50/50 dark:bg-slate-950/20 text-[10px] font-black text-slate-400 uppercase tracking-widest">
               <tr>
@@ -836,7 +836,7 @@ function TransfersTab() {
     catch (e: any) { alert(e.message); }
   };
 
-  if (loading) return <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-3xl p-12 text-center text-slate-400 text-sm animate-pulse">Loading...</div>;
+  if (loading) return <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-2xl p-12 text-center text-slate-400 text-sm animate-pulse">Loading...</div>;
 
   return (
     <div className="space-y-6">
@@ -848,9 +848,9 @@ function TransfersTab() {
         </button>
       </div>
       {transfers.length === 0 ? (
-        <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-3xl p-12 text-center text-slate-400 text-sm">No transfers yet.</div>
+        <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-2xl p-12 text-center text-slate-400 text-sm">No transfers yet.</div>
       ) : (
-        <div className={"bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-3xl overflow-hidden shadow-3xs overflow-x-auto"}>
+        <div className={"bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-2xl overflow-hidden shadow-3xs overflow-x-auto"}>
           <table className="w-full text-xs">
             <thead className="bg-slate-50/50 dark:bg-slate-950/20 text-[10px] font-black text-slate-400 uppercase tracking-widest">
               <tr>
@@ -980,7 +980,7 @@ function WasteTab() {
     catch (e: any) { alert(e.message); }
   };
 
-  if (loading) return <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-3xl p-12 text-center text-slate-400 text-sm animate-pulse">Loading...</div>;
+  if (loading) return <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-2xl p-12 text-center text-slate-400 text-sm animate-pulse">Loading...</div>;
 
   return (
     <div className="space-y-6">
@@ -992,9 +992,9 @@ function WasteTab() {
         </button>
       </div>
       {waste.length === 0 ? (
-        <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-3xl p-12 text-center text-slate-400 text-sm">No spillage records.</div>
+        <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-2xl p-12 text-center text-slate-400 text-sm">No spillage records.</div>
       ) : (
-        <div className={"bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-3xl overflow-hidden shadow-3xs overflow-x-auto"}>
+        <div className={"bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-2xl overflow-hidden shadow-3xs overflow-x-auto"}>
           <table className="w-full text-xs">
             <thead className="bg-slate-50/50 dark:bg-slate-950/20 text-[10px] font-black text-slate-400 uppercase tracking-widest">
               <tr>
@@ -1095,7 +1095,7 @@ function ExpiryTab() {
       .finally(() => setLoading(false));
   }, [selectedOutletId]);
 
-  if (loading) return <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-3xl p-12 text-center text-slate-400 text-sm animate-pulse">Loading...</div>;
+  if (loading) return <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-2xl p-12 text-center text-slate-400 text-sm animate-pulse">Loading...</div>;
 
   const filtered = filter ? alerts.filter(a => a.expiry_status === filter) : alerts;
 
@@ -1121,9 +1121,9 @@ function ExpiryTab() {
         </select>
       </div>
       {filtered.length === 0 ? (
-        <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-3xl p-12 text-center text-slate-400 text-sm">No expiry alerts.</div>
+        <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-2xl p-12 text-center text-slate-400 text-sm">No expiry alerts.</div>
       ) : (
-        <div className={"bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-3xl overflow-hidden shadow-3xs overflow-x-auto"}>
+        <div className={"bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-2xl overflow-hidden shadow-3xs overflow-x-auto"}>
           <table className="w-full text-xs">
             <thead className="bg-slate-50/50 dark:bg-slate-950/20 text-[10px] font-black text-slate-400 uppercase tracking-widest">
               <tr>
@@ -1178,16 +1178,16 @@ function PlanningTab() {
       .finally(() => setLoading(false));
   }, [selectedOutletId]);
 
-  if (loading) return <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-3xl p-12 text-center text-slate-400 text-sm animate-pulse">Loading...</div>;
+  if (loading) return <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-2xl p-12 text-center text-slate-400 text-sm animate-pulse">Loading...</div>;
 
   return (
     <div className="space-y-6">
       <h3 className="text-sm font-black text-slate-900 dark:text-white uppercase tracking-tight">Batch Prep Planning</h3>
       <p className="text-xs text-slate-500">Auto-generated suggestions based on occupancy, reservations, and stock levels.</p>
       {plan.length === 0 ? (
-        <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-3xl p-12 text-center text-slate-400 text-sm">No suggestions. Add recipes and inventory to generate plans.</div>
+        <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-2xl p-12 text-center text-slate-400 text-sm">No suggestions. Add recipes and inventory to generate plans.</div>
       ) : (
-        <div className={"bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-3xl overflow-hidden shadow-3xs overflow-x-auto"}>
+        <div className={"bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-2xl overflow-hidden shadow-3xs overflow-x-auto"}>
           <table className="w-full text-xs">
             <thead className="bg-slate-50/50 dark:bg-slate-950/20 text-[10px] font-black text-slate-400 uppercase tracking-widest">
               <tr>
@@ -1252,13 +1252,13 @@ function SettingsTab() {
     finally { setSaving(false); }
   };
 
-  if (loading) return <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-3xl p-12 text-center text-slate-400 text-sm animate-pulse">Loading...</div>;
-  if (!settings) return <div className="bg-rose-50 dark:bg-rose-500/10 border border-rose-200 dark:border-rose-500/20 rounded-3xl p-12 text-center text-rose-600 dark:text-rose-400 text-sm font-bold">Failed to load settings.</div>;
+  if (loading) return <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-2xl p-12 text-center text-slate-400 text-sm animate-pulse">Loading...</div>;
+  if (!settings) return <div className="bg-rose-50 dark:bg-rose-500/10 border border-rose-200 dark:border-rose-500/20 rounded-2xl p-12 text-center text-rose-600 dark:text-rose-400 text-sm font-bold">Failed to load settings.</div>;
 
   return (
     <div className="max-w-lg space-y-6">
       <h3 className="text-sm font-black text-slate-900 dark:text-white uppercase tracking-tight">Bar Settings</h3>
-      <div className="space-y-6 bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 p-6 rounded-3xl shadow-3xs">
+      <div className="space-y-6 bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 p-6 rounded-2xl shadow-3xs">
         <div>
           <label className="text-xs font-medium text-slate-500">Consumption Method</label>
           <select value={settings.consumption_method} onChange={e => setSettings({ ...settings, consumption_method: e.target.value as any })}
@@ -1322,7 +1322,7 @@ function AuditTab() {
       .finally(() => setLoading(false));
   }, [moduleFilter, selectedOutletId]);
 
-  if (loading) return <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-3xl p-12 text-center text-slate-400 text-sm animate-pulse">Loading...</div>;
+  if (loading) return <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-2xl p-12 text-center text-slate-400 text-sm animate-pulse">Loading...</div>;
 
   return (
     <div className="space-y-6">
@@ -1340,9 +1340,9 @@ function AuditTab() {
         </select>
       </div>
       {logs.length === 0 ? (
-        <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-3xl p-12 text-center text-slate-400 text-sm">No audit entries.</div>
+        <div className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-2xl p-12 text-center text-slate-400 text-sm">No audit entries.</div>
       ) : (
-        <div className={"bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-3xl overflow-hidden shadow-3xs overflow-x-auto"}>
+        <div className={"bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-2xl overflow-hidden shadow-3xs overflow-x-auto"}>
           <table className="w-full text-xs">
             <thead className="bg-slate-50/50 dark:bg-slate-950/20 text-[10px] font-black text-slate-400 uppercase tracking-widest">
               <tr>

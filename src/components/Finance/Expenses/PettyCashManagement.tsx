@@ -39,7 +39,7 @@ const PettyCashManagement = () => {
               <Wallet size={120} />
            </div>
            <p className="text-[10px] font-black uppercase tracking-widest text-indigo-200 mb-2">Total System Liquidity</p>
-           <h3 className="text-3xl font-black mb-6">$6,700.00</h3>
+           <h3 className="text-3xl font-bold mb-6">$6,700.00</h3>
            <div className="flex gap-4">
               <button className="flex-1 py-3 bg-white/10 hover:bg-white/20 rounded-2xl text-[10px] font-black uppercase tracking-widest transition">Request Top-Up</button>
               <button className="flex-1 py-3 bg-white text-indigo-600 rounded-2xl text-[10px] font-black uppercase tracking-widest transition">Disburse Cash</button>

@@ -330,7 +330,7 @@ const StatCard = ({ title, value, change, icon: Icon, color }: {
   icon: any;
   color: string;
 }) => (
-  <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-6 rounded-3xl shadow-3xs">
+  <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-6 rounded-2xl shadow-3xs">
     <div className="flex items-center justify-between mb-4">
       <div className={`w-12 h-12 rounded-2xl flex items-center justify-center ${color}`}>
         <Icon size={24} className="text-white" />
@@ -342,7 +342,7 @@ const StatCard = ({ title, value, change, icon: Icon, color }: {
         </div>
       )}
     </div>
-    <h3 className="text-2xl font-black text-slate-900 dark:text-white mb-1">{value}</h3>
+    <h3 className="text-2xl font-bold text-slate-900 dark:text-white mb-1">{value}</h3>
     <p className="text-sm text-slate-600 dark:text-slate-400">{title}</p>
   </div>
 );
@@ -371,7 +371,7 @@ export default function LoyaltyProgramEngine() {
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <div>
           <span className="text-[10px] font-mono font-black text-amber-500 uppercase tracking-widest">Guest Retention</span>
-          <h2 className="text-2xl font-black text-slate-900 dark:text-white">Loyalty Program</h2>
+          <h2 className="text-2xl font-bold text-slate-900 dark:text-white">Loyalty Program</h2>
         </div>
         <div className="flex gap-2">
           <button className="px-4 py-2 bg-amber-500 hover:bg-amber-600 text-white rounded-xl font-bold text-xs shadow-lg flex items-center gap-2">
@@ -475,7 +475,7 @@ export default function LoyaltyProgramEngine() {
             {filteredMembers.map((member) => {
               const TierIcon = tierConfig[member.tier].icon;
               return (
-                <div key={member.memberId} className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-6 rounded-3xl shadow-3xs">
+                <div key={member.memberId} className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-6 rounded-2xl shadow-3xs">
                   <div className="flex items-start justify-between mb-4">
                     <div className="flex items-center gap-3">
                       <div className={`w-12 h-12 rounded-2xl flex items-center justify-center ${tierConfig[member.tier].bgColor}`}>
@@ -519,7 +519,7 @@ export default function LoyaltyProgramEngine() {
 
       {/* Transactions Tab */}
       {activeTab === 'transactions' && (
-        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-6 rounded-3xl shadow-3xs">
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-6 rounded-2xl shadow-3xs">
           <div className="flex items-center justify-between mb-6">
             <h3 className="text-lg font-bold text-slate-900 dark:text-white">Recent Transactions</h3>
             <button className="px-3 py-1 bg-slate-100 dark:bg-slate-800 rounded-lg text-xs font-bold text-slate-600 dark:text-slate-400 flex items-center gap-1">
@@ -591,7 +591,7 @@ export default function LoyaltyProgramEngine() {
           {mockRewards.map((reward) => {
             const TierIcon = tierConfig[reward.tierRequirement].icon;
             return (
-              <div key={reward.rewardId} className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-6 rounded-3xl shadow-3xs">
+              <div key={reward.rewardId} className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-6 rounded-2xl shadow-3xs">
                 <div className="flex items-start justify-between mb-4">
                   <div className={`w-12 h-12 rounded-2xl flex items-center justify-center ${tierConfig[reward.tierRequirement].bgColor}`}>
                     <Gift size={24} className={tierConfig[reward.tierRequirement].color} />
@@ -640,7 +640,7 @@ export default function LoyaltyProgramEngine() {
           </div>
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             {mockCampaigns.map((campaign) => (
-              <div key={campaign.campaignId} className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-6 rounded-3xl shadow-3xs">
+              <div key={campaign.campaignId} className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-6 rounded-2xl shadow-3xs">
                 <div className="flex items-start justify-between mb-4">
                   <div>
                     <h3 className="text-sm font-bold text-slate-900 dark:text-white">{campaign.campaignName}</h3>
