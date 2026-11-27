@@ -210,7 +210,7 @@ export function ResourceManager({ title, description, resource, fields, itemLabe
   const chips = stats ? stats(items) : [];
 
   return (
-    <div className={embedded ? 'flex flex-col gap-4' : 'h-full flex flex-col p-4 sm:p-6 gap-4 overflow-y-auto'}>
+    <div className="space-y-6 animate-fade-in">
       {embedded ? (
         <div className="flex items-center justify-between gap-3">
           <p className="text-sm text-gray-500 dark:text-gray-400 min-w-0 truncate">{description}</p>
@@ -257,52 +257,55 @@ export function ResourceManager({ title, description, resource, fields, itemLabe
         </div>
       )}
 
-      <SectionCard title="Search" pad="sm">
-        <div className="relative max-w-sm">
-          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-          <input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search…" className={`${inputCls} pl-9`} />
-        </div>
-      </SectionCard>
-
       {error && (
         <div className="flex items-center gap-2 p-3 rounded-xl bg-rose-50 dark:bg-rose-500/10 text-rose-700 dark:text-rose-400 text-sm border border-rose-100 dark:border-rose-500/20"><AlertTriangle size={16} /> {error}</div>
       )}
 
-      <SectionCard title={`${itemLabel.charAt(0).toUpperCase() + itemLabel.slice(1)}s`} subtitle={`${filtered.length} of ${items.length}`} icon={resource === 'identity-providers' ? Shield : Settings} tone="accent" pad="none">
-        <div className="bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-2xl card-shadow overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="bg-slate-50 dark:bg-slate-900/40 border-b border-gray-200 dark:border-slate-700 text-xs font-bold text-gray-500 uppercase tracking-wider">
-                  {columns.map(c => <th key={c.key} className="text-left px-4 py-3 whitespace-nowrap">{c.label}</th>)}
-                  <th className="px-4 py-3 text-right">Actions</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-100 dark:divide-slate-700">
-                {loading && items.length === 0 ? (
-                  <tr><td colSpan={columns.length + 1} className="px-4 py-10 text-center text-gray-500 dark:text-gray-400"><Loader2 className="inline animate-spin" size={18} /></td></tr>
-                ) : filtered.length === 0 ? (
-                  <tr><td colSpan={columns.length + 1} className="px-4 py-10 text-center text-gray-500 dark:text-gray-400">No {itemLabel}s found.</td></tr>
-                ) : filtered.map(item => (
-                  <tr key={item.id} className="hover:bg-slate-50 dark:hover:bg-slate-700/30 transition">
-                    {columns.map(c => (
-                      <td key={c.key} className="px-4 py-3 text-gray-700 dark:text-gray-200 max-w-[280px] truncate">
-                        {c.toggle && c.type === 'boolean' ? (
-                          <button onClick={() => toggle(item, c.key)} className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${item[c.key] ? 'bg-emerald-500' : 'bg-slate-300 dark:bg-slate-600'}`} aria-label={`Toggle ${c.label}`}>
-                            <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${item[c.key] ? 'translate-x-4' : 'translate-x-0.5'}`} />
-                          </button>
-                        ) : display(c, item[c.key])}
-                      </td>
-                    ))}
-                    <td className="px-4 py-3 whitespace-nowrap text-right">
-                      {!noEdit && <button onClick={() => openEditor(item)} className="p-1.5 text-gray-400 hover:text-indigo-600 dark:hover:text-indigo-400" title="Edit"><Pencil size={15} /></button>}
-                      {!noDelete && <button onClick={() => remove(item)} className="p-1.5 text-gray-400 hover:text-rose-600 dark:hover:text-rose-400" title="Delete"><Trash2 size={15} /></button>}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+      <SectionCard
+        title={`${itemLabel.charAt(0).toUpperCase() + itemLabel.slice(1)}s`}
+        subtitle={`${filtered.length} of ${items.length}`}
+        icon={resource === 'identity-providers' ? Shield : Settings}
+        tone="accent"
+        pad="none"
+        actions={
+          <div className="relative w-56 sm:w-64">
+            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+            <input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search…" className={`${inputCls} pl-9`} />
           </div>
+        }
+      >
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="bg-slate-50 dark:bg-slate-900/40 border-b border-gray-200 dark:border-slate-700 text-xs font-bold text-gray-500 uppercase tracking-wider">
+                {columns.map(c => <th key={c.key} className="text-left px-4 py-3 whitespace-nowrap">{c.label}</th>)}
+                <th className="px-4 py-3 text-right">Actions</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100 dark:divide-slate-700">
+              {loading && items.length === 0 ? (
+                <tr><td colSpan={columns.length + 1} className="px-4 py-10 text-center text-gray-500 dark:text-gray-400"><Loader2 className="inline animate-spin" size={18} /></td></tr>
+              ) : filtered.length === 0 ? (
+                <tr><td colSpan={columns.length + 1} className="px-4 py-10 text-center text-gray-500 dark:text-gray-400">No {itemLabel}s found.</td></tr>
+              ) : filtered.map(item => (
+                <tr key={item.id} className="hover:bg-slate-50 dark:hover:bg-slate-700/30 transition">
+                  {columns.map(c => (
+                    <td key={c.key} className="px-4 py-3 text-gray-700 dark:text-gray-200 max-w-[280px] truncate">
+                      {c.toggle && c.type === 'boolean' ? (
+                        <button onClick={() => toggle(item, c.key)} className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${item[c.key] ? 'bg-emerald-500' : 'bg-slate-300 dark:bg-slate-600'}`} aria-label={`Toggle ${c.label}`}>
+                          <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${item[c.key] ? 'translate-x-4' : 'translate-x-0.5'}`} />
+                        </button>
+                      ) : display(c, item[c.key])}
+                    </td>
+                  ))}
+                  <td className="px-4 py-3 whitespace-nowrap text-right">
+                    {!noEdit && <button onClick={() => openEditor(item)} className="p-1.5 text-gray-400 hover:text-indigo-600 dark:hover:text-indigo-400" title="Edit"><Pencil size={15} /></button>}
+                    {!noDelete && <button onClick={() => remove(item)} className="p-1.5 text-gray-400 hover:text-rose-600 dark:hover:text-rose-400" title="Delete"><Trash2 size={15} /></button>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       </SectionCard>
 

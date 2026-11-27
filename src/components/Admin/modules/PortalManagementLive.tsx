@@ -316,10 +316,10 @@ const PortalManagementLive: React.FC = () => {
   };
 
   return (
-    <div className="space-y-6 animate-fade-in pt-4">
+    <div className="space-y-6 animate-fade-in">
       <PageHeader
         title="Portal Management"
-        subtitle="Enable or disable department portals and manage every module's registry entry (activate, edit, register, delete) in one place. Admin and Settings can't be disabled."
+        subtitle="Enable or disable portals and modules within Super Admin boundaries."
         icon={Building2}
         actions={
           <button onClick={save} disabled={!isDirty || status === 'saving'} className={button.primary}>
@@ -442,7 +442,7 @@ const PortalManagementLive: React.FC = () => {
       </SectionCard>
 
       {orphanModules.length > 0 && (
-        <SectionCard title="Unlinked Registry Modules" subtitle="Modules in the registry that don't map to a portal tab — edit, activate or delete them here." icon={Shield} tone="warning" pad="none">
+        <SectionCard title="Unlinked Registry Modules" subtitle="Registry modules not mapped to any portal tab." icon={Shield} tone="warning" pad="none">
           <div className="divide-y divide-gray-100 dark:divide-slate-700">
             {orphanModules.map(m => (
               <div key={m.id} className="flex items-center justify-between gap-3 p-3 bg-white dark:bg-slate-800">

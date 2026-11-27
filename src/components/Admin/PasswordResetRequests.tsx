@@ -136,10 +136,10 @@ export default function PasswordResetRequests({ apiPath = '/api/admin/password-r
   };
 
   return (
-    <div className="space-y-6 animate-fade-in pt-4">
+    <div className="space-y-6 animate-fade-in">
       <PageHeader
         title="Password Resets"
-        subtitle="Staff self-service password recovery. Approving a request issues a temporary password — the user must set a new one at first sign-in."
+        subtitle="Approve staff password recovery requests and issue temporary credentials."
         icon={KeyRound}
       />
 

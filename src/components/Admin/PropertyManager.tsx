@@ -187,7 +187,7 @@ const PropertyManager: React.FC = () => {
     <div className="space-y-6 animate-fade-in">
       <PageHeader
         title="Organization & Property Hierarchy"
-        subtitle="Multi-property management with live footprint across Front Office, Housekeeping, F&B, Spa, Engineering, Finance and more"
+        subtitle="Manage organizations, properties, and live cross-portal footprints."
         icon={Building2}
         actions={
           <>

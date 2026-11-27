@@ -145,7 +145,7 @@ const ComplianceCenter: React.FC = () => {
   ];
 
   return (
-    <div className="space-y-6 animate-fade-in pt-4">
+    <div className="space-y-6 animate-fade-in">
       <PageHeader
         title="Compliance Center"
         subtitle="GDPR tooling — consent management, PII export/erasure, and data retention"

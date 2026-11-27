@@ -17,6 +17,8 @@ import {
   ShieldCheck
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { PageHeader } from '../FrontOffice/ui';
+import { layout } from '../FrontOffice/brandTheme';
 
 export default function GlobalConfigModule() {
   const {
@@ -104,7 +106,12 @@ export default function GlobalConfigModule() {
   };
 
   return (
-    <div className="max-w-4xl mx-auto space-y-6" id="global-config-module">
+    <div className={[layout.sectionStack, 'animate-fade-in'].join(' ')} id="global-config-module">
+      <PageHeader
+        title="Global Configuration"
+        subtitle="Manage public booking branding, financial defaults, guest policies, and terms"
+        icon={Globe}
+      />
       <div className="flex flex-col md:flex-row gap-6">
         <aside className="w-full md:w-64 space-y-1">
           <button

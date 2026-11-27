@@ -62,7 +62,7 @@ const AdminOverview: React.FC = () => {
   ] : [];
 
   return (
-    <div className="space-y-6 animate-fade-in pt-4">
+    <div className="space-y-6 animate-fade-in">
       <PageHeader
         title="Executive Dashboard"
         subtitle="Live system administration overview across identity, organisation, platform, and operations"

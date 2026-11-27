@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { ResourceManager, type ResourceField, adminAuthHeaders } from '../shared/ResourceManager';
+import { AdminSubTabBar } from '../shared/AdminSubTabBar';
 import { RuleTester, WorkflowInstancesModule } from './CentralRulesUI';
 import { DEPARTMENTS, getDeptAccentColorVar } from '../../../config/departments';
 import { Plus, AlertCircle, Trash2, ChevronUp, ChevronDown } from 'lucide-react';
@@ -437,7 +438,7 @@ export const WorkflowModule: React.FC<{ embedded?: boolean }> = ({ embedded }) =
     embedded={embedded}
     renderForm={WorkflowForm}
     title="Workflow Engine"
-    description="Multi-step workflows started by system events. Live triggers: purchase_order.submitted (a PO moves to Pending Approval) and reservation.created (public website booking). Steps JSON: [{&quot;name&quot;:&quot;Manager review&quot;,&quot;type&quot;:&quot;approval&quot;,&quot;role&quot;:&quot;manager&quot;,&quot;condition&quot;:&quot;amount > 500&quot;}]. Types: approval, task (pause until the role completes it) and notify (staff notification, then continue)."
+    description="Automated multi-step approval, task, and notification workflows."
     resource="workflows"
     itemLabel="workflow"
     fields={[
@@ -458,17 +459,17 @@ export const WorkflowModule: React.FC<{ embedded?: boolean }> = ({ embedded }) =
 export const WorkflowCenterModule: React.FC = () => {
   const [tab, setTab] = useState<'workflows' | 'instances' | 'approvals'>('workflows');
   return (
-    <div className="h-full flex flex-col p-4 sm:p-6 gap-4 overflow-y-auto">
-      <div className="flex items-center gap-1 p-1 rounded-xl bg-slate-100 dark:bg-slate-800 w-fit">
-        {([['workflows', 'Workflows'], ['instances', 'Instances'], ['approvals', 'Approval Matrix']] as const).map(([id, label]) => (
-          <button
-            key={id}
-            onClick={() => setTab(id)}
-            className={`px-4 py-2 text-sm font-semibold rounded-lg transition ${tab === id ? 'bg-white dark:bg-slate-700 text-gray-900 dark:text-white shadow-sm' : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'}`}
-          >
-            {label}
-          </button>
-        ))}
+    <div className="space-y-6 animate-fade-in">
+      <div>
+        <AdminSubTabBar
+          tabs={[
+            { id: 'workflows', label: 'Workflows' },
+            { id: 'instances', label: 'Instances' },
+            { id: 'approvals', label: 'Approval Matrix' },
+          ]}
+          activeTab={tab}
+          onChange={setTab}
+        />
       </div>
       {tab === 'workflows' && <WorkflowModule embedded />}
       {tab === 'instances' && <WorkflowInstancesModule embedded />}
@@ -478,11 +479,11 @@ export const WorkflowCenterModule: React.FC = () => {
 };
 
 export const BusinessRulesModule: React.FC = () => (
-  <div className="h-full overflow-y-auto">
-    <div className="p-4 sm:p-6 pb-0"><RuleTester /></div>
-    <div className="min-h-[520px]"><ResourceManager
+  <div className="space-y-6 animate-fade-in">
+    <RuleTester />
+    <ResourceManager
     title="Business Rules"
-    description="Central rules evaluated by the system by category and priority (lower runs first). Live categories: booking (public website bookings can be blocked) and procurement (purchase orders can be blocked or require a specific approver role). Conditions and actions are validated on save."
+    description="Priority-ordered rules for booking and procurement validation."
     resource="business-rules"
     itemLabel="rule"
     fields={[
@@ -504,7 +505,7 @@ export const BusinessRulesModule: React.FC = () => (
       { label: 'Booking', value: count(items, i => i.category === 'booking') },
       { label: 'Procurement', value: count(items, i => i.category === 'procurement') },
     ]}
-  /></div>
+  />
   </div>
 );
 
@@ -531,23 +532,22 @@ const documentTemplateFields: ResourceField[] = [
 export const TemplatesModule: React.FC = () => {
   const [tab, setTab] = useState<'notifications' | 'documents'>('notifications');
   return (
-    <div className="h-full flex flex-col p-4 sm:p-6 gap-4 overflow-y-auto">
-      <div className="flex items-center gap-1 p-1 rounded-xl bg-slate-100 dark:bg-slate-800 w-fit">
-        {([['notifications', 'Notifications'], ['documents', 'Documents']] as const).map(([id, label]) => (
-          <button
-            key={id}
-            onClick={() => setTab(id)}
-            className={`px-4 py-2 text-sm font-semibold rounded-lg transition ${tab === id ? 'bg-white dark:bg-slate-700 text-gray-900 dark:text-white shadow-sm' : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'}`}
-          >
-            {label}
-          </button>
-        ))}
+    <div className="space-y-6 animate-fade-in">
+      <div>
+        <AdminSubTabBar
+          tabs={[
+            { id: 'notifications', label: 'Notifications' },
+            { id: 'documents', label: 'Documents' },
+          ]}
+          activeTab={tab}
+          onChange={setTab}
+        />
       </div>
       {tab === 'notifications' ? (
         <ResourceManager
           embedded
           title="Notification Center"
-          description="Templates for email, SMS, push and in-app notifications. Use {{placeholders}} in the body."
+          description="Email, SMS, push, and in-app notification templates."
           resource="notification-templates"
           itemLabel="template"
           fields={notificationTemplateFields}
@@ -557,7 +557,7 @@ export const TemplatesModule: React.FC = () => {
         <ResourceManager
           embedded
           title="Document Templates"
-          description="Reusable document bodies for folios, confirmations, contracts and letters."
+          description="Reusable templates for folios, confirmations, and contracts."
           resource="document-templates"
           itemLabel="template"
           fields={documentTemplateFields}
@@ -570,7 +570,7 @@ export const TemplatesModule: React.FC = () => {
 export const PaymentGatewayModule: React.FC = () => (
   <ResourceManager
     title="Payment Gateway Configuration"
-    description="Gateway connections. Store only a reference to the secret (an environment variable or vault name), never the secret itself."
+    description="Payment gateway connections using vault or environment secret references."
     resource="payment-gateways"
     itemLabel="gateway"
     fields={[
@@ -613,23 +613,22 @@ const posTerminalFields: ResourceField[] = [
 export const DeviceModule: React.FC = () => {
   const [tab, setTab] = useState<'devices' | 'pos-terminals'>('devices');
   return (
-    <div className="h-full flex flex-col p-4 sm:p-6 gap-4 overflow-y-auto">
-      <div className="flex items-center gap-1 p-1 rounded-xl bg-slate-100 dark:bg-slate-800 w-fit">
-        {([['devices', 'Devices'], ['pos-terminals', 'POS Terminals']] as const).map(([id, label]) => (
-          <button
-            key={id}
-            onClick={() => setTab(id)}
-            className={`px-4 py-2 text-sm font-semibold rounded-lg transition ${tab === id ? 'bg-white dark:bg-slate-700 text-gray-900 dark:text-white shadow-sm' : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'}`}
-          >
-            {label}
-          </button>
-        ))}
+    <div className="space-y-6 animate-fade-in">
+      <div>
+        <AdminSubTabBar
+          tabs={[
+            { id: 'devices', label: 'Devices' },
+            { id: 'pos-terminals', label: 'POS Terminals' },
+          ]}
+          activeTab={tab}
+          onChange={setTab}
+        />
       </div>
       {tab === 'devices' ? (
         <ResourceManager
           embedded
           title="Device Management"
-          description="Registry of terminals, printers, key encoders, kiosks and other hardware."
+          description="Registry of terminals, printers, key encoders, and kiosks."
           resource="devices"
           itemLabel="device"
           fields={deviceFields}
@@ -639,7 +638,7 @@ export const DeviceModule: React.FC = () => {
         <ResourceManager
           embedded
           title="POS Terminals"
-          description="Registered POS terminals per outlet. Transactions and shifts reference these devices; deleting a terminal keeps historical records."
+          description="Registered POS terminals mapped to outlets."
           resource="pos-terminals"
           itemLabel="terminal"
           fields={posTerminalFields}
@@ -653,7 +652,7 @@ export const DeviceModule: React.FC = () => {
 export const RateTaxModule: React.FC = () => (
   <ResourceManager
     title="Rate & Tax Configuration"
-    description="The single source of truth for VAT, service charge and additional taxes. Rules apply to: rooms (public and front-office bookings), f&b (POS and online ordering), procurement (purchase-order lines) or all. A rule for a specific outlet beats a property rule, which beats an 'all' rule; a property-specific rule beats a global one. Use rate 0 for an exemption. 'Calc base' only applies to non-VAT/service-charge taxes on POS bills. Where no rule is defined, each module keeps its previous default."
+    description="Central VAT, service charge, and tax rules by property or outlet."
     resource="tax-rules"
     itemLabel="tax rule"
     fields={[
@@ -696,7 +695,7 @@ export const LicensingModule: React.FC = () => (
 export const IdentityProvidersModule: React.FC = () => (
   <ResourceManager
     title="Identity & Authentication"
-    description="External identity providers (SSO) and MFA requirements per provider. Store only a reference to the client secret."
+    description="External SSO identity providers and MFA enforcement."
     resource="identity-providers"
     itemLabel="provider"
     fields={[
@@ -716,7 +715,7 @@ export const IdentityProvidersModule: React.FC = () => (
 export const ChannelManagerModule: React.FC = () => (
   <ResourceManager
     title="Channel Manager Configuration"
-    description="Distribution channel connections (OTA, GDS, bed banks). New channels are created in test mode by default - they use the simulated sync adapter until real credentials are configured."
+    description="OTA, GDS, and bed-bank distribution channel connections."
     resource="channels"
     apiBase="/api/channels"
     listKey="channels"

@@ -141,7 +141,7 @@ const PropertyPublicProfile: React.FC = () => {
     <div className="space-y-6 animate-fade-in">
       <PageHeader
         title="Property Public Profile"
-        subtitle="What guests see about each property on the public website: photo, description, amenities, address and contacts"
+        subtitle="Manage public website photo, description, amenities, and contacts."
         icon={Globe}
         actions={
           <>

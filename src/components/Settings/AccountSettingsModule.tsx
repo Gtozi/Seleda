@@ -21,6 +21,8 @@ import {
   Loader2
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { PageHeader } from '../FrontOffice/ui';
+import { layout } from '../FrontOffice/brandTheme';
 
 const SPECIAL_CHARS = /[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?~`]/;
 
@@ -249,7 +251,12 @@ export default function AccountSettingsModule() {
   ];
 
   return (
-    <div className="max-w-4xl mx-auto space-y-6" id="account-settings-module">
+    <div className={[layout.sectionStack, 'animate-fade-in'].join(' ')} id="account-settings-module">
+      <PageHeader
+        title="Account Settings"
+        subtitle="Manage your profile details, password security, and active login sessions"
+        icon={User}
+      />
       <div className="flex flex-col md:flex-row gap-6">
 
         {/* Sidebar Navigation */}

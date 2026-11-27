@@ -17,7 +17,7 @@ import {
 import { useERP } from '../../context/ERPContext';
 import { ModalSystem } from '../Shared/ModalSystem';
 import { DataTable, Column } from '../Shared/DataTable';
-import { SectionCard, Badge } from '../FrontOffice/ui';
+import { PageHeader, SectionCard, Badge } from '../FrontOffice/ui';
 import { button, layout, type StatusTone } from '../FrontOffice/brandTheme';
 import StatCard from '../FrontOffice/StatCard';
 import {
@@ -337,35 +337,36 @@ const ChartOfAccounts = () => {
 
   return (
     <div className={layout.sectionStack}>
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div>
-          <h1 className="text-sm font-black text-slate-900 dark:text-white uppercase tracking-tight">Chart of Accounts</h1>
-          <p className="text-[10px] text-slate-400 font-bold uppercase mt-1">Enterprise account structure and USALI mapping</p>
-        </div>
-        <div className="flex items-center gap-2">
-          <div className="flex bg-slate-100 dark:bg-slate-800 rounded-2xl p-0.5">
-            <button
-              onClick={() => setViewMode('flat')}
-              className={`px-3 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition ${viewMode === 'flat' ? 'bg-white dark:bg-slate-700 text-indigo-600 shadow-sm' : 'text-slate-500'}`}
-            >
-              Flat
+      <PageHeader
+        title="Chart of Accounts"
+        subtitle="Enterprise account structure and USALI mapping"
+        icon={FileText}
+        actions={
+          <div className="flex items-center gap-2">
+            <div className="flex bg-slate-100 dark:bg-slate-800 rounded-xl p-0.5 border border-gray-200 dark:border-slate-700">
+              <button
+                onClick={() => setViewMode('flat')}
+                className={`px-3 py-1.5 rounded-lg text-xs font-medium transition ${viewMode === 'flat' ? 'bg-white dark:bg-slate-700 text-indigo-600 dark:text-indigo-400 shadow-sm' : 'text-slate-500 dark:text-slate-400'}`}
+              >
+                Flat
+              </button>
+              <button
+                onClick={() => setViewMode('tree')}
+                className={`px-3 py-1.5 rounded-lg text-xs font-medium transition ${viewMode === 'tree' ? 'bg-white dark:bg-slate-700 text-indigo-600 dark:text-indigo-400 shadow-sm' : 'text-slate-500 dark:text-slate-400'}`}
+              >
+                Tree
+              </button>
+            </div>
+            <button onClick={() => loadData()} className={button.secondary}>
+              {loading ? <Loader2 size={16} className="animate-spin" /> : <Search size={16} />}
+              Refresh
             </button>
-            <button
-              onClick={() => setViewMode('tree')}
-              className={`px-3 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition ${viewMode === 'tree' ? 'bg-white dark:bg-slate-700 text-indigo-600 shadow-sm' : 'text-slate-500'}`}
-            >
-              Tree
+            <button onClick={() => { setSelectedAccount(null); setShowModal(true); }} className="bg-indigo-600 text-white font-medium py-2 px-4 rounded-xl flex items-center gap-2 text-sm hover:bg-indigo-700 transition shadow-sm">
+              <Plus size={16} /> New Account
             </button>
           </div>
-          <button onClick={() => loadData()} className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white font-bold py-2.5 px-4 rounded-2xl flex items-center gap-2 text-xs hover:bg-slate-50 transition shadow-sm">
-            {loading ? <Loader2 size={16} className="animate-spin" /> : <Search size={16} />}
-            Refresh
-          </button>
-          <button onClick={() => { setSelectedAccount(null); setShowModal(true); }} className="bg-indigo-600 text-white font-bold py-2.5 px-4 rounded-2xl flex items-center gap-2 text-xs hover:bg-indigo-700 transition shadow-sm">
-            <Plus size={16} /> New Account
-          </button>
-        </div>
-      </div>
+        }
+      />
 
       {error && (
         <div className="bg-rose-50 dark:bg-rose-500/10 border border-rose-200 dark:border-rose-500/20 rounded-2xl p-6 text-center">

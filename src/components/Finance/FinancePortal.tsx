@@ -24,12 +24,14 @@ import ChartOfAccounts from './ChartOfAccounts';
 import FolioManagementPage from '../FolioManagement/FolioManagementPage';
 import DepartmentRequisitionForm from '../Inventory/DepartmentRequisitionForm';
 
+import { layout } from '../FrontOffice/brandTheme';
+
 const FinancePortal = ({ activeModule = 'dashboard' }: { activeModule?: string }) => {
 
   return (
-    <div className="flex flex-col h-full font-sans">
+    <div className={['accent-finance', layout.sectionStack, 'animate-fade-in font-sans'].join(' ')} id="finance-portal">
       {/* Main Content Area */}
-      <div className="flex-1 min-w-0 px-1 text-slate-850 dark:text-slate-100">
+      <div className="min-h-[600px] min-w-0 text-slate-850 dark:text-slate-100">
         {activeModule === 'dashboard' && <FinanceDashboard />}
         {activeModule === 'gl' && <GeneralLedger />}
         {activeModule === 'coa' && <ChartOfAccounts />}
