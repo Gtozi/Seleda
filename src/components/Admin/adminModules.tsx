@@ -6,6 +6,22 @@
  */
 
 import React from 'react';
+import {
+  LayoutDashboard,
+  Building2,
+  Shield,
+  Layers,
+  Database,
+  GitBranch,
+  Mail,
+  Store,
+  Percent,
+  Settings,
+  Plug,
+  Activity,
+  FileBarChart,
+  type LucideIcon,
+} from 'lucide-react';
 
 import AdminOverview from './modules/AdminOverview';
 import AdminReports from './modules/AdminReports';
@@ -26,6 +42,7 @@ import {
 export interface AdminModuleConfig {
   id: string;
   label: string;
+  icon: LucideIcon;
   component: React.FC<any>;
   /** moduleToggle key in GlobalHotelSettings.moduleToggles (e.g. 'admin_user_security') */
   toggleKey: string;
@@ -36,78 +53,91 @@ export const CORE_ADMIN_MODULES: AdminModuleConfig[] = [
   {
     id: 'executive_dashboard',
     label: 'Dashboard',
+    icon: LayoutDashboard,
     component: AdminOverview,
     toggleKey: 'admin_executive_dashboard',
   },
   {
     id: 'tenant_property',
     label: 'Properties & Org',
+    icon: Building2,
     component: TenantPropertyHub,
     toggleKey: 'admin_tenant_property',
   },
   {
     id: 'user_security',
     label: 'Users & Access',
+    icon: Shield,
     component: UserManagementSecurity,
     toggleKey: 'admin_user_security',
   },
   {
     id: 'portal_management',
     label: 'Portals & Features',
+    icon: Layers,
     component: PortalFeatureHub,
     toggleKey: 'admin_portal_management',
   },
   {
     id: 'master_data',
     label: 'Master Data',
+    icon: Database,
     component: MasterData,
     toggleKey: 'admin_master_data',
   },
   {
     id: 'workflow_center',
     label: 'Rules & Workflows',
+    icon: GitBranch,
     component: RulesWorkflowsHub,
     toggleKey: 'admin_workflow_center',
   },
   {
     id: 'templates',
     label: 'Templates',
+    icon: Mail,
     component: TemplatesModule,
     toggleKey: 'admin_templates',
   },
   {
     id: 'pos_management',
     label: 'POS & Devices',
+    icon: Store,
     component: PosDevicesHub,
     toggleKey: 'admin_pos_management',
   },
   {
     id: 'rate_tax',
     label: 'Billing & Tax',
+    icon: Percent,
     component: BillingTaxHub,
     toggleKey: 'admin_rate_tax',
   },
   {
     id: 'system_settings',
     label: 'System Settings',
+    icon: Settings,
     component: GlobalSystemSettings,
     toggleKey: 'admin_system_settings',
   },
   {
     id: 'integration_hub',
     label: 'Integrations & API',
+    icon: Plug,
     component: IntegrationsHub,
     toggleKey: 'admin_integration_hub',
   },
   {
     id: 'monitoring_health',
     label: 'System & Operations',
+    icon: Activity,
     component: SystemOperationsHub,
     toggleKey: 'admin_monitoring_health',
   },
   {
     id: 'reports',
     label: 'Reports',
+    icon: FileBarChart,
     component: AdminReports,
     toggleKey: 'admin_reports',
   },

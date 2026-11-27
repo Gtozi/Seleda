@@ -124,12 +124,14 @@ const OrganizationHierarchyManager: React.FC<{ embedded?: boolean }> = ({ embedd
         />
       )}
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <StatCard title="Organizations" value={`${totals.activeOrgs} active / ${organizations.length}`} icon={Building2} tone="accent" />
-        <StatCard title="Properties" value={`${totals.activeProps} active / ${properties.length}`} icon={MapPin} tone="info" />
-        <StatCard title="Total Rooms" value={totals.rooms} icon={Layers} tone="neutral" />
-        <StatCard title="Currencies" value={new Set(properties.map(p => p.currency_code).filter(Boolean)).size} icon={Globe} tone="neutral" />
-      </div>
+      {!embedded && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          <StatCard title="Organizations" value={`${totals.activeOrgs} active / ${organizations.length}`} icon={Building2} tone="accent" />
+          <StatCard title="Properties" value={`${totals.activeProps} active / ${properties.length}`} icon={MapPin} tone="info" />
+          <StatCard title="Total Rooms" value={totals.rooms} icon={Layers} tone="neutral" />
+          <StatCard title="Currencies" value={new Set(properties.map(p => p.currency_code).filter(Boolean)).size} icon={Globe} tone="neutral" />
+        </div>
+      )}
 
       <SectionCard
         title="Organization Tree"

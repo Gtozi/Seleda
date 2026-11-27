@@ -6,7 +6,9 @@ import {
 } from 'lucide-react';
 import { AdminSubTabBar } from '../shared/AdminSubTabBar';
 import { PageHeader } from '../../FrontOffice/ui';
+import StatCard from '../../FrontOffice/StatCard';
 import { layout } from '../../FrontOffice/brandTheme';
+import { adminAuthHeaders } from '../shared/ResourceManager';
 import PropertyManager from '../PropertyManager';
 import OrganizationHierarchyManager from '../OrganizationHierarchyManager';
 import PropertyPublicProfile from './PropertyPublicProfile';
@@ -62,7 +64,23 @@ function useSyncedTab<T extends string>(activeModule: string | undefined, mapFn:
   return [tab, setTab];
 }
 
+function useAdminOverviewCounts() {
+  const [counts, setCounts] = useState<any>(null);
+  useEffect(() => {
+    let alive = true;
+    fetch('/api/admin/control/overview', { headers: adminAuthHeaders() })
+      .then(r => (r.ok ? r.json() : null))
+      .then(j => { if (alive && j) setCounts(j); })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, []);
+  return counts;
+}
+
+const n = (v: number | null | undefined) => (v === null || v === undefined ? '—' : String(v));
+
 export const TenantPropertyHub: React.FC<{ activeModule?: string }> = ({ activeModule }) => {
+  const counts = useAdminOverviewCounts();
   const [tab, setTab] = useSyncedTab<'properties' | 'org' | 'public' | 'departments'>(activeModule, m => {
     if (m === 'property_public_profile') return 'public';
     if (m === 'organization_structure' || m === 'property_structure') return 'org';
@@ -76,6 +94,12 @@ export const TenantPropertyHub: React.FC<{ activeModule?: string }> = ({ activeM
         subtitle="Manage organizations, properties, public website profiles, and departments"
         icon={Building2}
       />
+      <div className={layout.kpiGrid}>
+        <StatCard title="Organizations" value={n(counts?.organizations)} icon={Network} tone="accent" />
+        <StatCard title="Properties" value={n(counts?.properties)} icon={Building2} tone="info" />
+        <StatCard title="Departments" value={n(counts?.departments)} icon={Layers} tone="success" />
+        <StatCard title="Public Profiles" value={n(counts?.properties)} icon={Globe} tone="neutral" />
+      </div>
       <AdminSubTabBar
         tabs={[
           { id: 'properties', label: 'Tenant & Property', icon: <Building2 size={14} /> },

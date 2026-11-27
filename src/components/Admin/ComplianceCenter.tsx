@@ -39,7 +39,6 @@ interface PiiRequest {
 }
 
 const TABS = [
-  { id: 'overview', label: 'Overview' },
   { id: 'consent', label: 'Consent Logs' },
   { id: 'retention', label: 'Retention Policies' },
   { id: 'requests', label: 'PII Requests' },
@@ -58,7 +57,7 @@ const reqTone = (s?: string) =>
 const ComplianceCenter: React.FC<{ embedded?: boolean }> = ({ embedded }) => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [tab, setTab] = useState<TabId>('overview');
+  const [tab, setTab] = useState<TabId>('consent');
   const [consentLogs, setConsentLogs] = useState<ConsentLog[]>([]);
   const [policies, setPolicies] = useState<RetentionPolicy[]>([]);
   const [exports, setExports] = useState<PiiRequest[]>([]);
@@ -189,17 +188,13 @@ const ComplianceCenter: React.FC<{ embedded?: boolean }> = ({ embedded }) => {
         </div>
       )}
 
-      {/* Tabs */}
-      <div>
-        <AdminSubTabBar tabs={TABS} activeTab={tab} onChange={setTab} />
+      {/* KPI Strip */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        {cards.map(c => <StatCard key={c.title} title={c.title} value={c.value} icon={c.icon} tone={c.tone} />)}
       </div>
 
-      {/* Overview */}
-      {tab === 'overview' && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-          {cards.map(c => <StatCard key={c.title} title={c.title} value={c.value} icon={c.icon} tone={c.tone} />)}
-        </div>
-      )}
+      {/* Tabs */}
+      <AdminSubTabBar tabs={TABS} activeTab={tab} onChange={setTab} />
 
       {/* Consent Logs */}
       {tab === 'consent' && (

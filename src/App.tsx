@@ -948,7 +948,7 @@ function MasterHotelERP({ onErpAuthChange }: { onErpAuthChange?: (authenticated:
 
     // Admin sub-nav from the shared admin module registry
     subNavConfig.admin = getVisibleAdminModules(moduleToggles)
-      .map(m => ({ id: m.id, label: m.label, modId: m.id }));
+      .map(m => ({ id: m.id, label: m.label, modId: m.id, icon: m.icon }));
 
     const items = subNavConfig[activeDept] || [];
     return items.filter(item =>

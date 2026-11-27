@@ -27,7 +27,7 @@ import InfrastructureCategory from './MasterData/InfrastructureCategory';
 import AttributesCategory from './MasterData/AttributesCategory';
 import StatCard from '../FrontOffice/StatCard';
 import { PageHeader } from '../FrontOffice/ui';
-import { button } from '../FrontOffice/brandTheme';
+import { button, layout } from '../FrontOffice/brandTheme';
 import { AdminSubTabBar } from './shared/AdminSubTabBar';
 
 export default function MasterData() {
@@ -165,26 +165,24 @@ export default function MasterData() {
         }
       />
 
-      {/* Category Tabs */}
-      <div>
-        <AdminSubTabBar
-          tabs={CATEGORY_TABS.map(t => ({ id: t.id, label: t.label, icon: <t.icon size={14} /> }))}
-          activeTab={category}
-          onChange={(id) => {
-            setCategory(id);
-            setSearchQuery('');
-            setInspectItem(null);
-          }}
-        />
-      </div>
-
       {/* KPI Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className={layout.kpiGrid}>
         <StatCard title="Rooms" value={rooms.length} icon={Home} tone="accent" />
         <StatCard title="Guests" value={guests.length} icon={Users} tone="info" />
         <StatCard title="Inventory Items" value={inventoryItems.length} icon={ShoppingCart} tone="success" />
         <StatCard title="Accounts" value={chartOfAccounts.length} icon={DollarSign} tone="warning" />
       </div>
+
+      {/* Category Tabs */}
+      <AdminSubTabBar
+        tabs={CATEGORY_TABS.map(t => ({ id: t.id, label: t.label, icon: <t.icon size={14} /> }))}
+        activeTab={category}
+        onChange={(id) => {
+          setCategory(id);
+          setSearchQuery('');
+          setInspectItem(null);
+        }}
+      />
 
       {/* Dynamic Content Panel */}
       <div className="space-y-6">

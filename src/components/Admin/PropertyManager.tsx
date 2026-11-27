@@ -219,12 +219,14 @@ const PropertyManager: React.FC<{ embedded?: boolean }> = ({ embedded }) => {
         </div>
       )}
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <StatCard title="Organizations" value={organizations.length} icon={Building2} tone="accent" />
-        <StatCard title="Properties" value={`${totals.active} active / ${properties.length}`} icon={Hotel} tone="info" />
-        <StatCard title="Total Rooms" value={totals.rooms} icon={Layers} tone="neutral" />
-        <StatCard title="Currencies" value={new Set(properties.map(p => p.currency_code).filter(Boolean)).size} icon={Globe} tone="neutral" />
-      </div>
+      {!embedded && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          <StatCard title="Organizations" value={organizations.length} icon={Building2} tone="accent" />
+          <StatCard title="Properties" value={`${totals.active} active / ${properties.length}`} icon={Hotel} tone="info" />
+          <StatCard title="Total Rooms" value={totals.rooms} icon={Layers} tone="neutral" />
+          <StatCard title="Currencies" value={new Set(properties.map(p => p.currency_code).filter(Boolean)).size} icon={Globe} tone="neutral" />
+        </div>
+      )}
 
       <SectionCard title="Organizations" subtitle={`${organizations.length} organization${organizations.length !== 1 ? 's' : ''}`} icon={Building2} tone="accent">
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">

@@ -15,7 +15,7 @@ interface AdminSubTabBarProps<T extends string = string> {
 
 /**
  * Shared sub-tab bar for multi-tab Admin Portal modules.
- * Matches the earthy-luxury brandTheme tokens and supports light/dark mode.
+ * Aligned 100% with the Finance Portal sub-tab navigation.
  */
 export function AdminSubTabBar<T extends string = string>({
   tabs,
@@ -26,8 +26,7 @@ export function AdminSubTabBar<T extends string = string>({
   return (
     <div
       className={[
-        'inline-flex flex-wrap items-center gap-1 p-1 rounded-xl',
-        'bg-slate-100 dark:bg-slate-800/80 border border-gray-200 dark:border-slate-700',
+        'flex bg-slate-100 dark:bg-slate-900/40 p-1 rounded-xl gap-1 flex-wrap',
         className,
       ].join(' ')}
     >
@@ -39,10 +38,10 @@ export function AdminSubTabBar<T extends string = string>({
             type="button"
             onClick={() => onChange(t.id)}
             className={[
-              'px-3.5 py-2 flex items-center justify-center gap-2 rounded-lg text-xs font-medium transition-all',
+              'px-4 py-1.5 rounded-lg text-xs font-medium transition whitespace-nowrap inline-flex items-center gap-1.5',
               active
-                ? 'bg-[var(--color-accent-operations)] text-white shadow-sm'
-                : 'text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white hover:bg-white/70 dark:hover:bg-slate-700/60',
+                ? 'bg-white dark:bg-slate-700 text-gray-900 dark:text-white shadow-sm'
+                : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200',
             ].join(' ')}
           >
             {t.icon}
