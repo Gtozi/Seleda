@@ -52,8 +52,20 @@ function deriveSeverity(action: string): string {
   return 'Low';
 }
 
-export default function UserManagementSecurity({ initialTab = 'users' }: { initialTab?: SecurityTab } = {}) {
-  const [activeTab, setActiveTab] = useState<SecurityTab>(initialTab);
+function resolveSecurityTab(activeModule?: string, initialTab: SecurityTab = 'users'): SecurityTab {
+  if (activeModule === 'identity_authentication') return 'identity';
+  if (activeModule === 'audit_logs' || activeModule === 'audit_center') return 'audit';
+  if (activeModule === 'role_permissions' || activeModule === 'role_permission') return 'rbac';
+  if (activeModule === 'security_center') return 'security_settings';
+  return initialTab;
+}
+
+export default function UserManagementSecurity({ initialTab = 'users', activeModule }: { initialTab?: SecurityTab; activeModule?: string } = {}) {
+  const [activeTab, setActiveTab] = useState<SecurityTab>(() => resolveSecurityTab(activeModule, initialTab));
+
+  React.useEffect(() => {
+    if (activeModule) setActiveTab(resolveSecurityTab(activeModule, initialTab));
+  }, [activeModule, initialTab]);
 
   return (
     <div className="space-y-6 animate-fade-in">
@@ -72,7 +84,7 @@ export default function UserManagementSecurity({ initialTab = 'users' }: { initi
         {activeTab === 'audit' && <AuditLogsModule />}
         {activeTab === 'security_settings' && <SecuritySettingsModule />}
         {activeTab === 'password_resets' && <PasswordResetRequests />}
-        {activeTab === 'identity' && <IdentityProvidersModule />}
+        {activeTab === 'identity' && <IdentityProvidersModule embedded />}
       </div>
     </div>
   );

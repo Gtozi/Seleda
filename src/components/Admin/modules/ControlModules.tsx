@@ -3,7 +3,7 @@ import { ResourceManager, type ResourceField, adminAuthHeaders } from '../shared
 import { AdminSubTabBar } from '../shared/AdminSubTabBar';
 import { RuleTester, WorkflowInstancesModule } from './CentralRulesUI';
 import { DEPARTMENTS, getDeptAccentColorVar } from '../../../config/departments';
-import { Plus, AlertCircle, Trash2, ChevronUp, ChevronDown } from 'lucide-react';
+import { Plus, AlertCircle, Trash2, ChevronUp, ChevronDown, CheckCircle2, RefreshCw, ShieldCheck, Loader2 } from 'lucide-react';
 import { SectionCard } from '../../FrontOffice/ui';
 import { button } from '../../FrontOffice/brandTheme';
 
@@ -277,7 +277,7 @@ const WorkflowForm: React.FC<{ form: Record<string, any>; setForm: React.Dispatc
   );
 };
 
-export const DepartmentsModule: React.FC = () => {
+export const DepartmentsModule: React.FC<{ embedded?: boolean }> = ({ embedded }) => {
   const [syncedDepartments, setSyncedDepartures] = useState<Set<string>>(new Set());
   const [, setLoading] = useState(true);
   const [importing, setImporting] = useState(false);
@@ -372,6 +372,7 @@ export const DepartmentsModule: React.FC = () => {
       )}
 
       <ResourceManager
+        embedded={embedded}
         title="Department Management"
         description="Define the organisational departments used for cost centres, approvals and reporting."
         resource="departments"
@@ -391,8 +392,9 @@ export const DepartmentsModule: React.FC = () => {
   );
 };
 
-export const FeatureFlagsModule: React.FC = () => (
+export const FeatureFlagsModule: React.FC<{ embedded?: boolean }> = ({ embedded }) => (
   <ResourceManager
+    embedded={embedded}
     title="Feature Flags"
     description="Switch features on or off per environment and roll them out gradually."
     resource="feature-flags"
@@ -478,10 +480,11 @@ export const WorkflowCenterModule: React.FC = () => {
   );
 };
 
-export const BusinessRulesModule: React.FC = () => (
+export const BusinessRulesModule: React.FC<{ embedded?: boolean }> = ({ embedded }) => (
   <div className="space-y-6 animate-fade-in">
     <RuleTester />
     <ResourceManager
+    embedded={embedded}
     title="Business Rules"
     description="Priority-ordered rules for booking and procurement validation."
     resource="business-rules"
@@ -567,26 +570,71 @@ export const TemplatesModule: React.FC = () => {
   );
 };
 
-export const PaymentGatewayModule: React.FC = () => (
-  <ResourceManager
-    title="Payment Gateway Configuration"
-    description="Payment gateway connections using vault or environment secret references."
-    resource="payment-gateways"
-    itemLabel="gateway"
-    fields={[
-      { key: 'name', label: 'Name', required: true },
-      { key: 'provider', label: 'Provider', required: true, placeholder: 'stripe, chapa, telebirr…' },
-      { key: 'mode', label: 'Mode', type: 'select', default: 'sandbox', options: [{ value: 'sandbox', label: 'Sandbox' }, { value: 'live', label: 'Live' }] },
-      { key: 'currencies', label: 'Currencies', type: 'list', placeholder: 'USD, ETB' },
-      { key: 'feePercent', label: 'Fee %', type: 'number', default: 0 },
-      yesNo('enabled', 'Enabled', false),
-      { key: 'publicKey', label: 'Public key', table: false },
-      { key: 'secretRef', label: 'Secret reference', table: false, placeholder: 'STRIPE_SECRET_KEY' },
-      { key: 'webhookUrl', label: 'Webhook URL', table: false },
-    ]}
-    stats={items => [{ label: 'Gateways', value: items.length }, { label: 'Enabled', value: count(items, i => i.enabled) }, { label: 'Live', value: count(items, i => i.mode === 'live') }]}
-  />
-);
+const ActionFeedbackBanner: React.FC<{ feedback: { ok: boolean; text: string } | null }> = ({ feedback }) =>
+  feedback ? (
+    <div className={`flex items-center gap-2 p-3 rounded-xl text-sm font-medium border ${
+      feedback.ok
+        ? 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-500/20'
+        : 'bg-rose-50 dark:bg-rose-500/10 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-500/20'
+    }`}>
+      {feedback.ok ? <CheckCircle2 size={16} /> : <AlertCircle size={16} />}
+      <span>{feedback.text}</span>
+    </div>
+  ) : null;
+
+export const PaymentGatewayModule: React.FC<{ embedded?: boolean }> = ({ embedded }) => {
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [feedback, setFeedback] = useState<{ ok: boolean; text: string } | null>(null);
+
+  const verifyGateway = async (item: any) => {
+    setBusyId(item.id);
+    setFeedback(null);
+    try {
+      const res = await fetch(`/api/admin/control/payment-gateways/${item.id}/verify`, { method: 'POST', headers: adminAuthHeaders() });
+      const data = await res.json().catch(() => ({}));
+      setFeedback({ ok: Boolean(data.ok), text: `${item.name}: ${data.message || data.error || 'Verification complete'}` });
+    } catch (e: any) {
+      setFeedback({ ok: false, text: `${item.name}: ${e?.message || 'Verification failed'}` });
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <ActionFeedbackBanner feedback={feedback} />
+      <ResourceManager
+        embedded={embedded}
+        title="Payment Gateway Configuration"
+        description="Payment gateway connections using vault or environment secret references."
+        resource="payment-gateways"
+        itemLabel="gateway"
+        fields={[
+          { key: 'name', label: 'Name', required: true },
+          { key: 'provider', label: 'Provider', required: true, placeholder: 'stripe, chapa, telebirr…' },
+          { key: 'mode', label: 'Mode', type: 'select', default: 'sandbox', options: [{ value: 'sandbox', label: 'Sandbox' }, { value: 'live', label: 'Live' }] },
+          { key: 'currencies', label: 'Currencies', type: 'list', placeholder: 'USD, ETB' },
+          { key: 'feePercent', label: 'Fee %', type: 'number', default: 0 },
+          yesNo('enabled', 'Enabled', false),
+          { key: 'publicKey', label: 'Public key', table: false },
+          { key: 'secretRef', label: 'Secret reference', table: false, placeholder: 'STRIPE_SECRET_KEY' },
+          { key: 'webhookUrl', label: 'Webhook URL', table: false },
+        ]}
+        stats={items => [{ label: 'Gateways', value: items.length }, { label: 'Enabled', value: count(items, i => i.enabled) }, { label: 'Live', value: count(items, i => i.mode === 'live') }]}
+        renderRowActions={item => (
+          <button
+            onClick={() => verifyGateway(item)}
+            disabled={busyId === item.id}
+            className="p-1.5 text-gray-400 hover:text-emerald-600 dark:hover:text-emerald-400 disabled:opacity-40"
+            title="Verify secret & webhook"
+          >
+            {busyId === item.id ? <Loader2 size={15} className="animate-spin" /> : <ShieldCheck size={15} />}
+          </button>
+        )}
+      />
+    </div>
+  );
+};
 
 const deviceFields: ResourceField[] = [
   { key: 'name', label: 'Name', required: true },
@@ -649,8 +697,9 @@ export const DeviceModule: React.FC = () => {
   );
 };
 
-export const RateTaxModule: React.FC = () => (
+export const RateTaxModule: React.FC<{ embedded?: boolean }> = ({ embedded }) => (
   <ResourceManager
+    embedded={embedded}
     title="Rate & Tax Configuration"
     description="Central VAT, service charge, and tax rules by property or outlet."
     resource="tax-rules"
@@ -672,8 +721,9 @@ export const RateTaxModule: React.FC = () => (
   />
 );
 
-export const LicensingModule: React.FC = () => (
+export const LicensingModule: React.FC<{ embedded?: boolean }> = ({ embedded }) => (
   <ResourceManager
+    embedded={embedded}
     title="Licensing"
     description="Licence keys, plans, seat counts and licensed modules."
     resource="licenses"
@@ -692,53 +742,121 @@ export const LicensingModule: React.FC = () => (
   />
 );
 
-export const IdentityProvidersModule: React.FC = () => (
-  <ResourceManager
-    title="Identity & Authentication"
-    description="External SSO identity providers and MFA enforcement."
-    resource="identity-providers"
-    itemLabel="provider"
-    fields={[
-      { key: 'name', label: 'Name', required: true },
-      { key: 'providerType', label: 'Type', type: 'select', default: 'oidc', options: ['oidc', 'saml', 'ldap', 'oauth2'].map(v => ({ value: v, label: v })) },
-      { key: 'issuerUrl', label: 'Issuer URL' },
-      { key: 'clientId', label: 'Client ID', table: false },
-      { key: 'secretRef', label: 'Client secret reference', table: false },
-      { key: 'emailDomains', label: 'Email domains', type: 'list', placeholder: 'hotel.com' },
-      yesNo('mfaRequired', 'Require MFA', false),
-      yesNo('enabled', 'Enabled', false),
-    ]}
-    stats={items => [{ label: 'Providers', value: items.length }, { label: 'Enabled', value: count(items, i => i.enabled) }]}
-  />
-);
+export const IdentityProvidersModule: React.FC<{ embedded?: boolean }> = ({ embedded }) => {
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [feedback, setFeedback] = useState<{ ok: boolean; text: string } | null>(null);
 
-export const ChannelManagerModule: React.FC = () => (
-  <ResourceManager
-    title="Channel Manager Configuration"
-    description="OTA, GDS, and bed-bank distribution channel connections."
-    resource="channels"
-    apiBase="/api/channels"
-    listKey="channels"
-    snakeBody
-    noDelete
-    itemLabel="channel"
-    fields={[
-      { key: 'channelName', label: 'Channel name', required: true, placeholder: 'Booking.com', readOnly: true },
-      { key: 'channelCode', label: 'Code', required: true, placeholder: 'BOOKINGCOM', help: 'Unique short code, e.g. BOOKINGCOM. Stored uppercase; cannot be changed later.', readOnly: true },
-      { key: 'channelType', label: 'Type', type: 'select', default: 'ota', readOnly: true, options: ['ota', 'gds', 'bed_bank', 'direct', 'other'].map(v => ({ value: v, label: v.replace(/_/g, ' ') })) },
-      { key: 'apiEndpoint', label: 'API endpoint', placeholder: 'https://', readOnly: true },
-      { key: 'apiVersion', label: 'API version', table: false, readOnly: true },
-      { key: 'credentials', label: 'Credentials (JSON)', type: 'json', table: false, readOnly: true, help: 'JSON object of API credentials. Set at creation; rotate via the Revenue portal.' },
-      { key: 'syncIntervalMinutes', label: 'Sync every (min)', type: 'number' },
-      { key: 'lastSyncStatus', label: 'Last sync', readOnly: true, table: true },
-      yesNo('active', 'Active'),
-      yesNo('testMode', 'Test mode', true),
-      yesNo('rateParityEnabled', 'Rate parity', true),
-      { key: 'rateParityThreshold', label: 'Parity threshold %', type: 'number', table: false },
-      yesNo('inventorySyncEnabled', 'Inventory sync', true),
-      yesNo('bookingSyncEnabled', 'Booking sync', true),
-      { key: 'webhookUrl', label: 'Webhook URL', table: false },
-    ]}
-    stats={items => [{ label: 'Channels', value: items.length }, { label: 'Active', value: count(items, i => i.active) }]}
-  />
-);
+  const testProvider = async (item: any) => {
+    setBusyId(item.id);
+    setFeedback(null);
+    try {
+      const res = await fetch(`/api/admin/control/identity-providers/${item.id}/test`, { method: 'POST', headers: adminAuthHeaders() });
+      const data = await res.json().catch(() => ({}));
+      setFeedback({ ok: Boolean(data.ok), text: `${item.name}: ${data.message || data.error || 'Test completed'}` });
+    } catch (e: any) {
+      setFeedback({ ok: false, text: `${item.name}: ${e?.message || 'Test failed'}` });
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <ActionFeedbackBanner feedback={feedback} />
+      <ResourceManager
+        embedded={embedded}
+        title="Identity & Authentication"
+        description="External SSO identity providers and MFA enforcement."
+        resource="identity-providers"
+        itemLabel="provider"
+        fields={[
+          { key: 'name', label: 'Name', required: true },
+          { key: 'providerType', label: 'Type', type: 'select', default: 'oidc', options: ['oidc', 'saml', 'ldap', 'oauth2'].map(v => ({ value: v, label: v })) },
+          { key: 'issuerUrl', label: 'Issuer URL' },
+          { key: 'clientId', label: 'Client ID', table: false },
+          { key: 'secretRef', label: 'Client secret reference', table: false },
+          { key: 'emailDomains', label: 'Email domains', type: 'list', placeholder: 'hotel.com' },
+          yesNo('mfaRequired', 'Require MFA', false),
+          yesNo('enabled', 'Enabled', false),
+        ]}
+        stats={items => [{ label: 'Providers', value: items.length }, { label: 'Enabled', value: count(items, i => i.enabled) }]}
+        renderRowActions={item => (
+          <button
+            onClick={() => testProvider(item)}
+            disabled={busyId === item.id}
+            className="p-1.5 text-gray-400 hover:text-emerald-600 dark:hover:text-emerald-400 disabled:opacity-40"
+            title="Test SSO / OIDC discovery"
+          >
+            {busyId === item.id ? <Loader2 size={15} className="animate-spin" /> : <ShieldCheck size={15} />}
+          </button>
+        )}
+      />
+    </div>
+  );
+};
+
+export const ChannelManagerModule: React.FC<{ embedded?: boolean }> = ({ embedded }) => {
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [feedback, setFeedback] = useState<{ ok: boolean; text: string } | null>(null);
+
+  const syncChannel = async (item: any, reload: () => Promise<void>) => {
+    setBusyId(item.id);
+    setFeedback(null);
+    try {
+      const res = await fetch(`/api/channels/${item.id}/sync-inventory`, { method: 'POST', headers: adminAuthHeaders() });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || `Sync failed (${res.status})`);
+      setFeedback({ ok: true, text: `${item.channelName || item.channelCode}: Inventory sync completed` });
+      await reload();
+    } catch (e: any) {
+      setFeedback({ ok: false, text: `${item.channelName || item.channelCode}: ${e?.message || 'Sync failed'}` });
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <ActionFeedbackBanner feedback={feedback} />
+      <ResourceManager
+        embedded={embedded}
+        title="Channel Manager Configuration"
+        description="OTA, GDS, and bed-bank distribution channel connections."
+        resource="channels"
+        apiBase="/api/channels"
+        listKey="channels"
+        snakeBody
+        noDelete
+        itemLabel="channel"
+        fields={[
+          { key: 'channelName', label: 'Channel name', required: true, placeholder: 'Booking.com', readOnly: true },
+          { key: 'channelCode', label: 'Code', required: true, placeholder: 'BOOKINGCOM', help: 'Unique short code, e.g. BOOKINGCOM. Stored uppercase; cannot be changed later.', readOnly: true },
+          { key: 'channelType', label: 'Type', type: 'select', default: 'ota', readOnly: true, options: ['ota', 'gds', 'bed_bank', 'direct', 'other'].map(v => ({ value: v, label: v.replace(/_/g, ' ') })) },
+          { key: 'apiEndpoint', label: 'API endpoint', placeholder: 'https://', readOnly: true },
+          { key: 'apiVersion', label: 'API version', table: false, readOnly: true },
+          { key: 'credentials', label: 'Credentials (JSON)', type: 'json', table: false, readOnly: true, help: 'JSON object of API credentials. Set at creation; rotate via the Revenue portal.' },
+          { key: 'syncIntervalMinutes', label: 'Sync every (min)', type: 'number' },
+          { key: 'lastSyncStatus', label: 'Last sync', readOnly: true, table: true },
+          yesNo('active', 'Active'),
+          yesNo('testMode', 'Test mode', true),
+          yesNo('rateParityEnabled', 'Rate parity', true),
+          { key: 'rateParityThreshold', label: 'Parity threshold %', type: 'number', table: false },
+          yesNo('inventorySyncEnabled', 'Inventory sync', true),
+          yesNo('bookingSyncEnabled', 'Booking sync', true),
+          { key: 'webhookUrl', label: 'Webhook URL', table: false },
+        ]}
+        stats={items => [{ label: 'Channels', value: items.length }, { label: 'Active', value: count(items, i => i.active) }]}
+        renderRowActions={(item, reload) => (
+          <button
+            onClick={() => syncChannel(item, reload)}
+            disabled={busyId === item.id || !item.active}
+            className="p-1.5 text-gray-400 hover:text-indigo-600 dark:hover:text-indigo-400 disabled:opacity-40"
+            title="Sync inventory now"
+          >
+            <RefreshCw size={15} className={busyId === item.id ? 'animate-spin' : ''} />
+          </button>
+        )}
+      />
+    </div>
+  );
+};

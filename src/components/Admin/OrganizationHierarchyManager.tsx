@@ -47,7 +47,7 @@ interface FootprintItem { portal: string; metric: string; table: string; count: 
 const fmtAddress = (a: Record<string, string> | null | undefined) =>
   a ? [a.street, a.city, a.country].filter(Boolean).join(', ') : '';
 
-const OrganizationHierarchyManager: React.FC = () => {
+const OrganizationHierarchyManager: React.FC<{ embedded?: boolean }> = ({ embedded }) => {
   const [organizations, setOrganizations] = useState<Organization[]>([]);
   const [properties, setProperties] = useState<Property[]>([]);
   const [footprints, setFootprints] = useState<Record<string, FootprintItem[]>>({});
@@ -104,16 +104,25 @@ const OrganizationHierarchyManager: React.FC = () => {
 
   return (
     <div className="space-y-6 animate-fade-in">
-      <PageHeader
-        title="Organization Structure"
-        subtitle="Tree view of organizations and their properties — edit details in Tenant & Property"
-        icon={Building2}
-        actions={
+      {embedded ? (
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <p className="text-sm text-gray-500 dark:text-gray-400">Tree view of organizations and their properties — edit details in Tenant & Property</p>
           <button onClick={loadData} className={button.secondary}>
             <RefreshCw size={16} className={loading ? 'animate-spin' : ''} /> Refresh
           </button>
-        }
-      />
+        </div>
+      ) : (
+        <PageHeader
+          title="Organization Structure"
+          subtitle="Tree view of organizations and their properties — edit details in Tenant & Property"
+          icon={Building2}
+          actions={
+            <button onClick={loadData} className={button.secondary}>
+              <RefreshCw size={16} className={loading ? 'animate-spin' : ''} /> Refresh
+            </button>
+          }
+        />
+      )}
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <StatCard title="Organizations" value={`${totals.activeOrgs} active / ${organizations.length}`} icon={Building2} tone="accent" />

@@ -30,7 +30,7 @@ export default function AttributeManager({ title, items, onUpdate }: AttributeMa
   return (
     <div className="bg-slate-50 dark:bg-slate-900/50 rounded-2xl p-5 border border-slate-100 dark:border-slate-800 space-y-4">
       <div className="flex items-center justify-between">
-        <h4 className="text-[10px] font-mono font-black uppercase text-slate-700 dark:text-slate-300 tracking-widest">{title}</h4>
+        <h4 className="text-[10px] font-mono font-bold uppercase text-slate-700 dark:text-slate-300 tracking-widest">{title}</h4>
         <span className="text-[9px] font-bold text-slate-400 bg-slate-200 dark:bg-slate-800 px-2 py-0.5 rounded-full">{items.length}</span>
       </div>
       

@@ -71,7 +71,7 @@ const JOB_TYPES = [
   'exec_alert_eval',
 ];
 
-const SchedulerManager: React.FC = () => {
+const SchedulerManager: React.FC<{ embedded?: boolean }> = ({ embedded }) => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [jobs, setJobs] = useState<ScheduledJob[]>([]);
@@ -164,23 +164,32 @@ const SchedulerManager: React.FC = () => {
     { title: 'Failed (24h)', value: stats?.failed24h ?? '—', icon: AlertTriangle, tone: 'danger' as const },
   ];
 
+  const schedulerActions = (
+    <div className="flex items-center gap-2">
+      <button onClick={loadData} disabled={loading} className={button.secondary}>
+        <RefreshCw size={16} className={loading ? 'animate-spin' : ''} /> Refresh
+      </button>
+      <button onClick={() => setShowCreateModal(true)} className={button.primary}>
+        <Plus size={16} /> New Job
+      </button>
+    </div>
+  );
+
   return (
     <div className="space-y-6 animate-fade-in">
-      <PageHeader
-        title="Scheduler & Job Engine"
-        subtitle="Live cron job runner — night audit, allotment release, reports, and backups"
-        icon={Calendar}
-        actions={
-          <div className="flex items-center gap-2">
-            <button onClick={loadData} disabled={loading} className={button.secondary}>
-              <RefreshCw size={16} className={loading ? 'animate-spin' : ''} /> Refresh
-            </button>
-            <button onClick={() => setShowCreateModal(true)} className={button.primary}>
-              <Plus size={16} /> New Job
-            </button>
-          </div>
-        }
-      />
+      {embedded ? (
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <p className="text-sm text-gray-500 dark:text-gray-400">Live cron job runner — night audit, allotment release, reports, and backups</p>
+          <div className="shrink-0">{schedulerActions}</div>
+        </div>
+      ) : (
+        <PageHeader
+          title="Scheduler & Job Engine"
+          subtitle="Live cron job runner — night audit, allotment release, reports, and backups"
+          icon={Calendar}
+          actions={schedulerActions}
+        />
+      )}
 
       {error && (
         <div className="p-4 rounded-xl text-sm font-bold flex items-center gap-2 bg-rose-50 dark:bg-rose-500/10 text-rose-700 dark:text-rose-400 border border-rose-100 dark:border-rose-500/20">

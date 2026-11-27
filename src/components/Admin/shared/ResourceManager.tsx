@@ -53,6 +53,8 @@ export interface ResourceManagerProps {
    *  state (same keys/types as `fields`) and a setter; replaces the default
    *  field grid. `fields` still drive the table columns and save payload. */
   renderForm?: React.ComponentType<{ form: Record<string, any>; setForm: React.Dispatch<React.SetStateAction<Record<string, any>>>; editing: any | 'new' }>;
+  /** Optional extra row action buttons rendered before Edit/Delete. */
+  renderRowActions?: (item: any, reload: () => Promise<void>) => React.ReactNode;
 }
 
 export const adminAuthHeaders = (): Record<string, string> => {
@@ -88,6 +90,18 @@ const fromForm = (fields: ResourceField[], form: Record<string, any>) => {
   return body;
 };
 
+const BADGE_KEYS = new Set(['status', 'mode', 'environment', 'taxType', 'providerType', 'channelType', 'lastSyncStatus', 'plan']);
+
+const badgeToneFor = (v: string): 'success' | 'danger' | 'warning' | 'info' | 'accent' | 'neutral' => {
+  const s = v.toLowerCase();
+  if (['active', 'online', 'live', 'success', 'completed', 'synced'].includes(s)) return 'success';
+  if (['offline', 'inactive', 'suspended', 'expired', 'failed', 'error', 'retired'].includes(s)) return 'danger';
+  if (['sandbox', 'draft', 'maintenance', 'pending', 'warning', 'staging'].includes(s)) return 'warning';
+  if (['production'].includes(s)) return 'accent';
+  if (['oidc', 'saml', 'ldap', 'oauth2', 'vat', 'ota', 'gds'].includes(s)) return 'info';
+  return 'neutral';
+};
+
 const display = (fd: ResourceField, v: any): string => {
   if (v === null || v === undefined || v === '') return '—';
   if (typeof v === 'object' && Object.keys(v).length === 0) return '—';
@@ -109,7 +123,7 @@ const display = (fd: ResourceField, v: any): string => {
  */
 const camelKeys = (row: Record<string, any>) => Object.fromEntries(Object.entries(row).map(([k, v]) => [k.replace(/_([a-z])/g, (_, l) => l.toUpperCase()), v]));
 
-export function ResourceManager({ title, description, resource, fields, itemLabel = 'record', stats, apiBase, listKey = 'items', readOnlyCreate, noDelete, noEdit, snakeBody, embedded, renderForm }: ResourceManagerProps) {
+export function ResourceManager({ title, description, resource, fields, itemLabel = 'record', stats, apiBase, listKey = 'items', readOnlyCreate, noDelete, noEdit, snakeBody, embedded, renderForm, renderRowActions }: ResourceManagerProps) {
   const base = apiBase ?? `/api/admin/control/${resource}`;
   const [items, setItems] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -295,10 +309,13 @@ export function ResourceManager({ title, description, resource, fields, itemLabe
                         <button onClick={() => toggle(item, c.key)} className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${item[c.key] ? 'bg-emerald-500' : 'bg-slate-300 dark:bg-slate-600'}`} aria-label={`Toggle ${c.label}`}>
                           <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${item[c.key] ? 'translate-x-4' : 'translate-x-0.5'}`} />
                         </button>
+                      ) : BADGE_KEYS.has(c.key) && item[c.key] ? (
+                        <Badge tone={badgeToneFor(String(item[c.key]))}>{display(c, item[c.key])}</Badge>
                       ) : display(c, item[c.key])}
                     </td>
                   ))}
                   <td className="px-4 py-3 whitespace-nowrap text-right">
+                    {renderRowActions && renderRowActions(item, load)}
                     {!noEdit && <button onClick={() => openEditor(item)} className="p-1.5 text-gray-400 hover:text-indigo-600 dark:hover:text-indigo-400" title="Edit"><Pencil size={15} /></button>}
                     {!noDelete && <button onClick={() => remove(item)} className="p-1.5 text-gray-400 hover:text-rose-600 dark:hover:text-rose-400" title="Delete"><Trash2 size={15} /></button>}
                   </td>
@@ -313,7 +330,7 @@ export function ResourceManager({ title, description, resource, fields, itemLabe
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => !saving && setEditing(null)}>
           <div className={`w-full ${renderForm ? 'max-w-2xl' : 'max-w-xl'} max-h-[90vh] overflow-y-auto bg-white dark:bg-slate-900 rounded-2xl p-6 shadow-xl`} onClick={e => e.stopPropagation()}>
             <div className="flex items-center justify-between mb-4">
-              <h3 className="text-lg font-black text-gray-900 dark:text-white">{editing === 'new' ? `Add ${itemLabel}` : `Edit ${itemLabel}`}</h3>
+              <h3 className="text-lg font-bold text-gray-900 dark:text-white">{editing === 'new' ? `Add ${itemLabel}` : `Edit ${itemLabel}`}</h3>
               <button onClick={() => setEditing(null)} className="text-gray-400 hover:text-gray-700 dark:hover:text-gray-300"><X size={18} /></button>
             </div>
             {renderForm ? React.createElement(renderForm, { form, setForm, editing }) : (

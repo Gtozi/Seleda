@@ -298,7 +298,7 @@ export default function RoomTypeManager({ roomTypes, onUpdate }: RoomTypeManager
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <h4 className="text-[10px] font-mono font-black uppercase text-slate-700 dark:text-slate-300 tracking-widest">Room Types</h4>
+        <h4 className="text-[10px] font-mono font-bold uppercase text-slate-700 dark:text-slate-300 tracking-widest">Room Types</h4>
         <div className="flex items-center gap-2">
           <span className="text-[9px] font-bold text-slate-400 bg-slate-200 dark:bg-slate-800 px-2 py-0.5 rounded-full">{roomTypes.length}</span>
           <button 
@@ -338,7 +338,7 @@ export default function RoomTypeManager({ roomTypes, onUpdate }: RoomTypeManager
                 <div className="flex-1 min-w-0">
                   <div className="flex items-start justify-between gap-2">
                     <div>
-                      <h5 className="text-xs font-black text-slate-900 dark:text-white uppercase">{rt.name}</h5>
+                      <h5 className="text-xs font-bold text-slate-900 dark:text-white uppercase">{rt.name}</h5>
                       <p className="text-[10px] text-slate-500 line-clamp-2 mt-1">{rt.description}</p>
                     </div>
                     <div className="flex gap-1">

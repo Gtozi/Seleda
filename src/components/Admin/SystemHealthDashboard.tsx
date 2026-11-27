@@ -38,7 +38,7 @@ interface FailedJob {
   scheduled_jobs?: { name: string } | null;
 }
 
-export default function SystemHealthDashboard() {
+export default function SystemHealthDashboard({ embedded }: { embedded?: boolean } = {}) {
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [latencyMs, setLatencyMs] = useState<number | null>(null);
   const [events, setEvents] = useState<AuditEvent[]>([]);
@@ -154,25 +154,34 @@ export default function SystemHealthDashboard() {
     },
   ];
 
+  const healthActions = (
+    <>
+      {lastChecked && (
+        <span className="text-xs text-gray-500 dark:text-gray-400 flex items-center gap-1">
+          <Clock size={12} /> Last checked {lastChecked.toLocaleTimeString()}
+        </span>
+      )}
+      <button onClick={load} disabled={loading} className={button.secondary}>
+        <RefreshCw size={16} className={loading ? 'animate-spin' : ''} /> Refresh
+      </button>
+    </>
+  );
+
   return (
-    <div className="space-y-6 animate-fade-in pt-4">
-      <PageHeader
-        title="System Health & Monitoring"
-        subtitle="Live API status, database health, error logs, and scheduler monitoring"
-        icon={Activity}
-        actions={
-          <>
-            {lastChecked && (
-              <span className="text-xs text-gray-500 dark:text-gray-400 flex items-center gap-1">
-                <Clock size={12} /> Last checked {lastChecked.toLocaleTimeString()}
-              </span>
-            )}
-            <button onClick={load} disabled={loading} className={button.secondary}>
-              <RefreshCw size={16} className={loading ? 'animate-spin' : ''} /> Refresh
-            </button>
-          </>
-        }
-      />
+    <div className="space-y-6 animate-fade-in">
+      {embedded ? (
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <p className="text-sm text-gray-500 dark:text-gray-400">Live API status, database health, error logs, and scheduler monitoring</p>
+          <div className="flex items-center gap-2 shrink-0">{healthActions}</div>
+        </div>
+      ) : (
+        <PageHeader
+          title="System Health & Monitoring"
+          subtitle="Live API status, database health, error logs, and scheduler monitoring"
+          icon={Activity}
+          actions={healthActions}
+        />
+      )}
 
       {error && (
         <div className="p-4 rounded-xl text-sm font-bold flex items-center gap-2 bg-rose-50 dark:bg-rose-500/10 text-rose-700 dark:text-rose-400 border border-rose-100 dark:border-rose-500/20">

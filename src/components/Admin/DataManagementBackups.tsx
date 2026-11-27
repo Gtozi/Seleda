@@ -56,16 +56,18 @@ const CRON_PRESETS = [
   { value: '0 */6 * * *', label: 'Every 6 hours' },
 ];
 
-export default function DataManagementBackups() {
+export default function DataManagementBackups({ embedded }: { embedded?: boolean } = {}) {
   const [activeTab, setActiveTab] = useState<BackupTab>('backups');
 
   return (
     <div className="space-y-6 animate-fade-in">
-      <PageHeader
-        title="Data Management & Backups"
-        subtitle="Live backup jobs, schedules, retention policies, and data exports"
-        icon={Database}
-      />
+      {!embedded && (
+        <PageHeader
+          title="Data Management & Backups"
+          subtitle="Live backup jobs, schedules, retention policies, and data exports"
+          icon={Database}
+        />
+      )}
       <div>
         <AdminSubTabBar tabs={TAB_META} activeTab={activeTab} onChange={setActiveTab} />
       </div>

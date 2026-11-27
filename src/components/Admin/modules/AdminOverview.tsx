@@ -1,18 +1,20 @@
 import React, { useCallback, useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   Users, Shield, Building2, Network, ToggleRight, Cpu, KeyRound,
   CreditCard, Activity, AlertTriangle, DatabaseBackup, Clock, RefreshCw,
-  Loader2, LayoutDashboard,
+  Loader2, LayoutDashboard, ArrowRight,
   type LucideIcon,
 } from 'lucide-react';
 import StatCard from '../../FrontOffice/StatCard';
 import { PageHeader, SectionCard } from '../../FrontOffice/ui';
-import { button } from '../../FrontOffice/brandTheme';
+import { button, layout } from '../../FrontOffice/brandTheme';
 import { adminAuthHeaders } from '../shared/ResourceManager';
 
 type Stat = { label: string; value: string; icon: LucideIcon; tone?: 'accent' | 'success' | 'warning' | 'danger' | 'info' | 'neutral' };
 
 const AdminOverview: React.FC = () => {
+  const navigate = useNavigate();
   const [data, setData] = useState<any | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -36,24 +38,24 @@ const AdminOverview: React.FC = () => {
 
   const n = (v: number | null | undefined) => (v === null || v === undefined ? '—' : String(v));
 
-  const groups: { title: string; tone: 'accent' | 'info' | 'success' | 'warning'; stats: Stat[] }[] = data ? [
-    { title: 'Identity & Access', tone: 'accent', stats: [
+  const groups: { title: string; icon: LucideIcon; route: string; tone: 'accent' | 'info' | 'success' | 'warning'; stats: Stat[] }[] = data ? [
+    { title: 'Identity & Access', icon: Users, route: '/erp/admin/user_security', tone: 'accent', stats: [
       { label: 'Active Users', value: n(data.activeUsers), icon: Users, tone: 'accent' },
       { label: 'Total Users', value: n(data.users), icon: Users, tone: 'neutral' },
       { label: 'Custom Roles', value: n(data.roles), icon: Shield, tone: 'info' },
       { label: 'Active Licences', value: n(data.licensesActive), icon: KeyRound, tone: 'success' },
     ] },
-    { title: 'Organisation', tone: 'info', stats: [
+    { title: 'Organisation', icon: Building2, route: '/erp/admin/tenant_property', tone: 'info', stats: [
       { label: 'Properties', value: n(data.properties), icon: Building2, tone: 'accent' },
       { label: 'Organisations', value: n(data.organizations), icon: Network, tone: 'neutral' },
       { label: 'Active Departments', value: n(data.departments), icon: Network, tone: 'info' },
     ] },
-    { title: 'Platform', tone: 'success', stats: [
+    { title: 'Platform', icon: Cpu, route: '/erp/admin/portal_management', tone: 'success', stats: [
       { label: 'Feature Flags On', value: `${n(data.featureFlags?.enabled)} / ${n(data.featureFlags?.total)}`, icon: ToggleRight, tone: 'success' },
       { label: 'Devices Online', value: `${n(data.devices?.online)} / ${n(data.devices?.total)}`, icon: Cpu, tone: 'info' },
       { label: 'Payment Gateways', value: n(data.paymentGatewaysEnabled), icon: CreditCard, tone: 'warning' },
     ] },
-    { title: 'Operations (24h)', tone: 'warning', stats: [
+    { title: 'Operations (24h)', icon: Activity, route: '/erp/admin/monitoring_health', tone: 'warning', stats: [
       { label: 'Audit Events', value: n(data.auditEvents24h), icon: Activity, tone: 'accent' },
       { label: 'Failed / Denied', value: n(data.failedEvents24h), icon: AlertTriangle, tone: (data.failedEvents24h ?? 0) > 0 ? 'danger' : 'success' },
       { label: 'Backups', value: n(data.backups), icon: DatabaseBackup, tone: 'info' },
@@ -62,7 +64,7 @@ const AdminOverview: React.FC = () => {
   ] : [];
 
   return (
-    <div className="space-y-6 animate-fade-in">
+    <div className={`${layout.sectionStack} animate-fade-in`}>
       <PageHeader
         title="Executive Dashboard"
         subtitle="Live system administration overview across identity, organisation, platform, and operations"
@@ -84,8 +86,19 @@ const AdminOverview: React.FC = () => {
       )}
 
       {groups.map(g => (
-        <SectionCard key={g.title} title={g.title} icon={LayoutDashboard} tone={g.tone} pad="none">
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 p-5">
+        <SectionCard
+          key={g.title}
+          title={g.title}
+          icon={g.icon}
+          tone={g.tone}
+          pad="none"
+          actions={
+            <button onClick={() => navigate(g.route)} className={button.ghost}>
+              Manage <ArrowRight size={14} />
+            </button>
+          }
+        >
+          <div className={`${layout.kpiGrid} p-5`}>
             {g.stats.map(s => (
               <StatCard key={s.label} title={s.label} value={s.value} icon={s.icon} tone={s.tone} />
             ))}

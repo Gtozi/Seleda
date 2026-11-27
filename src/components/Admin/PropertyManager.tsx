@@ -65,7 +65,7 @@ const authHeaders = (): Record<string, string> => {
   return { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) };
 };
 
-const PropertyManager: React.FC = () => {
+const PropertyManager: React.FC<{ embedded?: boolean }> = ({ embedded }) => {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -183,26 +183,35 @@ const PropertyManager: React.FC = () => {
     return matchesSearch && matchesStatus;
   }), [properties, search, statusFilter, organizations]);
 
+  const propActions = (
+    <>
+      <button onClick={loadData} className={button.secondary}>
+        <RefreshCw size={16} className={loading ? 'animate-spin' : ''} /> Refresh
+      </button>
+      <button onClick={() => openProp()} disabled={organizations.length === 0} className={button.primary}>
+        <Plus size={16} /> Add Property
+      </button>
+      <button onClick={() => openOrg()} className={button.primary}>
+        <Plus size={16} /> Add Organization
+      </button>
+    </>
+  );
+
   return (
     <div className="space-y-6 animate-fade-in">
-      <PageHeader
-        title="Organization & Property Hierarchy"
-        subtitle="Manage organizations, properties, and live cross-portal footprints."
-        icon={Building2}
-        actions={
-          <>
-            <button onClick={loadData} className={button.secondary}>
-              <RefreshCw size={16} className={loading ? 'animate-spin' : ''} /> Refresh
-            </button>
-            <button onClick={() => openProp()} disabled={organizations.length === 0} className={button.primary}>
-              <Plus size={16} /> Add Property
-            </button>
-            <button onClick={() => openOrg()} className={button.primary}>
-              <Plus size={16} /> Add Organization
-            </button>
-          </>
-        }
-      />
+      {embedded ? (
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <p className="text-sm text-gray-500 dark:text-gray-400">Manage organizations, properties, and live cross-portal footprints.</p>
+          <div className="flex flex-wrap items-center gap-2 shrink-0">{propActions}</div>
+        </div>
+      ) : (
+        <PageHeader
+          title="Organization & Property Hierarchy"
+          subtitle="Manage organizations, properties, and live cross-portal footprints."
+          icon={Building2}
+          actions={propActions}
+        />
+      )}
 
       {error && (
         <div className="p-4 bg-red-50 dark:bg-red-500/10 border border-red-100 dark:border-red-500/20 rounded-2xl">

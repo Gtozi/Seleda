@@ -34,7 +34,7 @@ const SYNC_TONE: Record<string, 'success' | 'info' | 'warning' | 'danger' | 'neu
   pending: 'neutral',
 };
 
-export default function SystemIntegrationChannel() {
+export default function SystemIntegrationChannel({ embedded }: { embedded?: boolean } = {}) {
   const [channels, setChannels] = useState<ChannelConnection[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -95,16 +95,25 @@ export default function SystemIntegrationChannel() {
 
   return (
     <div className="space-y-6 animate-fade-in">
-      <PageHeader
-        title="Integration Hub"
-        subtitle="Manage OTA & GDS channel sync, rate parity, inventory availability, and booking feeds"
-        icon={Share2}
-        actions={
+      {embedded ? (
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <p className="text-sm text-gray-500 dark:text-gray-400">Manage OTA & GDS channel sync, rate parity, inventory availability, and booking feeds</p>
           <button onClick={load} disabled={loading} className={button.secondary}>
             <RefreshCw size={16} className={loading ? 'animate-spin' : ''} /> Refresh
           </button>
-        }
-      />
+        </div>
+      ) : (
+        <PageHeader
+          title="Integration Hub"
+          subtitle="Manage OTA & GDS channel sync, rate parity, inventory availability, and booking feeds"
+          icon={Share2}
+          actions={
+            <button onClick={load} disabled={loading} className={button.secondary}>
+              <RefreshCw size={16} className={loading ? 'animate-spin' : ''} /> Refresh
+            </button>
+          }
+        />
+      )}
 
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <StatCard title="Active Channels" value={activeCount} icon={Globe} tone="accent" />

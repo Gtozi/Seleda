@@ -62,7 +62,7 @@ const Field: React.FC<{ label: string; children: React.ReactNode }> = ({ label, 
   <div><label className={labelCls}>{label}</label>{children}</div>
 );
 
-const PropertyPublicProfile: React.FC = () => {
+const PropertyPublicProfile: React.FC<{ embedded?: boolean }> = ({ embedded }) => {
   const [properties, setProperties] = useState<PropertyRow[]>([]);
   const [selectedId, setSelectedId] = useState<string>('');
   const [draft, setDraft] = useState<Draft | null>(null);
@@ -134,23 +134,32 @@ const PropertyPublicProfile: React.FC = () => {
   const amenitiesList = selected?.metadata?.amenities || [];
   const facilitiesList = selected?.metadata?.facilities || [];
 
+  const profileActions = (
+    <>
+      <button onClick={load} className={button.secondary}>
+        <RefreshCw size={16} className={loading ? 'animate-spin' : ''} /> Refresh
+      </button>
+      <a href="/public-portal?section=properties" target="_blank" rel="noreferrer" className={button.secondary}>
+        <Globe size={16} /> View on website <ExternalLink size={12} />
+      </a>
+    </>
+  );
+
   return (
     <div className="space-y-6 animate-fade-in">
-      <PageHeader
-        title="Property Public Profile"
-        subtitle="Manage public website photo, description, amenities, and contacts."
-        icon={Globe}
-        actions={
-          <>
-            <button onClick={load} className={button.secondary}>
-              <RefreshCw size={16} className={loading ? 'animate-spin' : ''} /> Refresh
-            </button>
-            <a href="/public-portal?section=properties" target="_blank" rel="noreferrer" className={button.secondary}>
-              <Globe size={16} /> View on website <ExternalLink size={12} />
-            </a>
-          </>
-        }
-      />
+      {embedded ? (
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <p className="text-sm text-gray-500 dark:text-gray-400">Manage public website photo, description, amenities, and contacts.</p>
+          <div className="flex items-center gap-2 shrink-0">{profileActions}</div>
+        </div>
+      ) : (
+        <PageHeader
+          title="Property Public Profile"
+          subtitle="Manage public website photo, description, amenities, and contacts."
+          icon={Globe}
+          actions={profileActions}
+        />
+      )}
 
       {message && (
         <div className={`p-4 border rounded-2xl ${message.type === 'ok' ? 'bg-emerald-50 dark:bg-emerald-500/10 border-emerald-100 dark:border-emerald-500/20' : 'bg-rose-50 dark:bg-rose-500/10 border-rose-100 dark:border-rose-500/20'}`}>

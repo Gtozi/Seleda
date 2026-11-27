@@ -32,7 +32,7 @@ const AVAILABLE_SCOPES = [
   '*',
 ];
 
-const APIManagement: React.FC = () => {
+const APIManagement: React.FC<{ embedded?: boolean }> = ({ embedded }) => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [keys, setKeys] = useState<ApiKey[]>([]);
@@ -118,23 +118,32 @@ const APIManagement: React.FC = () => {
     { title: 'Never Used', value: neverUsed, icon: Clock, tone: 'info' as const },
   ];
 
+  const apiActions = (
+    <>
+      <button onClick={loadData} disabled={loading} className={button.secondary}>
+        <RefreshCw size={16} className={loading ? 'animate-spin' : ''} /> Refresh
+      </button>
+      <button onClick={() => { setNewKey({ name: '', scopes: [], rateLimit: 100, expiresAt: '' }); setCreatedKey(null); setShowCreateModal(true); }} className={button.primary}>
+        <Plus size={16} /> Issue Key
+      </button>
+    </>
+  );
+
   return (
     <div className="space-y-6 animate-fade-in">
-      <PageHeader
-        title="API Gateway"
-        subtitle="Issue, scope, and revoke API keys for external integrations"
-        icon={Globe}
-        actions={
-          <>
-            <button onClick={loadData} disabled={loading} className={button.secondary}>
-              <RefreshCw size={16} className={loading ? 'animate-spin' : ''} /> Refresh
-            </button>
-            <button onClick={() => { setNewKey({ name: '', scopes: [], rateLimit: 100, expiresAt: '' }); setCreatedKey(null); setShowCreateModal(true); }} className={button.primary}>
-              <Plus size={16} /> Issue Key
-            </button>
-          </>
-        }
-      />
+      {embedded ? (
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <p className="text-sm text-gray-500 dark:text-gray-400">Issue, scope, and revoke API keys for external integrations</p>
+          <div className="flex items-center gap-2 shrink-0">{apiActions}</div>
+        </div>
+      ) : (
+        <PageHeader
+          title="API Gateway"
+          subtitle="Issue, scope, and revoke API keys for external integrations"
+          icon={Globe}
+          actions={apiActions}
+        />
+      )}
 
       {error && (
         <div className="p-4 rounded-xl text-sm font-bold flex items-center gap-2 bg-rose-50 dark:bg-rose-500/10 text-rose-700 dark:text-rose-400 border border-rose-100 dark:border-rose-500/20">

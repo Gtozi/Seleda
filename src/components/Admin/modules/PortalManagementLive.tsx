@@ -62,7 +62,7 @@ function modulesForDepartment(deptKey: string): ModuleRef[] {
  *     deactivate (`is_active`, which hides the module from role-permission
  *     assignment), edit label/icon/description/sort order, and delete.
  */
-const PortalManagementLive: React.FC = () => {
+const PortalManagementLive: React.FC<{ embedded?: boolean }> = ({ embedded }) => {
   const { globalHotelSettings, submitGlobalSettingsChange, userProfile, pendingAdminChanges, approveAdminChange, declineAdminChange } = useERP();
   const pendingQueue = useMemo(() => (pendingAdminChanges || []).filter(c => c.status === 'Pending'), [pendingAdminChanges]);
   const isSuperAdmin = Boolean((userProfile as any)?.isSuperAdmin);
@@ -316,19 +316,28 @@ const PortalManagementLive: React.FC = () => {
     );
   };
 
+  const saveAction = (
+    <button onClick={save} disabled={!isDirty || status === 'saving'} className={button.primary}>
+      {status === 'saving' ? <Loader2 size={16} className="animate-spin" /> : status === 'success' ? <CheckCircle2 size={16} /> : status === 'error' ? <AlertTriangle size={16} /> : <Save size={16} />}
+      {status === 'success' ? 'Saved' : status === 'error' ? 'Failed' : 'Save changes'}
+    </button>
+  );
+
   return (
     <div className="space-y-6 animate-fade-in">
-      <PageHeader
-        title="Portal Management"
-        subtitle="Enable or disable portals and modules within Super Admin boundaries."
-        icon={Building2}
-        actions={
-          <button onClick={save} disabled={!isDirty || status === 'saving'} className={button.primary}>
-            {status === 'saving' ? <Loader2 size={16} className="animate-spin" /> : status === 'success' ? <CheckCircle2 size={16} /> : status === 'error' ? <AlertTriangle size={16} /> : <Save size={16} />}
-            {status === 'success' ? 'Saved' : status === 'error' ? 'Failed' : 'Save changes'}
-          </button>
-        }
-      />
+      {embedded ? (
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <p className="text-sm text-gray-500 dark:text-gray-400">Enable or disable portals and modules within Super Admin boundaries.</p>
+          <div className="shrink-0">{saveAction}</div>
+        </div>
+      ) : (
+        <PageHeader
+          title="Portal Management"
+          subtitle="Enable or disable portals and modules within Super Admin boundaries."
+          icon={Building2}
+          actions={saveAction}
+        />
+      )}
 
       {status === 'success' && (
         <div className="p-4 rounded-xl text-sm font-bold flex items-center gap-2 bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border border-emerald-100 dark:border-emerald-500/20">

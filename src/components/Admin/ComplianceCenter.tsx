@@ -55,7 +55,7 @@ const reqTone = (s?: string) =>
   : s === 'failed' || s === 'error' ? 'danger' as const
   : 'warning' as const;
 
-const ComplianceCenter: React.FC = () => {
+const ComplianceCenter: React.FC<{ embedded?: boolean }> = ({ embedded }) => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<TabId>('overview');
@@ -144,26 +144,35 @@ const ComplianceCenter: React.FC = () => {
     { title: 'PII Erasures', value: erasures.length, icon: UserX, tone: 'danger' as const },
   ];
 
+  const actionButtons = (
+    <>
+      <button onClick={loadData} disabled={loading} className={button.secondary}>
+        <RefreshCw size={16} className={loading ? 'animate-spin' : ''} /> Refresh
+      </button>
+      <button onClick={() => { setTargetEntity(''); setExportResult(null); setShowExportModal(true); }} className={button.primary}>
+        <Download size={16} /> PII Export
+      </button>
+      <button onClick={() => { setTargetEntity(''); setShowEraseModal(true); }} className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-medium text-sm transition disabled:opacity-50">
+        <Trash2 size={16} /> PII Erasure
+      </button>
+    </>
+  );
+
   return (
     <div className="space-y-6 animate-fade-in">
-      <PageHeader
-        title="Compliance Center"
-        subtitle="GDPR tooling — consent management, PII export/erasure, and data retention"
-        icon={Shield}
-        actions={
-          <>
-            <button onClick={loadData} disabled={loading} className={button.secondary}>
-              <RefreshCw size={16} className={loading ? 'animate-spin' : ''} /> Refresh
-            </button>
-            <button onClick={() => { setTargetEntity(''); setExportResult(null); setShowExportModal(true); }} className={button.primary}>
-              <Download size={16} /> PII Export
-            </button>
-            <button onClick={() => { setTargetEntity(''); setShowEraseModal(true); }} className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-medium text-sm transition disabled:opacity-50">
-              <Trash2 size={16} /> PII Erasure
-            </button>
-          </>
-        }
-      />
+      {embedded ? (
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <p className="text-sm text-gray-500 dark:text-gray-400">GDPR tooling — consent management, PII export/erasure, and data retention</p>
+          <div className="flex items-center gap-2 shrink-0">{actionButtons}</div>
+        </div>
+      ) : (
+        <PageHeader
+          title="Compliance Center"
+          subtitle="GDPR tooling — consent management, PII export/erasure, and data retention"
+          icon={Shield}
+          actions={actionButtons}
+        />
+      )}
 
       {error && (
         <div className="p-4 rounded-xl text-sm font-bold flex items-center gap-2 bg-rose-50 dark:bg-rose-500/10 text-rose-700 dark:text-rose-400 border border-rose-100 dark:border-rose-500/20">

@@ -113,6 +113,82 @@ router.post('/rules/evaluate', ...guard, async (req, res) => {
   return res.json(await evaluateBusinessRules(category, ctx));
 });
 
+/** Live SSO / OIDC issuer reachability & discovery check for Identity Providers. */
+router.post('/identity-providers/:id/test', ...guard, async (req, res) => {
+  if (!dbReady(res)) return;
+  const { data: idp, error } = await supabaseAdmin!.from('admin_identity_providers').select('*').eq('id', req.params.id).maybeSingle();
+  if (error) return res.status(500).json({ error: error.message });
+  if (!idp) return res.status(404).json({ error: 'Identity provider not found' });
+
+  const issuerUrl = String(idp.issuer_url || '').trim().replace(/\/+$/, '');
+  if (!issuerUrl || !/^https?:\/\//i.test(issuerUrl)) {
+    return res.json({ ok: false, message: 'Issuer URL is missing or not a valid http(s) URL' });
+  }
+
+  const secretConfigured = idp.secret_ref ? Boolean(process.env[String(idp.secret_ref)]) : true;
+  const target = (idp.provider_type === 'oidc' || idp.provider_type === 'oauth2')
+    ? `${issuerUrl}/.well-known/openid-configuration`
+    : issuerUrl;
+
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 5000);
+    const resp = await fetch(target, { signal: ctrl.signal, headers: { Accept: 'application/json,text/html' } });
+    clearTimeout(timer);
+    let discovery: Record<string, any> | undefined;
+    if (resp.ok && (idp.provider_type === 'oidc' || idp.provider_type === 'oauth2')) {
+      const json = await resp.json().catch(() => null);
+      if (json && typeof json === 'object') {
+        discovery = {
+          issuer: json.issuer,
+          authorizationEndpoint: json.authorization_endpoint,
+          tokenEndpoint: json.token_endpoint,
+          jwksUri: json.jwks_uri,
+        };
+      }
+    }
+    return res.json({
+      ok: resp.ok,
+      status: resp.status,
+      secretConfigured,
+      discovery,
+      message: resp.ok
+        ? `Connected (${resp.status})${discovery?.issuer ? ` · issuer ${discovery.issuer}` : ''}${!secretConfigured ? ' · warning: secret env not set' : ''}`
+        : `Endpoint returned HTTP ${resp.status}`,
+    });
+  } catch (err: any) {
+    return res.json({ ok: false, secretConfigured, message: err?.name === 'AbortError' ? 'Connection timed out (5s)' : (err?.message || 'Connection failed') });
+  }
+});
+
+/** Verify Payment Gateway secret env var & webhook configuration without exposing secrets. */
+router.post('/payment-gateways/:id/verify', ...guard, async (req, res) => {
+  if (!dbReady(res)) return;
+  const { data: gw, error } = await supabaseAdmin!.from('admin_payment_gateways').select('*').eq('id', req.params.id).maybeSingle();
+  if (error) return res.status(500).json({ error: error.message });
+  if (!gw) return res.status(404).json({ error: 'Payment gateway not found' });
+
+  const secretRef = String(gw.secret_ref || '').trim();
+  const secretConfigured = secretRef ? Boolean(process.env[secretRef]) : false;
+  const webhookUrl = String(gw.webhook_url || '').trim();
+  const webhookValid = !webhookUrl || /^https?:\/\/.+/i.test(webhookUrl);
+  const ok = secretConfigured && webhookValid;
+
+  return res.json({
+    ok,
+    mode: gw.mode,
+    secretConfigured,
+    webhookValid,
+    message: ok
+      ? `Verified (${gw.mode}): secret "${secretRef}" is configured${webhookUrl ? ' and webhook URL is valid' : ''}`
+      : !secretRef
+        ? 'No secret reference configured'
+        : !secretConfigured
+          ? `Environment variable "${secretRef}" is not set on server`
+          : 'Webhook URL is invalid',
+  });
+});
+
 // ── Overview (Executive Dashboard) ─────────────────────────────
 
 router.get('/overview', ...guard, async (_req, res) => {

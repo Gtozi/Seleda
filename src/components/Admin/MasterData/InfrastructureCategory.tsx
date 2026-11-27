@@ -23,14 +23,14 @@ export default function InfrastructureCategory({
             <MapPin size={24} />
           </div>
           <div>
-            <h3 className="text-lg font-black text-slate-900 dark:text-white uppercase tracking-tight">Property Infrastructure Repository</h3>
+            <h3 className="text-lg font-bold text-slate-900 dark:text-white uppercase tracking-tight">Property Infrastructure Repository</h3>
             <p className="text-xs text-slate-400">Map the physical layout, operational zones, and resource hierarchies of the enterprise.</p>
           </div>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-12">
           <div className="space-y-6">
-            <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest border-l-2 border-indigo-500 pl-3">Vertical Layout (Floors)</h4>
+            <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest border-l-2 border-indigo-500 pl-3">Vertical Layout (Floors)</h4>
             <div className="grid grid-cols-2 gap-4">
               {floors?.map((f: string, i: number) => (
                 <div key={i} className="p-4 bg-slate-50 dark:bg-slate-950 rounded-2xl border dark:border-slate-850 flex items-center gap-3">
@@ -42,13 +42,13 @@ export default function InfrastructureCategory({
           </div>
 
           <div className="space-y-6">
-            <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest border-l-2 border-emerald-500 pl-3">Operating Departments</h4>
+            <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest border-l-2 border-emerald-500 pl-3">Operating Departments</h4>
             <div className="space-y-3">
               {departments?.map((dept: string, i: number) => (
                 <div key={i} className="p-4 bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl flex justify-between items-center shadow-xs">
                   <div className="flex items-center gap-3">
                     <Briefcase size={14} className="text-emerald-500" />
-                    <span className="text-xs font-black text-slate-900 dark:text-white uppercase tracking-tight">{dept}</span>
+                    <span className="text-xs font-bold text-slate-900 dark:text-white uppercase tracking-tight">{dept}</span>
                   </div>
                   <span className="text-[8px] font-bold text-slate-400 uppercase bg-slate-50 dark:bg-slate-800 px-2 py-0.5 rounded">Active Code</span>
                 </div>
@@ -65,7 +65,7 @@ export default function InfrastructureCategory({
             <Database size={20} />
           </div>
           <div>
-            <h4 className="text-sm font-black uppercase tracking-widest">Global Resource Synced</h4>
+            <h4 className="text-sm font-bold uppercase tracking-widest">Global Resource Synced</h4>
             <p className="text-xs opacity-60">All units are mapped to these structural definitions.</p>
           </div>
         </div>

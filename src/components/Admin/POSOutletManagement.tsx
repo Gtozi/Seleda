@@ -67,7 +67,7 @@ interface OutletRole {
   user?: any;
 }
 
-export default function POSOutletManagement() {
+export default function POSOutletManagement({ embedded }: { embedded?: boolean } = {}) {
   const { systemUsers, addNotification } = useERP();
   const [outlets, setOutlets] = useState<POSOutlet[]>([]);
   const [loading, setLoading] = useState(true);
@@ -554,16 +554,25 @@ export default function POSOutletManagement() {
 
   return (
     <div className="space-y-6 animate-fade-in">
-      <PageHeader
-        title="POS Outlet Management"
-        subtitle="Manage POS outlets, GL mappings, shift reconciliation, and user roles"
-        icon={Store}
-        actions={
+      {embedded ? (
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <p className="text-sm text-gray-500 dark:text-gray-400">Manage POS outlets, GL mappings, shift reconciliation, and user roles</p>
           <button onClick={() => setShowModal(true)} className={button.primary}>
             <Plus size={16} /> Add Outlet
           </button>
-        }
-      />
+        </div>
+      ) : (
+        <PageHeader
+          title="POS Outlet Management"
+          subtitle="Manage POS outlets, GL mappings, shift reconciliation, and user roles"
+          icon={Store}
+          actions={
+            <button onClick={() => setShowModal(true)} className={button.primary}>
+              <Plus size={16} /> Add Outlet
+            </button>
+          }
+        />
+      )}
 
       <div>
         <AdminSubTabBar
