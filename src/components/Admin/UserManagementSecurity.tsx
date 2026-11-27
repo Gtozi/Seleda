@@ -31,8 +31,9 @@ import { useERP } from '../../context/ERPContext';
 import { User, SystemAuditLog } from '../../types/erp';
 import PasswordResetRequests from './PasswordResetRequests';
 import { AdminSubTabBar } from './shared/AdminSubTabBar';
+import { IdentityProvidersModule } from './modules/ControlModules';
 
-type SecurityTab = 'rbac' | 'users' | 'audit' | 'security_settings' | 'password_resets';
+type SecurityTab = 'rbac' | 'users' | 'audit' | 'security_settings' | 'password_resets' | 'identity';
 
 const TAB_META: { id: SecurityTab; label: string; icon: React.ReactNode }[] = [
   { id: 'users', label: 'User Profiles', icon: <Users size={14} /> },
@@ -40,6 +41,7 @@ const TAB_META: { id: SecurityTab; label: string; icon: React.ReactNode }[] = [
   { id: 'audit', label: 'Audit Logs', icon: <FileSearch size={14} /> },
   { id: 'security_settings', label: 'Security Settings', icon: <Shield size={14} /> },
   { id: 'password_resets', label: 'Password Resets', icon: <KeyRound size={14} /> },
+  { id: 'identity', label: 'Identity & SSO', icon: <Lock size={14} /> },
 ];
 
 function deriveSeverity(action: string): string {
@@ -54,7 +56,12 @@ export default function UserManagementSecurity({ initialTab = 'users' }: { initi
   const [activeTab, setActiveTab] = useState<SecurityTab>(initialTab);
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 animate-fade-in">
+      <PageHeader
+        title="User Management & Security"
+        subtitle="Manage user accounts, role permissions, audit logs, security policies, and password resets"
+        icon={Shield}
+      />
       <div>
         <AdminSubTabBar tabs={TAB_META} activeTab={activeTab} onChange={setActiveTab} />
       </div>
@@ -65,6 +72,7 @@ export default function UserManagementSecurity({ initialTab = 'users' }: { initi
         {activeTab === 'audit' && <AuditLogsModule />}
         {activeTab === 'security_settings' && <SecuritySettingsModule />}
         {activeTab === 'password_resets' && <PasswordResetRequests />}
+        {activeTab === 'identity' && <IdentityProvidersModule />}
       </div>
     </div>
   );

@@ -119,7 +119,7 @@ const APIManagement: React.FC = () => {
   ];
 
   return (
-    <div className="space-y-6 animate-fade-in pt-4">
+    <div className="space-y-6 animate-fade-in">
       <PageHeader
         title="API Gateway"
         subtitle="Issue, scope, and revoke API keys for external integrations"
@@ -249,11 +249,11 @@ const APIManagement: React.FC = () => {
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <label className="text-[10px] uppercase font-black tracking-widest text-slate-400 block mb-2">Rate Limit (req/min)</label>
+                <label className="text-[10px] uppercase font-bold tracking-widest text-slate-400 block mb-2">Rate Limit (req/min)</label>
                 <input type="number" value={newKey.rateLimit} onChange={e => setNewKey({ ...newKey, rateLimit: Number(e.target.value) })} className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2 text-xs font-bold outline-none focus:ring-2 focus:ring-indigo-500" />
               </div>
               <div>
-                <label className="text-[10px] uppercase font-black tracking-widest text-slate-400 block mb-2">Expires At (optional)</label>
+                <label className="text-[10px] uppercase font-bold tracking-widest text-slate-400 block mb-2">Expires At (optional)</label>
                 <input type="date" value={newKey.expiresAt} onChange={e => setNewKey({ ...newKey, expiresAt: e.target.value })} className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2 text-xs font-bold outline-none focus:ring-2 focus:ring-indigo-500" />
               </div>
             </div>

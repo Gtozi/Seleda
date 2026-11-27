@@ -14,6 +14,7 @@ import {
 import StatCard from '../FrontOffice/StatCard';
 import { PageHeader, SectionCard, Badge } from '../FrontOffice/ui';
 import { card, button } from '../FrontOffice/brandTheme';
+import { adminAuthHeaders } from './shared/ResourceManager';
 
 interface Organization {
   id: string;
@@ -43,11 +44,6 @@ interface Property {
 
 interface FootprintItem { portal: string; metric: string; table: string; count: number | null }
 
-const authHeaders = (): Record<string, string> => {
-  const token = localStorage.getItem('erp_token');
-  return { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) };
-};
-
 const fmtAddress = (a: Record<string, string> | null | undefined) =>
   a ? [a.street, a.city, a.country].filter(Boolean).join(', ') : '';
 
@@ -62,7 +58,7 @@ const OrganizationHierarchyManager: React.FC = () => {
   const loadData = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch('/api/admin/tenant-overview', { headers: authHeaders() });
+      const res = await fetch('/api/admin/tenant-overview', { headers: adminAuthHeaders() });
       const ct = res.headers.get('content-type') || '';
       const body = ct.includes('json') ? await res.json() : null;
       if (!res.ok || !body) throw new Error(body?.error || 'Failed to load data');

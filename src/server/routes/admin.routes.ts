@@ -28,6 +28,7 @@ import { validatePassword } from '../../lib/passwordPolicy';
 import { dispatchEmail, dispatchSMS } from '../services/salesMessageDispatch';
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
+import cron from 'node-cron';
 
 const router = Router();
 
@@ -2341,9 +2342,25 @@ router.get('/scheduler/jobs', authenticate, requirePermission('settings:manage')
   }});
 });
 
+router.post('/scheduler/jobs', authenticate, requirePermission('settings:manage'), async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
+  const { name, type, scheduleCron, config, enabled = true } = req.body || {};
+  if (!name || !type || !scheduleCron) return res.status(400).json({ error: 'name, type, and scheduleCron are required' });
+  if (!cron.validate(String(scheduleCron))) return res.status(400).json({ error: 'Invalid cron expression' });
+  const { data, error } = await supabaseAdmin
+    .from('scheduled_jobs')
+    .insert({ name: String(name).trim(), type: String(type).trim(), schedule_cron: String(scheduleCron).trim(), config: config || {}, enabled: Boolean(enabled) })
+    .select()
+    .single();
+  if (error) return res.status(500).json({ error: error.message });
+  await writeAuditEvent({ req, user: req.user!, action: 'job.created', entityType: 'ScheduledJob', entityId: data.id, module: 'admin', details: { name: data.name, type: data.type } });
+  return res.status(201).json({ job: data });
+});
+
 router.patch('/scheduler/jobs/:id', authenticate, requirePermission('settings:manage'), async (req, res) => {
   if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
   const { name, scheduleCron, config, enabled } = req.body;
+  if (scheduleCron !== undefined && !cron.validate(String(scheduleCron))) return res.status(400).json({ error: 'Invalid cron expression' });
   const updates: any = {};
   if (name !== undefined) updates.name = name;
   if (scheduleCron !== undefined) updates.schedule_cron = scheduleCron;
@@ -2353,6 +2370,14 @@ router.patch('/scheduler/jobs/:id', authenticate, requirePermission('settings:ma
   if (error) return res.status(500).json({ error: error.message });
   await writeAuditEvent({ req, user: req.user!, action: 'job.updated', entityType: 'ScheduledJob', entityId: req.params.id, module: 'admin' });
   return res.json({ job: data });
+});
+
+router.delete('/scheduler/jobs/:id', authenticate, requirePermission('settings:manage'), async (req, res) => {
+  if (!hasSupabaseAdminConfig || !supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
+  const { error } = await supabaseAdmin.from('scheduled_jobs').delete().eq('id', req.params.id);
+  if (error) return res.status(500).json({ error: error.message });
+  await writeAuditEvent({ req, user: req.user!, action: 'job.deleted', entityType: 'ScheduledJob', entityId: req.params.id, module: 'admin' });
+  return res.json({ success: true });
 });
 
 router.post('/scheduler/jobs/:id/trigger', authenticate, requirePermission('settings:manage'), async (req, res) => {

@@ -63,7 +63,8 @@ function modulesForDepartment(deptKey: string): ModuleRef[] {
  *     assignment), edit label/icon/description/sort order, and delete.
  */
 const PortalManagementLive: React.FC = () => {
-  const { globalHotelSettings, submitGlobalSettingsChange, userProfile } = useERP();
+  const { globalHotelSettings, submitGlobalSettingsChange, userProfile, pendingAdminChanges, approveAdminChange, declineAdminChange } = useERP();
+  const pendingQueue = useMemo(() => (pendingAdminChanges || []).filter(c => c.status === 'Pending'), [pendingAdminChanges]);
   const isSuperAdmin = Boolean((userProfile as any)?.isSuperAdmin);
   const superAdminLocked = useMemo(() => ({ ...(globalHotelSettings.superAdminLockedToggles || {}) } as Record<string, boolean>), [globalHotelSettings.superAdminLockedToggles]);
   const saved = useMemo(() => ({ ...(globalHotelSettings.moduleToggles || {}) } as Record<string, boolean>), [globalHotelSettings]);
@@ -346,6 +347,37 @@ const PortalManagementLive: React.FC = () => {
         <StatCard title="Disabled" value={off} icon={AlertTriangle} tone="warning" />
         <StatCard title="Registry Modules" value={`${registry.length - inactiveRegistry}/${registry.length}`} icon={Layers} tone="info" />
       </div>
+
+      {pendingQueue.length > 0 && (
+        <SectionCard
+          title="Pending Governance Changes"
+          subtitle={`${pendingQueue.length} staged change${pendingQueue.length !== 1 ? 's' : ''} awaiting approval`}
+          icon={Shield}
+          tone="warning"
+          pad="none"
+        >
+          <div className="divide-y divide-gray-100 dark:divide-slate-700">
+            {pendingQueue.map(change => (
+              <div key={change.id} className="flex items-center justify-between gap-4 p-4">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-bold text-gray-900 dark:text-white">{change.title}</span>
+                    <Badge tone="warning">{change.changeType}</Badge>
+                  </div>
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">{change.description}</p>
+                  <p className="text-[11px] text-gray-400 mt-0.5">
+                    Submitted by {change.submittedBy || 'Admin'} · {new Date(change.submittedAt).toLocaleString()}
+                  </p>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  <button onClick={() => declineAdminChange(change.id)} className={button.secondary}>Decline</button>
+                  <button onClick={() => approveAdminChange(change.id)} className={button.primary}>Approve</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </SectionCard>
+      )}
 
       <SectionCard title="Portals & Modules" subtitle={`${portalEntries.length - off} of ${portalEntries.length} portals enabled · registry actions on each module row`} icon={Layers} tone="accent" pad="none">
         <div className="divide-y divide-gray-100 dark:divide-slate-700">

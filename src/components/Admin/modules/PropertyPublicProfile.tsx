@@ -10,6 +10,7 @@ import { Globe, Save, ExternalLink, Image as ImageIcon, Building2, Loader2, Chec
 import StatCard from '../../FrontOffice/StatCard';
 import { PageHeader, SectionCard, Badge } from '../../FrontOffice/ui';
 import { card, button } from '../../FrontOffice/brandTheme';
+import { adminAuthHeaders } from '../shared/ResourceManager';
 
 interface PropertyRow {
   id: string;
@@ -52,11 +53,7 @@ const toDraft = (p: PropertyRow): Draft => ({
 });
 
 const splitList = (v: string) => Array.from(new Set(v.split(',').map(s => s.trim()).filter(Boolean)));
-
-const authHeaders = (): Record<string, string> => {
-  const token = localStorage.getItem('erp_token');
-  return { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) };
-};
+const authHeaders = adminAuthHeaders;
 
 const inputCls = 'w-full bg-slate-50 dark:bg-slate-950 border border-gray-200 dark:border-slate-700 rounded-xl px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[var(--color-accent-operations)]';
 const labelCls = 'text-xs font-medium text-gray-600 dark:text-gray-400 block mb-1.5';

@@ -139,7 +139,7 @@ function BackupsModule() {
   ];
 
   return (
-    <div className="space-y-6 animate-fade-in pt-4">
+    <div className="space-y-6 animate-fade-in">
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
         {cards.map(c => <StatCard key={c.title} title={c.title} value={c.value} icon={c.icon} tone={c.tone} />)}
       </div>
@@ -529,7 +529,7 @@ function ExportsModule() {
   const entries = Object.entries(datasets);
 
   return (
-    <div className="space-y-6 animate-fade-in pt-4">
+    <div className="space-y-6 animate-fade-in">
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
         {entries.map(([key, ds]) => (
           <StatCard key={key} title={ds.label} value={ds.count.toLocaleString()} icon={Table2} tone="info" />

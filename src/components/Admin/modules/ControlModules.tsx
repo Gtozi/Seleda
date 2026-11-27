@@ -80,7 +80,7 @@ const RolePicker: React.FC<{ selected: string[]; onChange: (v: string[]) => void
             key={o.value}
             type="button"
             onClick={() => toggle(o.value)}
-            className={`px-2.5 py-1 rounded-lg text-xs font-semibold border transition ${active ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white dark:bg-slate-800 text-gray-600 dark:text-gray-300 border-gray-200 dark:border-slate-700 hover:border-indigo-300'}`}
+            className={`px-2.5 py-1 rounded-lg text-xs font-semibold border transition ${active ? 'bg-[var(--color-accent-operations)] text-white border-[var(--color-accent-operations)]' : 'bg-white dark:bg-slate-800 text-gray-600 dark:text-gray-300 border-gray-200 dark:border-slate-700 hover:border-[var(--color-accent-operations)]/50'}`}
           >
             {o.label}
           </button>

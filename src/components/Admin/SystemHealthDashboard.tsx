@@ -70,7 +70,7 @@ export default function SystemHealthDashboard() {
     }
 
     try {
-      const res = await fetch('/api/audit/events', { credentials: 'include' });
+      const res = await fetch('/api/audit/events', { headers: adminAuthHeaders(), credentials: 'include' });
       if (res.ok) {
         const data = await res.json();
         setEvents(Array.isArray(data?.events) ? data.events.slice(0, 12) : []);
