@@ -33,7 +33,6 @@ const RESOURCES: Record<string, ResourceDef> = {
   'document-templates': { table: 'admin_document_templates', columns: ['property_id', 'code', 'name', 'doc_type', 'body', 'version', 'active'], orderBy: 'code', required: ['code', 'name'] },
   'payment-gateways': { table: 'admin_payment_gateways', columns: ['property_id', 'name', 'provider', 'mode', 'currencies', 'public_key', 'secret_ref', 'webhook_url', 'fee_percent', 'enabled'], orderBy: 'name', required: ['name', 'provider'] },
   'tax-rules': { table: 'admin_tax_rules', columns: ['property_id', 'outlet_id', 'code', 'name', 'tax_type', 'rate', 'applies_to', 'calc_base', 'inclusive', 'effective_from', 'effective_to', 'active'], orderBy: 'code', required: ['code', 'name', 'rate'] },
-  locales: { table: 'admin_locales', columns: ['code', 'name', 'native_name', 'rtl', 'date_format', 'number_format', 'is_default', 'enabled'], orderBy: 'code', required: ['code', 'name'] },
   licenses: { table: 'admin_licenses', columns: ['license_key', 'holder', 'plan', 'seats', 'modules', 'valid_from', 'valid_to', 'status'], orderBy: 'valid_to', required: ['license_key', 'holder'] },
   devices: { table: 'admin_devices', columns: ['property_id', 'name', 'device_type', 'location', 'ip_address', 'serial_number', 'firmware', 'status', 'last_seen_at'], orderBy: 'name', required: ['name'] },
   'workflow-instances': { table: 'admin_workflow_instances', columns: [], orderBy: 'created_at', descending: true, readOnly: true },
@@ -139,7 +138,7 @@ router.get('/overview', ...guard, async (_req, res) => {
     count('admin_payment_gateways', q => q.eq('enabled', true)),
     count('audit_events', q => q.gte('timestamp', since)),
     count('audit_events', q => q.gte('timestamp', since).in('outcome', ['failure', 'denied'])),
-    count('backups'),
+    count('backup_jobs'),
     count('scheduled_jobs'),
   ]);
   return res.json({
@@ -183,21 +182,6 @@ export const DATASETS: Record<string, AdminDataset> = {
   devices: { table: 'admin_devices', select: '*', orderBy: 'name', ascending: true, label: 'Device inventory', description: 'Registered endpoint devices', group: 'Compliance', dateColumn: 'last_seen_at' },
   backup_jobs: { table: 'backup_jobs', select: 'id,backup_type,status,backup_size_bytes,storage_path,initiated_at,completed_at,error_message', orderBy: 'initiated_at', ascending: false, label: 'Backup history', description: 'Backup job history and status', group: 'Compliance', dateColumn: 'initiated_at' },
 };
-
-router.get('/datasets', ...guard, (_req, res) => res.json({
-  datasets: Object.entries(DATASETS).map(([id, d]) => ({ id, label: d.label, description: d.description, group: d.group })),
-}));
-
-router.get('/datasets/:name', ...guard, async (req, res) => {
-  const ds = DATASETS[req.params.name];
-  if (!ds) return res.status(404).json({ error: 'Unknown dataset' });
-  if (!dbReady(res)) return;
-  const limit = Math.min(Number(req.query.limit) || 500, 5000);
-  const { data, error } = await supabaseAdmin!.from(ds.table).select(ds.select).order(ds.orderBy, { ascending: ds.ascending ?? true }).limit(limit);
-  if (error) return res.status(500).json({ error: error.message });
-  await writeAuditEvent({ req, user: req.user!, action: 'report.run', entityType: 'Dataset', entityId: req.params.name, module: 'admin' });
-  return res.json({ rows: data || [] });
-});
 
 // ── Generic resource CRUD ──────────────────────────────────────
 

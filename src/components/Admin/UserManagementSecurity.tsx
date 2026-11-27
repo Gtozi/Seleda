@@ -142,6 +142,9 @@ function UserProfilesModule() {
       });
       const result = await response.json();
       if (response.ok) {
+        if (result.temporaryPassword) {
+          alert(`User created. Temporary password: ${result.temporaryPassword}\nThey will be required to set a new password on first login.`);
+        }
         setNotification({ type: 'success', message: 'User created successfully' });
         setShowAddUserModal(false);
         window.location.reload();
