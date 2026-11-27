@@ -60,7 +60,9 @@ const PublicPortal: React.FC = () => {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [scrolled, setScrolled] = useState(false);
   const settings = usePublicSettings();
-  const hotelName = settings.customHotelName || 'Hotel';
+  // The subdomain-resolved tenant name wins — the site is branded by whichever
+  // <tenant>.seledabet.com host served it, not a hardcoded hotel name.
+  const hotelName = settings.tenant?.name || settings.customHotelName || 'Hotel';
 
   // Portal/module visibility — managed in Admin → Portal Management and
   // delivered through /api/public/settings (moduleToggles + guest flags).

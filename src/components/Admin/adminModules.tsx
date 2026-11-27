@@ -254,7 +254,7 @@ export const adminModuleAliases: Record<string, string> = {
   pos_setup: 'pos_management',
   audit_logs: 'user_security',
   property_config: 'tenant_property',
-  role_permissions: 'role_permission',
+  role_permissions: 'user_security',
   reports_analytics: 'reports',
   module_management: 'portal_management',
   user_management: 'user_security',

@@ -73,6 +73,19 @@ function resolveTabModId(tab: TabConfig): string {
 
 // ── Component ─────────────────────────────────────────────────────────────
 
+/** Centered lock-icon notice shown when a department/tab cannot be rendered. */
+function DeptNotice({ title, body }: { title: string; body: string }) {
+  return (
+    <div className="h-full flex flex-col items-center justify-center text-center py-20">
+      <div className="inline-flex p-4 bg-slate-100 dark:bg-slate-800 rounded-full mb-4">
+        <Lock size={28} className="text-slate-400" />
+      </div>
+      <h3 className="text-lg font-sans font-black text-slate-900 dark:text-white tracking-tight">{title}</h3>
+      <p className="text-sm text-slate-500 mt-2 max-w-sm">{body}</p>
+    </div>
+  );
+}
+
 export function DepartmentRoute({ currentUser, moduleToggles, hasModuleAccess }: DepartmentRouteProps) {
   const params = useParams();
   const navigate = useNavigate();
@@ -95,29 +108,13 @@ export function DepartmentRoute({ currentUser, moduleToggles, hasModuleAccess }:
     moduleToggles[deptKey] === false;
 
   if (isModuleDisabled) {
-    return (
-      <div className="h-full flex flex-col items-center justify-center text-center py-20">
-        <div className="inline-flex p-4 bg-slate-100 dark:bg-slate-800 rounded-full mb-4">
-          <Lock size={28} className="text-slate-400" />
-        </div>
-        <h3 className="text-lg font-sans font-black text-slate-900 dark:text-white tracking-tight">Module Unavailable</h3>
-        <p className="text-sm text-slate-500 mt-2 max-w-sm">This department portal has been disabled by an administrator via Platform Controls. Please contact System Administration for access.</p>
-      </div>
-    );
+    return <DeptNotice title="Module Unavailable" body="This department portal has been disabled by an administrator via Platform Controls. Please contact System Administration for access." />;
   }
 
   // The Executive portal requires exec:view — the permissive moduleAccess
   // default is not sufficient to gate direct URL access.
   if (deptKey === 'executive' && !canViewExecutivePortal(currentUser)) {
-    return (
-      <div className="h-full flex flex-col items-center justify-center text-center py-20">
-        <div className="inline-flex p-4 bg-slate-100 dark:bg-slate-800 rounded-full mb-4">
-          <Lock size={28} className="text-slate-400" />
-        </div>
-        <h3 className="text-lg font-sans font-black text-slate-900 dark:text-white tracking-tight">Access Restricted</h3>
-        <p className="text-sm text-slate-500 mt-2 max-w-sm">The Executive portal requires executive-level access. Please contact System Administration if you believe this is an error.</p>
-      </div>
-    );
+    return <DeptNotice title="Access Restricted" body="The Executive portal requires executive-level access. Please contact System Administration if you believe this is an error." />;
   }
 
   // Legacy admin module ids (old bookmarks) redirect to their canonical module
@@ -129,34 +126,40 @@ export function DepartmentRoute({ currentUser, moduleToggles, hasModuleAccess }:
   const visibleTabs = getVisibleTabs(dept, moduleToggles);
   const resolvedTabId = tabId || dept.defaultTab;
 
+  // Admin bypasses the module-disabled check, but if Platform Controls has
+  // hidden every admin module there is nothing to render.
+  if (deptKey === 'admin' && visibleTabs.length === 0) {
+    return <DeptNotice title="Module Unavailable" body="All System Administration modules have been disabled by an administrator via Platform Controls." />;
+  }
+
   // For departments with no tabs (settings, banquet-events), just render the portal
-  if (visibleTabs.length === 0 && deptKey !== 'admin') {
+  if (visibleTabs.length === 0) {
     return renderPortal(dept, resolvedTabId, currentUser, navigate);
   }
+
+  const tabAccessible = (t: TabConfig) => {
+    const mid = resolveTabModId(t);
+    return !mid || hasModuleAccess(mid);
+  };
 
   // Check if the requested tab is in the visible list
   const currentTab = visibleTabs.find((t) => t.id === resolvedTabId);
 
   if (currentTab) {
-    // Check module access for this tab
-    const modId = resolveTabModId(currentTab);
-    if (modId && !hasModuleAccess(modId)) {
+    if (!tabAccessible(currentTab)) {
       // Redirect to first accessible tab
-      const firstAccessible = visibleTabs.find((t) => {
-        const mid = resolveTabModId(t);
-        return !mid || hasModuleAccess(mid);
-      });
-      if (firstAccessible && firstAccessible.id !== resolvedTabId) {
+      const firstAccessible = visibleTabs.find(tabAccessible);
+      if (firstAccessible) {
         return <Navigate to={`/erp/${dept.urlSegment}/${firstAccessible.id}`} replace />;
       }
+      // No tab in this department is accessible — do NOT fall through to
+      // renderPortal, which would show a module the user cannot access.
+      return <DeptNotice title="Access Restricted" body="You do not have access to any modules in this department. Please contact System Administration if you believe this is an error." />;
     }
-  } else if (visibleTabs.length > 0) {
+  } else {
     // Tab not found in visible list — redirect to first visible tab
     // (handles admin module-toggle auto-switch + unknown tab ids)
-    const firstAccessible = visibleTabs.find((t) => {
-      const mid = resolveTabModId(t);
-      return !mid || hasModuleAccess(mid);
-    }) || visibleTabs[0];
+    const firstAccessible = visibleTabs.find(tabAccessible) || visibleTabs[0];
     return <Navigate to={`/erp/${dept.urlSegment}/${firstAccessible.id}`} replace />;
   }
 

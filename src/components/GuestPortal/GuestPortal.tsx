@@ -357,6 +357,16 @@ const GuestPortal: React.FC<GuestPortalProps> = ({
     return () => { document.body.style.overflow = ''; };
   }, [mobileMenuOpen]);
 
+  // Browser tab title follows the subdomain-resolved tenant, like the public site.
+  const portalName = publicSettings.tenant?.name || publicSettings.customHotelName || 'Hotel';
+  useEffect(() => {
+    const module = tab ? SLUG_TO_MODULE[tab] : undefined;
+    const label = !module || module === 'dashboard'
+      ? portalName
+      : `${tab!.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')} · ${portalName}`;
+    document.title = label;
+  }, [tab, portalName]);
+
   // Unknown tab slugs redirect to the default tab (mirrors DepartmentRoute).
   if (tab && !SLUG_TO_MODULE[tab]) {
     return <Navigate to={`/guest/${MODULE_SLUGS.dashboard}`} replace />;

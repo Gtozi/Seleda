@@ -24,6 +24,8 @@ export interface PublicSettings {
   policySections?: { id: string; title: string; content: string }[];
   cancellationGraceHours?: number;
   cancellationPenaltyPercent?: number;
+  /** Resolved from the request subdomain by the server — the tenant this site belongs to. */
+  tenant?: { id: string; name: string; code: string } | null;
 }
 
 let settingsPromise: Promise<PublicSettings> | null = null;

@@ -56,10 +56,11 @@ export function getSwitchableDepartments(
     // legacy reasons, which would expose the dept to every role).
     if (d.key === 'executive' && !canViewExecutivePortal(currentUser)) return false;
 
-    // For admin: check if any CORE_ADMIN_MODULE is visible
+    // For admin: at least one module must be toggle-visible AND accessible
+    // to this user (moduleAccess), otherwise the dept would render tabs the
+    // user cannot actually open.
     if (d.key === 'admin') {
-      const visibleAdmin = getVisibleAdminModules(moduleToggles);
-      return visibleAdmin.length > 0;
+      return getVisibleAdminModules(moduleToggles).some((m) => hasModuleAccess(m.id));
     }
 
     // For other departments: check if any tab's modId is accessible

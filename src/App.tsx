@@ -1008,8 +1008,8 @@ function MasterHotelERP({ onErpAuthChange }: { onErpAuthChange?: (authenticated:
           <div className="flex items-center gap-3">
             <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-indigo-500 to-indigo-600 flex items-center justify-center text-white font-extrabold font-sans shadow-lg shadow-indigo-500/20 hover:shadow-xl hover:shadow-indigo-500/30 transition-all duration-300">S</div>
             <div>
-              <span className="font-sans font-extrabold text-sm tracking-tight text-slate-900 dark:text-white block">HOTEL ERP</span>
-              <span className="text-[10px] font-mono text-indigo-600 uppercase tracking-widest leading-none block font-semibold">Live sync operational portal</span>
+              <span className="font-sans font-extrabold text-sm tracking-tight text-slate-900 dark:text-white block">SELEDA</span>
+              <span className="text-[10px] font-mono text-indigo-600 uppercase tracking-widest leading-none block font-semibold">Enterprise Resource Planning</span>
             </div>
           </div>
 
@@ -1261,6 +1261,18 @@ function MasterHotelERP({ onErpAuthChange }: { onErpAuthChange?: (authenticated:
 export default function App() {
   const location = useLocation();
   const [erpAuthenticated, setErpAuthenticated] = useState(false);
+
+  // Browser tab title: the public website (/public-portal, /booking) and the
+  // guest portal (/guest) brand themselves with the subdomain-resolved tenant
+  // name; every other surface is the SELEDA product.
+  useEffect(() => {
+    const p = location.pathname;
+    const tenantManaged = p === '/public-portal' || p.startsWith('/public-portal/')
+      || p === '/booking' || p.startsWith('/booking/')
+      || p === '/guest' || p.startsWith('/guest/');
+    if (tenantManaged) return;
+    document.title = p.startsWith('/erp') ? 'SELEDA ERP' : 'SELEDA';
+  }, [location.pathname]);
 
   // The apex/www host serves no application UI at all — tenant portals live
   // on <code>.seledabet.com subdomains and platform admin on admin.*.

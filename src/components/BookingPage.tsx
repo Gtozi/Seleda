@@ -147,6 +147,8 @@ interface PublicSettings {
   bookingReadTermsText?: string;
   bookingConfirmButtonText?: string;
   bookingSecureBookingText?: string;
+  /** Resolved from the request subdomain by the server — the tenant this site belongs to. */
+  tenant?: { id: string; name: string; code: string } | null;
 }
 
 interface RoomOccupancy {
@@ -419,6 +421,8 @@ export default function BookingPage({ embedded = false }: { embedded?: boolean }
   const [confirmation, setConfirmation] = useState<{ reservationIds: string[]; totalAmount: number; isGroupBooking?: boolean; groupBookingId?: string | null; status?: string } | null>(null);
 
   const nights = useMemo(() => calculateNights(checkIn, checkOut), [checkIn, checkOut]);
+  // Subdomain-resolved tenant name wins over the configured hotel name.
+  const displayHotelName = settings?.tenant?.name || settings?.customHotelName || 'Hotel';
 
   useEffect(() => {
     const loadSettings = async () => {
@@ -2104,11 +2108,11 @@ export default function BookingPage({ embedded = false }: { embedded?: boolean }
               <img src={settings.hotelLogo} alt="Hotel Logo" className="w-9 h-9 rounded-lg object-cover" />
             ) : (
               <div className="w-9 h-9 bg-stone-900 rounded-lg flex items-center justify-center text-white font-serif font-bold text-lg">
-                {settings?.customHotelName?.charAt(0) || 'G'}
+                {displayHotelName.charAt(0)}
               </div>
             )}
             <div className="leading-tight">
-              <span className="block font-semibold text-stone-900 tracking-tight">{settings?.customHotelName || 'Gheralta'}</span>
+              <span className="block font-semibold text-stone-900 tracking-tight">{displayHotelName}</span>
               <div className="hidden sm:flex items-center gap-2">
                 <span className="text-[10px] uppercase tracking-widest text-stone-500 font-medium">{settings?.bookingHeaderSubtitle || 'Direct Reservations'}</span>
                 {settings?.starRating && (
@@ -3375,7 +3379,7 @@ export default function BookingPage({ embedded = false }: { embedded?: boolean }
       {/* Footer */}
       {!embedded && <footer className="border-t border-stone-200 bg-white mt-12">
         <div className="max-w-[1400px] mx-auto px-4 lg:px-10 py-8 flex flex-col md:flex-row justify-between items-center gap-4 text-xs text-stone-500">
-          <p>{settings?.customHotelName || 'Grand Hotel'} &copy; {new Date().getFullYear()}</p>
+          <p>{displayHotelName} &copy; {new Date().getFullYear()}</p>
           {settings?.customHotelAddress && <p className="flex items-center gap-1"><MapPin size={12} /> {settings.customHotelAddress}</p>}
         </div>
       </footer>}
@@ -3385,7 +3389,7 @@ export default function BookingPage({ embedded = false }: { embedded?: boolean }
         isOpen={showTermsModal}
         onClose={() => setShowTermsModal(false)}
         terms={settings?.bookingTerms || ''}
-        hotelName={settings?.customHotelName}
+        hotelName={displayHotelName}
         policySections={settings?.policySections}
         cancellationGraceHours={settings?.cancellationGraceHours}
         cancellationPenaltyPercent={settings?.cancellationPenaltyPercent}
