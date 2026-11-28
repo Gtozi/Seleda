@@ -11,7 +11,7 @@ const label = 'text-[10px] font-bold text-slate-400 uppercase tracking-widest bl
 /** Try a condition/action against a sample context without saving anything. */
 export const RuleTester: React.FC = () => {
   const [condition, setCondition] = useState("booking.nights >= 7 and booking.channel == 'public'");
-  const [action, setAction] = useState('apply_discount(10); notify("long_stay")');
+  const [action, setAction] = useState('flag("long_stay"); notify("long_stay")');
   const [context, setContext] = useState('{\n  "booking": { "nights": 8, "channel": "public", "total": 1200 }\n}');
   const [result, setResult] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
@@ -58,8 +58,6 @@ export const RuleTester: React.FC = () => {
                 <div className="space-y-1 text-[10px]">
                   <div><code>block("msg")</code> - Block the operation</div>
                   <div><code>require_approval("role")</code> - Require specific role approval</div>
-                  <div><code>apply_discount(pct)</code> - Apply percentage discount</div>
-                  <div><code>add_charge("code", amount)</code> - Add charge</div>
                   <div><code>set("field", value)</code> - Set field value</div>
                   <div><code>notify("template")</code> - Send notification</div>
                   <div><code>flag("reason")</code> - Flag for review</div>
@@ -94,7 +92,7 @@ export const RuleTester: React.FC = () => {
               value={action} 
               onChange={e => setAction(e.target.value)} 
               className={input} 
-              placeholder="e.g. apply_discount(10)"
+              placeholder='e.g. block("Long stay requires review")'
             />
           </div>
           <div>

@@ -29,6 +29,7 @@ import {
 import StatCard from '../FrontOffice/StatCard';
 import { PageHeader, SectionCard, Badge } from '../FrontOffice/ui';
 import { useERP } from '../../context/ERPContext';
+import { RateTaxModule } from '../Admin/modules/ControlModules';
 import {
   fetchTaxReturns,
   createTaxReturn,
@@ -52,10 +53,11 @@ import {
   type TaxAuditFE,
 } from '../../services/financePortalService';
 
-type TabKey = 'vat' | 'withholding' | 'tot' | 'excise' | 'paye' | 'pension' | 'customs' | 'local' | 'audit' | 'sales_tax' | 'tourism_levy' | 'service_charge' | 'adjustments';
+type TabKey = 'vat' | 'withholding' | 'tot' | 'excise' | 'paye' | 'pension' | 'customs' | 'local' | 'audit' | 'sales_tax' | 'tourism_levy' | 'service_charge' | 'adjustments' | 'tax_rules';
 
 const TABS: { id: TabKey; label: string; icon: typeof FileText }[] = [
   { id: 'vat', label: 'VAT', icon: Percent },
+  { id: 'tax_rules', label: 'Rate & Tax Rules', icon: Percent },
   { id: 'withholding', label: 'Withholding', icon: FileText },
   { id: 'tot', label: 'TOT', icon: BarChart3 },
   { id: 'excise', label: 'Excise', icon: ShieldCheck },
@@ -1181,6 +1183,7 @@ const TaxCompliance = () => {
       </div>
 
       {/* Search bar */}
+      {activeTab !== 'tax_rules' && (
       <div className="flex items-center gap-3">
         <div className="relative flex-1 max-w-sm">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={14} />
@@ -1193,6 +1196,7 @@ const TaxCompliance = () => {
           />
         </div>
       </div>
+      )}
 
       {/* Error state */}
       {error && (
@@ -1203,13 +1207,14 @@ const TaxCompliance = () => {
       )}
 
       {/* Loading state */}
-      {loading && (
+      {loading && activeTab !== 'tax_rules' && (
         <div className="flex items-center justify-center h-64">
           <Loader2 className="w-8 h-8 animate-spin text-indigo-600" />
         </div>
       )}
 
       {/* Tab content */}
+      {activeTab === 'tax_rules' && <RateTaxModule embedded />}
       {!loading && activeTab === 'vat' && renderVAT()}
       {!loading && activeTab === 'withholding' && renderWithholding()}
       {!loading && activeTab === 'tot' && renderTOT()}

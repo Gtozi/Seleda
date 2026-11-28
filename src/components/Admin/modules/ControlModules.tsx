@@ -498,7 +498,7 @@ export const BusinessRulesModule: React.FC<{ embedded?: boolean }> = ({ embedded
       ]},
       { key: 'priority', label: 'Priority', type: 'number', default: 100, help: 'Lower numbers run first' },
       { key: 'conditionExpr', label: 'Condition', type: 'textarea', required: true, placeholder: 'booking.nights >= 7', help: 'Use paths like booking.nights, booking.total, po.total, amount, user.role' },
-      { key: 'actionExpr', label: 'Action', type: 'textarea', required: true, placeholder: 'apply_discount(10); notify("long_stay")', help: 'Separate multiple actions with ;. Available: block, require_approval, apply_discount, add_charge, set, notify, flag' },
+      { key: 'actionExpr', label: 'Action', type: 'textarea', required: true, placeholder: 'block("Max stay exceeded"); flag("long_stay")', help: 'Separate multiple actions with ;. Available: block, require_approval, set, notify, flag (discounts/rates are managed in Revenue Management).' },
       yesNo('active', 'Active'),
       { key: 'description', label: 'Description', type: 'textarea', table: false },
     ]}

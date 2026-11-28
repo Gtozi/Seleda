@@ -44,61 +44,6 @@ export default function AttributesCategory({
           </div>
         </div>
 
-        {/* Room & Guest Configuration */}
-        <div className="space-y-4">
-          <div className="flex items-center gap-2 mb-4">
-            <div className="w-8 h-8 bg-indigo-100 dark:bg-indigo-900/20 rounded-lg flex items-center justify-center">
-              <Bed size={16} className="text-indigo-600 dark:text-indigo-400" />
-            </div>
-            <h4 className="text-sm font-bold text-slate-900 dark:text-white uppercase tracking-wider">Room & Guest Configuration</h4>
-          </div>
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            <div className="lg:col-span-2">
-              <RoomTypeManager
-                roomTypes={roomTypesDetailed || []}
-                onUpdate={(items) => onGlobalSettingsChange('Room Types', `Update room types configuration`, 'global-setting', { roomTypesDetailed: items })}
-              />
-            </div>
-            <AttributeManager
-              title="Room Features"
-              items={roomFeatures || []}
-              onUpdate={(items) => onGlobalSettingsChange('Room Features', `Update room features: ${items.join(', ') || 'none'}`, 'global-setting', { roomFeatures: items })}
-            />
-            <AttributeManager
-              title="Guest Statuses"
-              items={guestStatuses || []}
-              onUpdate={(items) => onGlobalSettingsChange('Guest Statuses', `Update guest statuses: ${items.join(', ') || 'none'}`, 'global-setting', { guestStatuses: items })}
-            />
-          </div>
-        </div>
-
-        {/* Inventory Management */}
-        <div className="space-y-4">
-          <div className="flex items-center gap-2 mb-4">
-            <div className="w-8 h-8 bg-emerald-100 dark:bg-emerald-900/20 rounded-lg flex items-center justify-center">
-              <Warehouse size={16} className="text-emerald-600 dark:text-emerald-400" />
-            </div>
-            <h4 className="text-sm font-bold text-slate-900 dark:text-white uppercase tracking-wider">Inventory Management</h4>
-          </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            <AttributeManager
-              title="Inventory Categories"
-              items={inventoryCategories || []}
-              onUpdate={(items) => onGlobalSettingsChange('Inventory Categories', `Update inventory categories: ${items.join(', ') || 'none'}`, 'global-setting', { inventoryCategories: items })}
-            />
-            <AttributeManager
-              title="Storage Locations"
-              items={inventoryLocations || []}
-              onUpdate={(items) => onGlobalSettingsChange('Storage Locations', `Update storage locations: ${items.join(', ') || 'none'}`, 'global-setting', { inventoryLocations: items })}
-            />
-            <AttributeManager
-              title="Measurement Units"
-              items={inventoryUnits || []}
-              onUpdate={(items) => onGlobalSettingsChange('Measurement Units', `Update measurement units: ${items.join(', ') || 'none'}`, 'global-setting', { inventoryUnits: items })}
-            />
-          </div>
-        </div>
-
         {/* Property Structure */}
         <div className="space-y-4">
           <div className="flex items-center gap-2 mb-4">
@@ -107,6 +52,9 @@ export default function AttributesCategory({
             </div>
             <h4 className="text-sm font-bold text-slate-900 dark:text-white uppercase tracking-wider">Property Structure</h4>
           </div>
+          <p className="text-xs text-slate-500 dark:text-slate-400">
+            Room types & features are managed in Front Office / Revenue; inventory categories, locations, and units are managed in Inventory.
+          </p>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
             <AttributeManager
               title="Property Depts"

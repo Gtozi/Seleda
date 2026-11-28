@@ -8,7 +8,7 @@
 
 import React, { useState } from 'react';
 import {
-  Globe, Clock, Mail, Save, CheckCircle2, Settings, Moon, FileText, PenLine, X, ShieldAlert, AlertTriangle
+  Globe, Clock, Mail, Save, CheckCircle2, Settings, FileText, PenLine, X, ShieldAlert, AlertTriangle
 } from 'lucide-react';
 import { useERP } from '../../context/ERPContext';
 import type { GlobalHotelSettings } from '../../types/erp';
@@ -16,11 +16,10 @@ import { PageHeader, SectionCard, Badge } from '../FrontOffice/ui';
 import { button } from '../FrontOffice/brandTheme';
 import { AdminSubTabBar } from './shared/AdminSubTabBar';
 
-type SettingsTab = 'localization' | 'night_audit' | 'templates' | 'system';
+type SettingsTab = 'localization' | 'templates' | 'system';
 
 const TAB_META: { id: SettingsTab; label: string; icon: React.ReactNode }[] = [
   { id: 'localization', label: 'Localization', icon: <Globe size={14} /> },
-  { id: 'night_audit', label: 'Night Audit', icon: <Moon size={14} /> },
   { id: 'templates', label: 'Email Templates', icon: <Mail size={14} /> },
   { id: 'system', label: 'System', icon: <Settings size={14} /> },
 ];
@@ -35,7 +34,7 @@ export default function GlobalSystemSettings() {
     <div className="space-y-6 animate-fade-in">
       <PageHeader
         title="System Settings & Localization"
-        subtitle="Configure regional preferences, night audit automation, email templates, and maintenance controls"
+        subtitle="Configure regional preferences, email templates, session policies, and maintenance mode"
         icon={Settings}
       />
 
@@ -44,7 +43,6 @@ export default function GlobalSystemSettings() {
       </div>
 
       {activeTab === 'localization' && <LocalizationModule />}
-      {activeTab === 'night_audit' && <NightAuditModule />}
       {activeTab === 'templates' && <EmailTemplatesModule />}
       {activeTab === 'system' && <SystemModule />}
     </div>

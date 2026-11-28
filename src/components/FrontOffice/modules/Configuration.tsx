@@ -29,11 +29,16 @@ import {
   Phone,
   Mail,
   Globe,
-  Printer
+  Printer,
+  Moon,
+  Sliders
 } from 'lucide-react';
 import StatCard from '../StatCard';
+import { useERP } from '../../../context/ERPContext';
+import RoomTypeManager from '../../Admin/MasterData/RoomTypeManager';
+import AttributeManager from '../../Admin/MasterData/AttributeManager';
 
-type ConfigSection = 'general' | 'property' | 'rooms' | 'policies' | 'payment' | 'notifications' | 'integrations';
+type ConfigSection = 'general' | 'property' | 'rooms' | 'attributes' | 'night_audit' | 'policies' | 'payment' | 'notifications' | 'integrations';
 
 interface HotelSettings {
   name: string;
@@ -77,6 +82,16 @@ const Configuration = () => {
     next.set('view', tab);
     setSearchParams(next);
   };
+  const { globalHotelSettings, submitGlobalSettingsChange } = useERP();
+  const [naForm, setNaForm] = useState({
+    autoNightAuditTime: globalHotelSettings.autoNightAuditTime || '02:00',
+    enableAutoNightAudit: !!globalHotelSettings.autoNightAuditTime,
+    postRoomCharges: globalHotelSettings.nightAuditPostRoomCharges ?? true,
+    generateDailySummary: globalHotelSettings.nightAuditGenerateSummary ?? true,
+    autoCheckinReminders: globalHotelSettings.nightAuditCheckinReminders ?? true,
+  });
+  const [naSaved, setNaSaved] = useState(false);
+
   const [searchQuery, setSearchQuery] = useState('');
   const [showEditModal, setShowEditModal] = useState(false);
   const [hasChanges, setHasChanges] = useState(false);
@@ -230,6 +245,8 @@ const Configuration = () => {
         <TabButton id="general" label="General" icon={Settings} />
         <TabButton id="property" label="Property" icon={Building2} />
         <TabButton id="rooms" label="Rooms" icon={Building2} />
+        <TabButton id="attributes" label="Room Types & Attributes" icon={Sliders} />
+        <TabButton id="night_audit" label="Night Audit" icon={Moon} />
         <TabButton id="policies" label="Policies" icon={FileText} />
         <TabButton id="payment" label="Payment" icon={CreditCard} />
         <TabButton id="notifications" label="Notifications" icon={Bell} />
@@ -554,6 +571,95 @@ const Configuration = () => {
                 <div className="w-11 h-6 bg-slate-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-indigo-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-indigo-600"></div>
               </label>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Room Types & Attributes Tab */}
+      {activeTab === 'attributes' && (
+        <div className="space-y-6">
+          <RoomTypeManager
+            roomTypes={globalHotelSettings.roomTypesDetailed || []}
+            onUpdate={(items) => submitGlobalSettingsChange('Room Types', 'Update room types configuration', 'global-setting', { roomTypesDetailed: items })}
+          />
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <AttributeManager
+              title="Room Features"
+              items={globalHotelSettings.roomFeatures || []}
+              onUpdate={(items) => submitGlobalSettingsChange('Room Features', `Update room features: ${items.join(', ') || 'none'}`, 'global-setting', { roomFeatures: items })}
+            />
+            <AttributeManager
+              title="Guest Statuses"
+              items={globalHotelSettings.guestStatuses || []}
+              onUpdate={(items) => submitGlobalSettingsChange('Guest Statuses', `Update guest statuses: ${items.join(', ') || 'none'}`, 'global-setting', { guestStatuses: items })}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Night Audit Automation Tab */}
+      {activeTab === 'night_audit' && (
+        <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm p-6 space-y-5">
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <h3 className="font-semibold text-slate-900 dark:text-white">Night Audit Automation</h3>
+              <p className="text-sm text-slate-500 dark:text-slate-400">Configure end-of-day posting, summary generation, and pre-arrival reminders</p>
+            </div>
+            <button
+              onClick={() => {
+                submitGlobalSettingsChange(
+                  'Night Audit Schedule',
+                  `Set automatic night audit time to ${naForm.autoNightAuditTime} (${naForm.enableAutoNightAudit ? 'enabled' : 'disabled'})`,
+                  'global-setting',
+                  {
+                    autoNightAuditTime: naForm.enableAutoNightAudit ? naForm.autoNightAuditTime : '',
+                    nightAuditPostRoomCharges: naForm.postRoomCharges,
+                    nightAuditGenerateSummary: naForm.generateDailySummary,
+                    nightAuditCheckinReminders: naForm.autoCheckinReminders,
+                  }
+                );
+                setNaSaved(true);
+                setTimeout(() => setNaSaved(false), 2500);
+              }}
+              className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700 transition cursor-pointer"
+            >
+              {naSaved ? <CheckCircle2 size={16} /> : <Save size={16} />}
+              {naSaved ? 'Saved' : 'Save Night Audit'}
+            </button>
+          </div>
+          <div className="space-y-3">
+            <label className="flex items-center justify-between p-4 border border-slate-200 dark:border-slate-700 rounded-xl cursor-pointer">
+              <div>
+                <div className="font-medium text-slate-900 dark:text-white">Enable automatic Night Audit</div>
+                <div className="text-sm text-slate-500">Run end-of-day posting and summary generation automatically</div>
+              </div>
+              <input type="checkbox" checked={naForm.enableAutoNightAudit} onChange={e => setNaForm(f => ({ ...f, enableAutoNightAudit: e.target.checked }))} />
+            </label>
+            <div className="p-4 border border-slate-200 dark:border-slate-700 rounded-xl">
+              <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1.5">Scheduled Time</label>
+              <input type="time" value={naForm.autoNightAuditTime} onChange={e => setNaForm(f => ({ ...f, autoNightAuditTime: e.target.value }))} className="px-3 py-2 border border-slate-200 dark:border-slate-700 rounded-lg text-sm bg-white dark:bg-slate-800 text-slate-900 dark:text-white" />
+            </div>
+            <label className="flex items-center justify-between p-4 border border-slate-200 dark:border-slate-700 rounded-xl cursor-pointer">
+              <div>
+                <div className="font-medium text-slate-900 dark:text-white">Auto-post room charges</div>
+                <div className="text-sm text-slate-500">Automatically post nightly room charges to active folios</div>
+              </div>
+              <input type="checkbox" checked={naForm.postRoomCharges} onChange={e => setNaForm(f => ({ ...f, postRoomCharges: e.target.checked }))} />
+            </label>
+            <label className="flex items-center justify-between p-4 border border-slate-200 dark:border-slate-700 rounded-xl cursor-pointer">
+              <div>
+                <div className="font-medium text-slate-900 dark:text-white">Generate daily summary report</div>
+                <div className="text-sm text-slate-500">Create and email the daily revenue and occupancy summary</div>
+              </div>
+              <input type="checkbox" checked={naForm.generateDailySummary} onChange={e => setNaForm(f => ({ ...f, generateDailySummary: e.target.checked }))} />
+            </label>
+            <label className="flex items-center justify-between p-4 border border-slate-200 dark:border-slate-700 rounded-xl cursor-pointer">
+              <div>
+                <div className="font-medium text-slate-900 dark:text-white">Auto check-in reminders</div>
+                <div className="text-sm text-slate-500">Send automated reminders to guests ahead of check-in</div>
+              </div>
+              <input type="checkbox" checked={naForm.autoCheckinReminders} onChange={e => setNaForm(f => ({ ...f, autoCheckinReminders: e.target.checked }))} />
+            </label>
           </div>
         </div>
       )}

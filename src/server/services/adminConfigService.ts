@@ -196,7 +196,7 @@ async function getBusinessRuleRows(): Promise<BusinessRuleRow[]> {
   }, [] as BusinessRuleRow[]);
 }
 
-const EMPTY_EVAL: RuleEvaluation = { matched: [], effects: [], blocked: [], approvalRoles: [], discountPercent: 0, errors: [] };
+const EMPTY_EVAL: RuleEvaluation = { matched: [], effects: [], blocked: [], approvalRoles: [], errors: [] };
 
 /** Evaluate every active rule in `category` against `context`. Never throws; with no rules the result is empty. */
 export async function evaluateBusinessRules(category: string, context: Record<string, any>, propertyId?: string | null): Promise<RuleEvaluation> {

@@ -12,6 +12,7 @@ import { PageHeader, SectionCard, Badge } from '../FrontOffice/ui';
 import { button, layout } from '../FrontOffice/brandTheme';
 import { useERP } from '../../context/ERPContext';
 import { fetchConfig, saveConfig, type UinvConfig } from '../../services/inventoryService';
+import AttributeManager from '../Admin/MasterData/AttributeManager';
 
 const inputClass =
   'w-full px-3 py-2 text-sm border border-gray-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-gray-900 dark:text-white outline-none focus:ring-1 focus:ring-[var(--color-accent-operations)]';
@@ -46,7 +47,7 @@ const SECTIONS = [
 ];
 
 const ConfigurationModule: React.FC = () => {
-  const { currentPropertyId, addNotification } = useERP();
+  const { currentPropertyId, addNotification, globalHotelSettings, submitGlobalSettingsChange } = useERP();
   const [config, setConfig] = useState<UinvConfig | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -148,6 +149,26 @@ const ConfigurationModule: React.FC = () => {
           </div>
         </SectionCard>
       ))}
+
+      <SectionCard title="Categories, Locations & Units" subtitle="Inventory master attributes used across receiving, requisitions, and stock counts" pad="md">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          <AttributeManager
+            title="Inventory Categories"
+            items={globalHotelSettings.inventoryCategories || []}
+            onUpdate={(items) => submitGlobalSettingsChange('Inventory Categories', `Update inventory categories: ${items.join(', ') || 'none'}`, 'global-setting', { inventoryCategories: items })}
+          />
+          <AttributeManager
+            title="Storage Locations"
+            items={globalHotelSettings.inventoryLocations || []}
+            onUpdate={(items) => submitGlobalSettingsChange('Storage Locations', `Update storage locations: ${items.join(', ') || 'none'}`, 'global-setting', { inventoryLocations: items })}
+          />
+          <AttributeManager
+            title="Measurement Units"
+            items={globalHotelSettings.inventoryUnits || []}
+            onUpdate={(items) => submitGlobalSettingsChange('Measurement Units', `Update measurement units: ${items.join(', ') || 'none'}`, 'global-setting', { inventoryUnits: items })}
+          />
+        </div>
+      </SectionCard>
     </div>
   );
 };

@@ -789,6 +789,7 @@ function MasterHotelERP({ onErpAuthChange }: { onErpAuthChange?: (authenticated:
         { id: 'promotions', label: 'Promotions', modId: 'sales_promotions', icon: Tag },
         { id: 'gift-cards', label: 'Gift Cards', modId: 'sales_gift_cards', icon: Gift },
         { id: 'reputation', label: 'Reputation', modId: 'sales_reputation', icon: Star },
+        { id: 'public-profile', label: 'Public Profile', modId: 'sales_reputation', icon: Globe },
         { id: 'guest-feedback', label: 'Feedback', modId: 'sales_guest_feedback', icon: MessageSquare },
         { id: 'segmentation', label: 'Segmentation', modId: 'sales_segmentation', icon: PieChart },
         { id: 'communication', label: 'Communication', modId: 'sales_communication', icon: MessageSquare },

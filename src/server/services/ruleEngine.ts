@@ -174,12 +174,10 @@ export function evaluateCondition(src: string, ctx: Ctx): boolean {
 
 // ── Actions ────────────────────────────────────────────────────
 
-/** Whitelisted actions and their arity. Actions are returned as effects; callers apply the ones they support. */
+/** Whitelisted governance/control actions. Pricing & discounts are managed in Revenue Management. */
 export const ACTIONS: Record<string, { min: number; max: number }> = {
   block: { min: 1, max: 1 },             // block("message")
   require_approval: { min: 1, max: 1 },  // require_approval("role")
-  apply_discount: { min: 1, max: 1 },    // apply_discount(10)  percent
-  add_charge: { min: 2, max: 2 },        // add_charge("code", amount)
   set: { min: 2, max: 2 },               // set("field", value)
   notify: { min: 1, max: 1 },            // notify("template_code")
   flag: { min: 1, max: 1 },              // flag("reason")
@@ -237,12 +235,11 @@ export interface RuleEvaluation {
   effects: Effect[];
   blocked: string[];
   approvalRoles: string[];
-  discountPercent: number;
   errors: { id: string; name: string; error: string }[];
 }
 
 export function evaluateRuleSet(rules: RuleRow[], ctx: Ctx): RuleEvaluation {
-  const result: RuleEvaluation = { matched: [], effects: [], blocked: [], approvalRoles: [], discountPercent: 0, errors: [] };
+  const result: RuleEvaluation = { matched: [], effects: [], blocked: [], approvalRoles: [], errors: [] };
   for (const r of [...rules].filter(r => r.active).sort((a, b) => a.priority - b.priority)) {
     try {
       if (!evaluateCondition(r.conditionExpr, ctx)) continue;
@@ -252,7 +249,6 @@ export function evaluateRuleSet(rules: RuleRow[], ctx: Ctx): RuleEvaluation {
         result.effects.push(e);
         if (e.name === 'block') result.blocked.push(String(e.args[0]));
         if (e.name === 'require_approval') result.approvalRoles.push(String(e.args[0]).toLowerCase());
-        if (e.name === 'apply_discount') result.discountPercent = Math.max(result.discountPercent, Number(e.args[0]) || 0);
       }
     } catch (err: any) {
       result.errors.push({ id: r.id, name: r.name, error: err?.message || 'Rule failed' });

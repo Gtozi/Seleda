@@ -24,6 +24,7 @@ import SalesReports from './SalesReports';
 import SalesConfiguration from './SalesConfiguration';
 import SalesStaffManagement from './SalesStaffManagement';
 import DepartmentRequisitionForm from '../Inventory/DepartmentRequisitionForm';
+import PropertyPublicProfile from '../Admin/modules/PropertyPublicProfile';
 
 const SalesPortal: React.FC<{ activeTab?: string }> = ({ activeTab = 'dashboard' }) => {
   return (
@@ -47,6 +48,7 @@ const SalesPortal: React.FC<{ activeTab?: string }> = ({ activeTab = 'dashboard'
         {activeTab === 'promotions' && <PromotionsOffers />}
         {activeTab === 'gift-cards' && <GiftCardsVouchers />}
         {activeTab === 'reputation' && <ReputationManagement />}
+        {activeTab === 'public-profile' && <PropertyPublicProfile />}
         {activeTab === 'guest-feedback' && <GuestFeedback />}
         {activeTab === 'segmentation' && <CustomerSegmentation />}
         {activeTab === 'communication' && <CommunicationCenter />}

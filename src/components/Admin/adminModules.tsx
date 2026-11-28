@@ -14,10 +14,10 @@ import {
   Database,
   GitBranch,
   Mail,
-  Store,
-  Percent,
+  Cpu,
+  CreditCard,
   Settings,
-  Plug,
+  Key,
   Activity,
   FileBarChart,
   type LucideIcon,
@@ -28,14 +28,13 @@ import AdminReports from './modules/AdminReports';
 import UserManagementSecurity from './UserManagementSecurity';
 import GlobalSystemSettings from './GlobalSystemSettings';
 import MasterData from './MasterData';
-import { TemplatesModule } from './modules/ControlModules';
+import APIManagement from './APIManagement';
+import { TemplatesModule, PaymentGatewayModule } from './modules/ControlModules';
 import {
   TenantPropertyHub,
   PortalFeatureHub,
   RulesWorkflowsHub,
   PosDevicesHub,
-  BillingTaxHub,
-  IntegrationsHub,
   SystemOperationsHub,
 } from './modules/AdminHubs';
 
@@ -101,16 +100,16 @@ export const CORE_ADMIN_MODULES: AdminModuleConfig[] = [
   },
   {
     id: 'pos_management',
-    label: 'POS & Devices',
-    icon: Store,
+    label: 'Devices & Terminals',
+    icon: Cpu,
     component: PosDevicesHub,
     toggleKey: 'admin_pos_management',
   },
   {
     id: 'rate_tax',
-    label: 'Billing & Tax',
-    icon: Percent,
-    component: BillingTaxHub,
+    label: 'Payment Gateways',
+    icon: CreditCard,
+    component: PaymentGatewayModule,
     toggleKey: 'admin_rate_tax',
   },
   {
@@ -122,9 +121,9 @@ export const CORE_ADMIN_MODULES: AdminModuleConfig[] = [
   },
   {
     id: 'integration_hub',
-    label: 'Integrations & API',
-    icon: Plug,
-    component: IntegrationsHub,
+    label: 'API Gateway',
+    icon: Key,
+    component: APIManagement,
     toggleKey: 'admin_integration_hub',
   },
   {

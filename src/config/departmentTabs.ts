@@ -334,6 +334,7 @@ export const DEPARTMENT_TABS: Readonly<Record<string, readonly TabConfig[]>> = {
     { id: 'promotions', label: 'Promotions', modId: 'sales_promotions' },
     { id: 'gift-cards', label: 'Gift Cards', modId: 'sales_gift_cards' },
     { id: 'reputation', label: 'Reputation', modId: 'sales_reputation' },
+    { id: 'public-profile', label: 'Public Profile', modId: 'sales_reputation' },
     { id: 'guest-feedback', label: 'Feedback', modId: 'sales_guest_feedback' },
     { id: 'segmentation', label: 'Segmentation', modId: 'sales_segmentation' },
     { id: 'communication', label: 'Communication', modId: 'sales_communication' },

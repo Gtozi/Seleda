@@ -24,6 +24,7 @@ import StatCard from '../FrontOffice/StatCard';
 import { PageHeader, Badge } from '../FrontOffice/ui';
 import { button, layout } from '../FrontOffice/brandTheme';
 import KitchenManagement, { type KitchenManagementAPI } from './KitchenManagement';
+import POSOutletManagement from '../Admin/POSOutletManagement';
 
 interface Outlet {
   id: string;
@@ -86,7 +87,7 @@ function toOperatingHours(hours: Record<string, { open: string; close: string }>
 
 export default function OutletManagement() {
   const { addNotification } = useERP();
-  const [activeSubTab, setActiveSubTab] = useState<'outlets' | 'kitchen'>('outlets');
+  const [activeSubTab, setActiveSubTab] = useState<'outlets' | 'kitchen' | 'pos_setup'>('outlets');
   const [outlets, setOutlets] = useState<Outlet[]>([]);
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
@@ -338,10 +339,24 @@ export default function OutletManagement() {
           <ChefHat className="w-4 h-4" />
           <span className="text-sm">Kitchen Management</span>
         </button>
+        <button
+          onClick={() => setActiveSubTab('pos_setup')}
+          className={`flex items-center gap-2 px-4 py-2 rounded-xl transition-all ${
+            activeSubTab === 'pos_setup'
+              ? 'bg-white dark:bg-slate-800 text-[var(--color-accent-fb)] shadow-sm font-medium'
+              : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-slate-50 dark:hover:bg-slate-700'
+          }`}
+        >
+          <Settings className="w-4 h-4" />
+          <span className="text-sm">POS Outlets, GL & Shifts</span>
+        </button>
       </div>
 
       {/* Kitchen Management sub-tab */}
       {activeSubTab === 'kitchen' && <KitchenManagement embedded onReady={handleKitchenReady} />}
+
+      {/* POS Outlets, GL & Shifts sub-tab */}
+      {activeSubTab === 'pos_setup' && <POSOutletManagement embedded />}
 
       {/* Outlets sub-tab */}
       {activeSubTab === 'outlets' && (

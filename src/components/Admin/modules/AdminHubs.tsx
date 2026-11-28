@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import {
-  Building2, Network, Globe, Layers, ToggleRight, ShieldCheck, GitBranch,
-  Scale, ListChecks, CheckSquare, Store, Cpu, Monitor, Percent, CreditCard,
-  Plug, Key, Radio, Activity, Calendar, Database, Shield, KeyRound,
+  Building2, Network, Layers, ToggleRight, ShieldCheck, GitBranch,
+  Scale, ListChecks, CheckSquare, Cpu, Monitor,
+  Activity, Calendar, Database, Shield, KeyRound,
 } from 'lucide-react';
 import { AdminSubTabBar } from '../shared/AdminSubTabBar';
 import { PageHeader } from '../../FrontOffice/ui';
@@ -11,11 +11,7 @@ import { layout } from '../../FrontOffice/brandTheme';
 import { adminAuthHeaders } from '../shared/ResourceManager';
 import PropertyManager from '../PropertyManager';
 import OrganizationHierarchyManager from '../OrganizationHierarchyManager';
-import PropertyPublicProfile from './PropertyPublicProfile';
 import PortalManagementLive from './PortalManagementLive';
-import POSOutletManagement from '../POSOutletManagement';
-import SystemIntegrationChannel from '../SystemIntegrationChannel';
-import APIManagement from '../APIManagement';
 import SystemHealthDashboard from '../SystemHealthDashboard';
 import SchedulerManager from '../SchedulerManager';
 import DataManagementBackups from '../DataManagementBackups';
@@ -27,10 +23,7 @@ import {
   BusinessRulesModule,
   WorkflowModule,
   ApprovalMatrixModule,
-  PaymentGatewayModule,
-  RateTaxModule,
   LicensingModule,
-  ChannelManagerModule,
 } from './ControlModules';
 import { ResourceManager, type ResourceField } from '../shared/ResourceManager';
 
@@ -81,8 +74,7 @@ const n = (v: number | null | undefined) => (v === null || v === undefined ? 'â€
 
 export const TenantPropertyHub: React.FC<{ activeModule?: string }> = ({ activeModule }) => {
   const counts = useAdminOverviewCounts();
-  const [tab, setTab] = useSyncedTab<'properties' | 'org' | 'public' | 'departments'>(activeModule, m => {
-    if (m === 'property_public_profile') return 'public';
+  const [tab, setTab] = useSyncedTab<'properties' | 'org' | 'departments'>(activeModule, m => {
     if (m === 'organization_structure' || m === 'property_structure') return 'org';
     if (m === 'department_management') return 'departments';
     return 'properties';
@@ -91,20 +83,18 @@ export const TenantPropertyHub: React.FC<{ activeModule?: string }> = ({ activeM
     <div className={`${layout.sectionStack} animate-fade-in`}>
       <PageHeader
         title="Properties & Organization"
-        subtitle="Manage organizations, properties, public website profiles, and departments"
+        subtitle="Manage organizations, properties, and departments"
         icon={Building2}
       />
       <div className={layout.kpiGrid}>
         <StatCard title="Organizations" value={n(counts?.organizations)} icon={Network} tone="accent" />
         <StatCard title="Properties" value={n(counts?.properties)} icon={Building2} tone="info" />
         <StatCard title="Departments" value={n(counts?.departments)} icon={Layers} tone="success" />
-        <StatCard title="Public Profiles" value={n(counts?.properties)} icon={Globe} tone="neutral" />
       </div>
       <AdminSubTabBar
         tabs={[
           { id: 'properties', label: 'Tenant & Property', icon: <Building2 size={14} /> },
           { id: 'org', label: 'Organization Tree', icon: <Network size={14} /> },
-          { id: 'public', label: 'Public Profile', icon: <Globe size={14} /> },
           { id: 'departments', label: 'Departments', icon: <Layers size={14} /> },
         ]}
         activeTab={tab}
@@ -112,7 +102,6 @@ export const TenantPropertyHub: React.FC<{ activeModule?: string }> = ({ activeM
       />
       {tab === 'properties' && <PropertyManager embedded />}
       {tab === 'org' && <OrganizationHierarchyManager embedded />}
-      {tab === 'public' && <PropertyPublicProfile embedded />}
       {tab === 'departments' && <DepartmentsModule embedded />}
     </div>
   );
@@ -174,24 +163,22 @@ export const RulesWorkflowsHub: React.FC<{ activeModule?: string }> = ({ activeM
 };
 
 export const PosDevicesHub: React.FC<{ activeModule?: string }> = ({ activeModule }) => {
-  const [tab, setTab] = useSyncedTab<'outlets' | 'devices' | 'terminals'>(activeModule, m => (m === 'device_management' ? 'devices' : 'outlets'));
+  const [tab, setTab] = useSyncedTab<'devices' | 'terminals'>(activeModule, m => (m === 'pos_management' ? 'terminals' : 'devices'));
   return (
     <div className={`${layout.sectionStack} animate-fade-in`}>
       <PageHeader
-        title="POS & Devices"
-        subtitle="Manage POS outlets, GL mappings, hardware devices, and registered terminals"
-        icon={Store}
+        title="Devices & Terminals"
+        subtitle="Manage hardware devices, encoders, kiosks, and registered POS terminals"
+        icon={Cpu}
       />
       <AdminSubTabBar
         tabs={[
-          { id: 'outlets', label: 'POS Outlets', icon: <Store size={14} /> },
           { id: 'devices', label: 'Devices', icon: <Cpu size={14} /> },
           { id: 'terminals', label: 'POS Terminals', icon: <Monitor size={14} /> },
         ]}
         activeTab={tab}
         onChange={setTab}
       />
-      {tab === 'outlets' && <POSOutletManagement embedded />}
       {tab === 'devices' && (
         <ResourceManager
           embedded
@@ -218,57 +205,9 @@ export const PosDevicesHub: React.FC<{ activeModule?: string }> = ({ activeModul
   );
 };
 
-export const BillingTaxHub: React.FC<{ activeModule?: string }> = ({ activeModule }) => {
-  const [tab, setTab] = useSyncedTab<'tax' | 'gateways'>(activeModule, m => (m === 'payment_gateway' ? 'gateways' : 'tax'));
-  return (
-    <div className={`${layout.sectionStack} animate-fade-in`}>
-      <PageHeader
-        title="Billing & Tax"
-        subtitle="Central VAT, service charge rules, and payment gateway connections"
-        icon={Percent}
-      />
-      <AdminSubTabBar
-        tabs={[
-          { id: 'tax', label: 'Rate & Tax', icon: <Percent size={14} /> },
-          { id: 'gateways', label: 'Payment Gateways', icon: <CreditCard size={14} /> },
-        ]}
-        activeTab={tab}
-        onChange={setTab}
-      />
-      {tab === 'tax' && <RateTaxModule embedded />}
-      {tab === 'gateways' && <PaymentGatewayModule embedded />}
-    </div>
-  );
-};
 
-export const IntegrationsHub: React.FC<{ activeModule?: string }> = ({ activeModule }) => {
-  const [tab, setTab] = useSyncedTab<'hub' | 'api' | 'channels'>(activeModule, m => {
-    if (m === 'api_gateway') return 'api';
-    if (m === 'channel_manager') return 'channels';
-    return 'hub';
-  });
-  return (
-    <div className={`${layout.sectionStack} animate-fade-in`}>
-      <PageHeader
-        title="Integrations & API"
-        subtitle="OTA channel sync, external API keys, and distribution configuration"
-        icon={Plug}
-      />
-      <AdminSubTabBar
-        tabs={[
-          { id: 'hub', label: 'Integration Hub', icon: <Plug size={14} /> },
-          { id: 'api', label: 'API Gateway', icon: <Key size={14} /> },
-          { id: 'channels', label: 'Channel Manager', icon: <Radio size={14} /> },
-        ]}
-        activeTab={tab}
-        onChange={setTab}
-      />
-      {tab === 'hub' && <SystemIntegrationChannel embedded />}
-      {tab === 'api' && <APIManagement embedded />}
-      {tab === 'channels' && <ChannelManagerModule embedded />}
-    </div>
-  );
-};
+
+
 
 export const SystemOperationsHub: React.FC<{ activeModule?: string }> = ({ activeModule }) => {
   const [tab, setTab] = useSyncedTab<'health' | 'scheduler' | 'backups' | 'compliance' | 'licensing'>(activeModule, m => {

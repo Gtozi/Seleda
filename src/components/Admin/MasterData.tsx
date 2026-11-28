@@ -45,12 +45,11 @@ export default function MasterData() {
     submitGlobalSettingsChange
   } = useERP();
 
-  const [category, setCategory] = useState<'rooms' | 'infrastructure' | 'attributes'>('rooms');
+  const [category, setCategory] = useState<'infrastructure' | 'attributes'>('infrastructure');
 
   const CATEGORY_TABS = [
-    { id: 'rooms' as const, label: 'Rooms & Properties', icon: Home },
     { id: 'infrastructure' as const, label: 'Property Infrastructure', icon: MapPin },
-    { id: 'attributes' as const, label: 'Registry Attributes', icon: Sliders },
+    { id: 'attributes' as const, label: 'Structure Attributes', icon: Sliders },
   ];
   const [searchQuery, setSearchQuery] = useState('');
   
