@@ -66,10 +66,14 @@ const Field: React.FC<{ label: string; children: React.ReactNode }> = ({ label, 
 const PropertyPublicProfile: React.FC<{ embedded?: boolean }> = ({ embedded }) => {
   const { globalHotelSettings, submitGlobalSettingsChange } = useERP();
   const [logoDraft, setLogoDraft] = useState(globalHotelSettings.hotelLogo || '');
+  const [faviconDraft, setFaviconDraft] = useState(globalHotelSettings.publicFavicon || '');
   const [logoSaved, setLogoSaved] = useState(false);
   useEffect(() => {
     setLogoDraft(globalHotelSettings.hotelLogo || '');
   }, [globalHotelSettings.hotelLogo]);
+  useEffect(() => {
+    setFaviconDraft(globalHotelSettings.publicFavicon || '');
+  }, [globalHotelSettings.publicFavicon]);
 
   const [properties, setProperties] = useState<PropertyRow[]>([]);
   const [selectedId, setSelectedId] = useState<string>('');
@@ -179,7 +183,7 @@ const PropertyPublicProfile: React.FC<{ embedded?: boolean }> = ({ embedded }) =
       )}
 
       <SectionCard
-        title="Subdomain Logo"
+        title="Subdomain Logo & Website Icon"
         subtitle="Displayed on the public website, public page webicon (favicon), and guest portal / guest login"
         icon={ImageIcon}
         tone="accent"
@@ -188,61 +192,119 @@ const PropertyPublicProfile: React.FC<{ embedded?: boolean }> = ({ embedded }) =
           <button
             type="button"
             onClick={() => {
-              submitGlobalSettingsChange('Subdomain Logo', 'Update subdomain logo', 'global-setting', { hotelLogo: logoDraft.trim() });
+              submitGlobalSettingsChange('Subdomain Branding', 'Update subdomain logo and website icon', 'global-setting', {
+                hotelLogo: logoDraft.trim(),
+                publicFavicon: faviconDraft.trim(),
+              });
               setLogoSaved(true);
               setTimeout(() => setLogoSaved(false), 2500);
             }}
             className={button.primary}
           >
             {logoSaved ? <CheckCircle2 size={14} /> : <Save size={14} />}
-            {logoSaved ? 'Saved' : 'Save Logo'}
+            {logoSaved ? 'Saved' : 'Save Branding'}
           </button>
         }
       >
-        <div className="flex items-center gap-4">
-          <div className="w-16 h-16 rounded-xl border border-gray-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 flex items-center justify-center overflow-hidden shrink-0">
-            {logoDraft ? (
-              <img src={logoDraft} alt="Subdomain logo" className="w-full h-full object-contain p-1" />
-            ) : (
-              <Building2 size={24} className="text-slate-400" />
-            )}
-          </div>
-          <div className="flex-1 space-y-2 min-w-0">
-            <div className="flex items-center gap-2">
-              <label className="px-3 py-1.5 bg-indigo-50 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400 rounded-lg text-xs font-medium cursor-pointer hover:bg-indigo-100 dark:hover:bg-indigo-900/50 transition-colors inline-flex items-center gap-1.5">
-                <Upload size={13} /> Upload Image
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <div className="space-y-2">
+            <label className={labelCls}>Subdomain Logo</label>
+            <div className="flex items-center gap-4">
+              <div className="w-16 h-16 rounded-xl border border-gray-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 flex items-center justify-center overflow-hidden shrink-0">
+                {logoDraft ? (
+                  <img src={logoDraft} alt="Subdomain logo" className="w-full h-full object-contain p-1" />
+                ) : (
+                  <Building2 size={24} className="text-slate-400" />
+                )}
+              </div>
+              <div className="flex-1 space-y-2 min-w-0">
+                <div className="flex items-center gap-2">
+                  <label className="px-3 py-1.5 bg-indigo-50 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400 rounded-lg text-xs font-medium cursor-pointer hover:bg-indigo-100 dark:hover:bg-indigo-900/50 transition-colors inline-flex items-center gap-1.5">
+                    <Upload size={13} /> Upload Image
+                    <input
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        if (!file) return;
+                        const reader = new FileReader();
+                        reader.onloadend = () => {
+                          if (typeof reader.result === 'string') setLogoDraft(reader.result);
+                        };
+                        reader.readAsDataURL(file);
+                      }}
+                    />
+                  </label>
+                  {logoDraft && (
+                    <button
+                      type="button"
+                      onClick={() => setLogoDraft('')}
+                      className="px-2.5 py-1.5 text-xs text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/30 rounded-lg transition-colors cursor-pointer"
+                    >
+                      Remove
+                    </button>
+                  )}
+                </div>
                 <input
-                  type="file"
-                  accept="image/*"
-                  className="hidden"
-                  onChange={(e) => {
-                    const file = e.target.files?.[0];
-                    if (!file) return;
-                    const reader = new FileReader();
-                    reader.onloadend = () => {
-                      if (typeof reader.result === 'string') setLogoDraft(reader.result);
-                    };
-                    reader.readAsDataURL(file);
-                  }}
+                  type="url"
+                  value={logoDraft.startsWith('data:') ? '' : logoDraft}
+                  onChange={(e) => setLogoDraft(e.target.value)}
+                  placeholder={logoDraft.startsWith('data:') ? 'Uploaded image (paste URL to replace)' : 'https://... or upload an image'}
+                  className={inputCls}
                 />
-              </label>
-              {logoDraft && (
-                <button
-                  type="button"
-                  onClick={() => setLogoDraft('')}
-                  className="px-2.5 py-1.5 text-xs text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/30 rounded-lg transition-colors cursor-pointer"
-                >
-                  Remove
-                </button>
-              )}
+              </div>
             </div>
-            <input
-              type="url"
-              value={logoDraft.startsWith('data:') ? '' : logoDraft}
-              onChange={(e) => setLogoDraft(e.target.value)}
-              placeholder={logoDraft.startsWith('data:') ? 'Uploaded image (paste URL to replace)' : 'https://... or upload an image'}
-              className={inputCls}
-            />
+          </div>
+
+          <div className="space-y-2">
+            <label className={labelCls}>Website Icon (Favicon)</label>
+            <div className="flex items-center gap-4">
+              <div className="w-16 h-16 rounded-xl border border-gray-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 flex items-center justify-center overflow-hidden shrink-0">
+                {faviconDraft ? (
+                  <img src={faviconDraft} alt="Website icon" className="w-full h-full object-contain p-1" />
+                ) : (
+                  <Globe size={24} className="text-slate-400" />
+                )}
+              </div>
+              <div className="flex-1 space-y-2 min-w-0">
+                <div className="flex items-center gap-2">
+                  <label className="px-3 py-1.5 bg-indigo-50 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400 rounded-lg text-xs font-medium cursor-pointer hover:bg-indigo-100 dark:hover:bg-indigo-900/50 transition-colors inline-flex items-center gap-1.5">
+                    <Upload size={13} /> Upload Icon
+                    <input
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        if (!file) return;
+                        const reader = new FileReader();
+                        reader.onloadend = () => {
+                          if (typeof reader.result === 'string') setFaviconDraft(reader.result);
+                        };
+                        reader.readAsDataURL(file);
+                      }}
+                    />
+                  </label>
+                  {faviconDraft && (
+                    <button
+                      type="button"
+                      onClick={() => setFaviconDraft('')}
+                      className="px-2.5 py-1.5 text-xs text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/30 rounded-lg transition-colors cursor-pointer"
+                    >
+                      Remove
+                    </button>
+                  )}
+                </div>
+                <input
+                  type="url"
+                  value={faviconDraft.startsWith('data:') ? '' : faviconDraft}
+                  onChange={(e) => setFaviconDraft(e.target.value)}
+                  placeholder={faviconDraft.startsWith('data:') ? 'Uploaded icon (paste URL to replace)' : 'https://... or upload an icon (falls back to logo)'}
+                  className={inputCls}
+                />
+              </div>
+            </div>
           </div>
         </div>
       </SectionCard>

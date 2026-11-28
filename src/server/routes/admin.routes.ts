@@ -764,6 +764,7 @@ const mapPlatformSettingsRow = (row: Record<string, any> | null | undefined) => 
   systemLogLevel: (['info', 'detailed', 'debug'].includes(row?.system_log_level) ? row?.system_log_level : 'info') as 'info' | 'detailed' | 'debug',
   erpLogo: row?.erp_logo || row?.hotel_logo || '',
   erpName: row?.erp_name || 'SELEDA',
+  erpFavicon: row?.erp_favicon || '',
   updatedAt: row?.updated_at || null,
 });
 
@@ -1279,6 +1280,10 @@ router.patch('/platform-settings', authenticate, requireSuperAdmin, async (req, 
     rawUpdates.erp_name = typeof body.erpName === 'string' ? body.erpName.trim() : '';
   }
 
+  if (body.erpFavicon !== undefined) {
+    rawUpdates.erp_favicon = typeof body.erpFavicon === 'string' ? body.erpFavicon.trim() : '';
+  }
+
   try {
     const filteredUpdates = await filterKnownColumns(rawUpdates);
     if (body.erpLogo !== undefined && filteredUpdates.erp_logo === undefined) {
@@ -1289,19 +1294,33 @@ router.patch('/platform-settings', authenticate, requireSuperAdmin, async (req, 
       return res.status(400).json({ error: 'No valid platform settings provided' });
     }
 
-    const { data: existing } = await supabaseAdmin
+    const { data: existing, error: lookupError } = await supabaseAdmin
       .from('global_settings')
       .select('id')
       .limit(1)
       .maybeSingle();
 
-    const targetId = existing?.id || 'main';
+    if (lookupError) {
+      console.error('[platform-settings] Lookup error:', lookupError);
+      return res.status(500).json({ error: lookupError.message });
+    }
+
+    const targetId = existing?.id || crypto.randomUUID();
+    const nowIso = new Date().toISOString();
+    const metaColumns = await filterKnownColumns({
+      updated_at: nowIso,
+      updated_by: req.user?.id || null,
+      ...(existing ? {} : { created_at: nowIso, created_by: req.user?.id || null }),
+    });
+    const payload = { ...filteredUpdates, ...metaColumns };
+
     const query = existing
-      ? supabaseAdmin.from('global_settings').update(filteredUpdates).eq('id', targetId).select('*').single()
-      : supabaseAdmin.from('global_settings').insert({ id: targetId, ...filteredUpdates }).select('*').single();
+      ? supabaseAdmin.from('global_settings').update(payload).eq('id', targetId).select('*').single()
+      : supabaseAdmin.from('global_settings').insert({ id: targetId, ...payload }).select('*').single();
 
     const { data: updated, error } = await query;
     if (error) {
+      console.error('[platform-settings] Save error:', error);
       return res.status(500).json({ error: error.message });
     }
 

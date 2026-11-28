@@ -71,7 +71,27 @@ const LogoUploadField: React.FC<{
     if (!file) return;
     const reader = new FileReader();
     reader.onloadend = () => {
-      if (typeof reader.result === 'string') onChange(reader.result);
+      const dataUrl = typeof reader.result === 'string' ? reader.result : '';
+      if (!dataUrl) return;
+      const img = new Image();
+      img.onload = () => {
+        const maxDim = 512;
+        const scale = Math.min(1, maxDim / Math.max(img.width || 1, img.height || 1));
+        const w = Math.max(1, Math.round(img.width * scale));
+        const h = Math.max(1, Math.round(img.height * scale));
+        const canvas = document.createElement('canvas');
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.drawImage(img, 0, 0, w, h);
+          onChange(canvas.toDataURL('image/png'));
+        } else {
+          onChange(dataUrl);
+        }
+      };
+      img.onerror = () => onChange(dataUrl);
+      img.src = dataUrl;
     };
     reader.readAsDataURL(file);
   };
@@ -2261,6 +2281,7 @@ interface PlatformSettingsState {
   systemLogLevel: 'info' | 'detailed' | 'debug';
   erpLogo: string;
   erpName: string;
+  erpFavicon: string;
   updatedAt?: string | null;
 }
 
@@ -2278,6 +2299,7 @@ const DEFAULT_PLATFORM_SETTINGS: PlatformSettingsState = {
   systemLogLevel: 'info',
   erpLogo: '',
   erpName: 'SELEDA',
+  erpFavicon: '',
   updatedAt: null,
 };
 
@@ -2345,6 +2367,7 @@ const SettingsTab: React.FC = () => {
           systemLogLevel: settings.systemLogLevel,
           erpLogo: settings.erpLogo,
           erpName: settings.erpName,
+          erpFavicon: settings.erpFavicon,
         }),
       });
       const data = await response.json().catch(() => ({}));
@@ -2640,6 +2663,13 @@ const SettingsTab: React.FC = () => {
                 hint="Displayed in ERP, POS, and KDS headers and login screens"
                 value={settings.erpLogo}
                 onChange={(erpLogo) => updateField('erpLogo', erpLogo)}
+              />
+
+              <LogoUploadField
+                label="Website Icon (Favicon)"
+                hint="Browser tab icon for ERP, POS, KDS, Admin, and login pages (falls back to ERP Logo if empty)"
+                value={settings.erpFavicon}
+                onChange={(erpFavicon) => updateField('erpFavicon', erpFavicon)}
               />
             </div>
           </div>

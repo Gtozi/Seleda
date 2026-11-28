@@ -93,17 +93,14 @@ const PublicPortal: React.FC = () => {
     document.title = activeModule === 'home' ? hotelName : `${MODULE_LABELS.find(n => n.id === activeModule)?.label || ''} · ${hotelName}`;
   }, [activeModule, hotelName]);
 
-  // Update public page webicon (favicon) to the subdomain logo when configured.
+  // Update public page webicon (favicon) to the admin-configured website icon (or subdomain logo).
   useEffect(() => {
-    if (!settings.hotelLogo) return;
+    const iconHref = settings.publicFavicon || settings.hotelLogo;
+    if (!iconHref) return;
     const link = document.querySelector("link[rel='icon']") as HTMLLinkElement | null;
     if (!link) return;
-    const prevHref = link.getAttribute('href') || '';
-    link.setAttribute('href', settings.hotelLogo);
-    return () => {
-      if (prevHref) link.setAttribute('href', prevHref);
-    };
-  }, [settings.hotelLogo]);
+    link.setAttribute('href', iconHref);
+  }, [settings.publicFavicon, settings.hotelLogo]);
 
   // Portal disabled in Admin → Portal Management, or the requested module is
   // hidden — bounce to the first visible module (mirrors DepartmentRoute).

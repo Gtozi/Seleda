@@ -850,6 +850,8 @@ export interface GlobalHotelSettings {
   hotelLogo?: string;
   erpLogo?: string;
   erpName?: string;
+  erpFavicon?: string;
+  publicFavicon?: string;
   bookingHeroTitle?: string;
   bookingHeroDescription?: string;
   bookingStep1Label?: string;

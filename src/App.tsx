@@ -1277,17 +1277,25 @@ export default function App() {
   const publicSettings = usePublicSettings();
   const erpBrandName = publicSettings.erpName || 'SELEDA';
 
-  // Browser tab title: the public website (/public-portal, /booking) and the
-  // guest portal (/guest) brand themselves with the subdomain-resolved tenant
-  // name; every other surface uses the SuperAdmin-configured ERP name.
+  // Browser tab title & website icon (favicon): the public website (/public-portal,
+  // /booking) and the guest portal (/guest) use the subdomain-configured icon and
+  // tenant name; every other surface (ERP, POS, KDS, Admin) uses SuperAdmin's.
   useEffect(() => {
     const p = location.pathname;
     const tenantManaged = p === '/public-portal' || p.startsWith('/public-portal/')
       || p === '/booking' || p.startsWith('/booking/')
       || p === '/guest' || p.startsWith('/guest/');
-    if (tenantManaged) return;
+    const link = document.querySelector("link[rel='icon']") as HTMLLinkElement | null;
+    if (tenantManaged) {
+      const tenantIcon = publicSettings.publicFavicon || publicSettings.hotelLogo;
+      if (link && tenantIcon) link.setAttribute('href', tenantIcon);
+      return;
+    }
     document.title = p.startsWith('/erp') ? `${erpBrandName} ERP` : erpBrandName;
-  }, [location.pathname, erpBrandName]);
+    if (link) {
+      link.setAttribute('href', publicSettings.erpFavicon || publicSettings.erpLogo || 'data:,');
+    }
+  }, [location.pathname, erpBrandName, publicSettings.erpFavicon, publicSettings.erpLogo, publicSettings.publicFavicon, publicSettings.hotelLogo]);
 
   // The apex/www host serves no application UI at all — tenant portals live
   // on <code>.seledabet.com subdomains and platform admin on admin.*.

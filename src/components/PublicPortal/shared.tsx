@@ -10,6 +10,8 @@ export interface PublicSettings {
   hotelLogo?: string;
   erpLogo?: string;
   erpName?: string;
+  erpFavicon?: string;
+  publicFavicon?: string;
   contactPhone?: string;
   contactEmail?: string;
   checkInTime?: string;
