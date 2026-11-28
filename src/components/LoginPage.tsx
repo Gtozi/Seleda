@@ -18,6 +18,7 @@ import {
 import { User } from '../types/erp';
 import { login, forgotPassword } from '../lib/auth';
 import { loginSchema } from '../schemas/validationSchemas';
+import { usePublicSettings } from './PublicPortal/shared';
 import { z } from 'zod';
 
 
@@ -26,6 +27,11 @@ interface LoginPageProps {
 }
 
 export default function LoginPage({ onLoginSuccess }: LoginPageProps) {
+  const publicSettings = usePublicSettings();
+  const brandLogo = publicSettings.tenant
+    ? (publicSettings.hotelLogo || publicSettings.erpLogo)
+    : (publicSettings.erpLogo || publicSettings.hotelLogo);
+  const brandTitle = publicSettings.tenant?.name || 'SELEDA';
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -89,9 +95,19 @@ export default function LoginPage({ onLoginSuccess }: LoginPageProps) {
         {/* Header */}
         <div className="p-8 border-b border-slate-200 dark:border-slate-800">
           <div className="flex items-center gap-3 mb-6">
-            <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-indigo-500 to-indigo-600 flex items-center justify-center text-white font-serif font-bold text-xl shadow-lg shadow-indigo-500/20">S</div>
+            {brandLogo ? (
+              <img
+                src={brandLogo}
+                alt={brandTitle}
+                className="w-12 h-12 rounded-xl object-contain bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-1 shadow-sm"
+              />
+            ) : (
+              <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-indigo-500 to-indigo-600 flex items-center justify-center text-white font-serif font-bold text-xl shadow-lg shadow-indigo-500/20">
+                {brandTitle.charAt(0).toUpperCase()}
+              </div>
+            )}
             <div>
-              <span className="font-serif font-bold text-sm text-slate-900 dark:text-white block uppercase tracking-wide">SELEDA</span>
+              <span className="font-serif font-bold text-sm text-slate-900 dark:text-white block uppercase tracking-wide">{brandTitle}</span>
               <span className="text-xs text-slate-500 dark:text-slate-400 font-sans">Enterprise Portal</span>
             </div>
           </div>

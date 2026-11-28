@@ -1008,7 +1008,15 @@ function MasterHotelERP({ onErpAuthChange }: { onErpAuthChange?: (authenticated:
             className={`bg-white/95 dark:bg-slate-900/95 backdrop-blur-xl border-b border-slate-200 dark:border-slate-800 py-3 px-6 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 fixed top-0 left-0 right-0 z-50 transition-transform duration-300 ${headerVisible ? 'translate-y-0' : '-translate-y-full'}`}
           >
           <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-indigo-500 to-indigo-600 flex items-center justify-center text-white font-extrabold font-sans shadow-lg shadow-indigo-500/20 hover:shadow-xl hover:shadow-indigo-500/30 transition-all duration-300">S</div>
+            {(globalHotelSettings.erpLogo || globalHotelSettings.hotelLogo) ? (
+              <img
+                src={globalHotelSettings.erpLogo || globalHotelSettings.hotelLogo}
+                alt="ERP Logo"
+                className="w-9 h-9 rounded-xl object-contain bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-0.5 shadow-sm"
+              />
+            ) : (
+              <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-indigo-500 to-indigo-600 flex items-center justify-center text-white font-extrabold font-sans shadow-lg shadow-indigo-500/20 hover:shadow-xl hover:shadow-indigo-500/30 transition-all duration-300">S</div>
+            )}
             <div>
               <span className="font-sans font-extrabold text-sm tracking-tight text-slate-900 dark:text-white block">SELEDA</span>
               <span className="text-[10px] font-mono text-indigo-600 uppercase tracking-widest leading-none block font-semibold">Enterprise Resource Planning</span>

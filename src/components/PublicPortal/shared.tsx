@@ -8,6 +8,7 @@ export interface PublicSettings {
   publicTagline?: string;
   heroImageUrl?: string;
   hotelLogo?: string;
+  erpLogo?: string;
   contactPhone?: string;
   contactEmail?: string;
   checkInTime?: string;
@@ -25,7 +26,7 @@ export interface PublicSettings {
   cancellationGraceHours?: number;
   cancellationPenaltyPercent?: number;
   /** Resolved from the request subdomain by the server — the tenant this site belongs to. */
-  tenant?: { id: string; name: string; code: string } | null;
+  tenant?: { id: string; name: string; code: string; logoUrl?: string | null } | null;
 }
 
 let settingsPromise: Promise<PublicSettings> | null = null;

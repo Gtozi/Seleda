@@ -8,7 +8,7 @@
 
 import React, { useState } from 'react';
 import {
-  Globe, Clock, Mail, Save, CheckCircle2, Settings, FileText, PenLine, X, ShieldAlert, AlertTriangle
+  Globe, Clock, Mail, Save, CheckCircle2, Settings, FileText, PenLine, X, ShieldAlert, AlertTriangle, Building2, Upload
 } from 'lucide-react';
 import { useERP } from '../../context/ERPContext';
 import type { GlobalHotelSettings } from '../../types/erp';
@@ -240,6 +240,7 @@ function SystemModule() {
       globalHotelSettings.maintenanceMessage ??
       'The system is undergoing scheduled maintenance. Some features may be temporarily unavailable.',
     sessionTimeout: globalHotelSettings.sessionTimeout ?? 30,
+    hotelLogo: globalHotelSettings.hotelLogo ?? '',
   });
   const [saveStatus, setSaveStatus] = useState<'idle' | 'success'>('idle');
 
@@ -250,8 +251,9 @@ function SystemModule() {
         globalHotelSettings.maintenanceMessage ??
         'The system is undergoing scheduled maintenance. Some features may be temporarily unavailable.',
       sessionTimeout: globalHotelSettings.sessionTimeout ?? 30,
+      hotelLogo: globalHotelSettings.hotelLogo ?? '',
     });
-  }, [globalHotelSettings.maintenanceMode, globalHotelSettings.maintenanceMessage, globalHotelSettings.sessionTimeout]);
+  }, [globalHotelSettings.maintenanceMode, globalHotelSettings.maintenanceMessage, globalHotelSettings.sessionTimeout, globalHotelSettings.hotelLogo]);
 
   const handleSave = () => {
     submitGlobalSettingsChange(
@@ -262,6 +264,7 @@ function SystemModule() {
         maintenanceMode: form.maintenanceMode,
         maintenanceMessage: form.maintenanceMessage,
         sessionTimeout: Number(form.sessionTimeout) || 30,
+        hotelLogo: form.hotelLogo,
       }
     );
     setSaveStatus('success');
@@ -275,6 +278,66 @@ function SystemModule() {
           <AlertTriangle size={16} /> Maintenance mode is currently <strong>active</strong>. A banner is shown to all users.
         </div>
       )}
+
+      <SectionCard
+        title="Subdomain Logo"
+        subtitle="Displayed on your subdomain public portal, guest portal, and login screen"
+        icon={Building2}
+        tone="accent"
+        actions={
+          <button onClick={handleSave} className={button.primary}>
+            {saveStatus === 'success' ? <CheckCircle2 size={16} /> : <Save size={16} />}
+            {saveStatus === 'success' ? 'Saved' : 'Save Logo'}
+          </button>
+        }
+      >
+        <div className="flex items-center gap-4">
+          <div className="w-14 h-14 rounded-xl border border-gray-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 flex items-center justify-center overflow-hidden shrink-0">
+            {form.hotelLogo ? (
+              <img src={form.hotelLogo} alt="Subdomain logo" className="w-full h-full object-contain p-1" />
+            ) : (
+              <Building2 size={22} className="text-slate-400" />
+            )}
+          </div>
+          <div className="flex-1 space-y-2 min-w-0">
+            <div className="flex items-center gap-2">
+              <label className="px-3 py-1.5 bg-indigo-50 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400 rounded-lg text-xs font-medium cursor-pointer hover:bg-indigo-100 dark:hover:bg-indigo-900/50 transition-colors inline-flex items-center gap-1.5">
+                <Upload size={13} /> Upload Image
+                <input
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (!file) return;
+                    const reader = new FileReader();
+                    reader.onloadend = () => {
+                      if (typeof reader.result === 'string') setForm(f => ({ ...f, hotelLogo: reader.result as string }));
+                    };
+                    reader.readAsDataURL(file);
+                  }}
+                />
+              </label>
+              {form.hotelLogo && (
+                <button
+                  type="button"
+                  onClick={() => setForm(f => ({ ...f, hotelLogo: '' }))}
+                  className="px-2.5 py-1.5 text-xs text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/30 rounded-lg transition-colors cursor-pointer"
+                >
+                  Remove
+                </button>
+              )}
+            </div>
+            <input
+              type="url"
+              value={form.hotelLogo.startsWith('data:') ? '' : form.hotelLogo}
+              onChange={(e) => setForm(f => ({ ...f, hotelLogo: e.target.value }))}
+              placeholder={form.hotelLogo.startsWith('data:') ? 'Uploaded image (paste URL to replace)' : 'https://... or upload an image'}
+              className={inputCls}
+            />
+          </div>
+        </div>
+      </SectionCard>
 
       <SectionCard
         title="Maintenance Mode"

@@ -169,7 +169,8 @@ router.get('/settings', async (req, res) => {
       heroImageUrl: data.hero_image_url && !data.hero_image_url.startsWith('/src')
         ? data.hero_image_url
         : 'https://images.unsplash.com/photo-1540555700478-4be289fbecef?auto=format&fit=crop&q=80&w=1920',
-      hotelLogo: data.hotel_logo || '',
+      hotelLogo: req.tenant?.settings?.erpSettings?.hotel_logo || req.tenant?.settings?.logoUrl || data.hotel_logo || '',
+      erpLogo: data.erp_logo || data.hotel_logo || '',
       contactPhone: data.contact_phone || '',
       contactEmail: data.contact_email || '',
       taxPercent: vatFee ? vatFee.value : (data.tax_percent || 0),
@@ -178,7 +179,7 @@ router.get('/settings', async (req, res) => {
       publicBookingEnabled: flags.publicBookingEnabled,
       guestPortalEnabled: flags.guestPortalEnabled,
       moduleToggles,
-      tenant: req.tenant ? { id: req.tenant.id, name: req.tenant.name, code: req.tenant.code } : null,
+      tenant: req.tenant ? { id: req.tenant.id, name: req.tenant.name, code: req.tenant.code, logoUrl: req.tenant.settings?.logoUrl || null } : null,
       maintenanceMode: data.maintenance_mode ?? false,
       maintenanceMessage: data.maintenance_message || '',
       bookingTerms: data.booking_terms || '',

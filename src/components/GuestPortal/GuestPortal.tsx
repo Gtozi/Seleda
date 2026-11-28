@@ -533,6 +533,13 @@ const GuestPortal: React.FC<GuestPortalProps> = ({
             >
               {mobileMenuOpen ? <X size={24} /> : <Menu size={24} />}
             </button>
+            {publicSettings.hotelLogo && (
+              <img
+                src={publicSettings.hotelLogo}
+                alt={portalName}
+                className="w-8 h-8 rounded-lg object-contain bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 p-0.5 shrink-0"
+              />
+            )}
             <div className="min-w-0">
               <h1 className="text-base font-bold text-slate-900 dark:text-white truncate">Guest Portal</h1>
               {activeNavItem && (
@@ -560,9 +567,18 @@ const GuestPortal: React.FC<GuestPortalProps> = ({
           mobileMenuOpen ? 'translate-x-0' : '-translate-x-full'
         }`}>
           <div className="p-4 sm:p-6 border-b border-slate-200 dark:border-slate-700 flex items-start justify-between gap-2 pt-[calc(1rem+env(safe-area-inset-top))] lg:pt-6">
-            <div>
-              <h1 className="text-xl font-bold text-slate-900 dark:text-white">Guest Portal</h1>
-              <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">SELEDA Grand Hotel</p>
+            <div className="flex items-center gap-3 min-w-0">
+              {publicSettings.hotelLogo && (
+                <img
+                  src={publicSettings.hotelLogo}
+                  alt={portalName}
+                  className="w-9 h-9 rounded-lg object-contain bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 p-0.5 shrink-0"
+                />
+              )}
+              <div className="min-w-0">
+                <h1 className="text-xl font-bold text-slate-900 dark:text-white">Guest Portal</h1>
+                <p className="text-sm text-slate-500 dark:text-slate-400 mt-0.5 truncate">{portalName}</p>
+              </div>
             </div>
             <button
               onClick={() => setMobileMenuOpen(false)}

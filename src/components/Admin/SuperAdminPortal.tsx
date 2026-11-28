@@ -53,7 +53,71 @@ interface Tenant {
   legal_name?: string;
   email?: string;
   phone?: string;
+  settings?: {
+    logoUrl?: string;
+    [key: string]: any;
+  };
 }
+
+/** Shared logo uploader/URL input with live preview for SuperAdmin forms. */
+const LogoUploadField: React.FC<{
+  label: string;
+  hint?: string;
+  value: string;
+  onChange: (next: string) => void;
+}> = ({ label, hint, value, onChange }) => {
+  const handleFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      if (typeof reader.result === 'string') onChange(reader.result);
+    };
+    reader.readAsDataURL(file);
+  };
+
+  return (
+    <div className="space-y-2">
+      <label className="block text-sm font-medium text-slate-700 dark:text-slate-300">
+        {label}
+      </label>
+      <div className="flex items-center gap-3">
+        <div className="w-12 h-12 rounded-xl border border-slate-200 dark:border-slate-600 bg-slate-50 dark:bg-slate-900 flex items-center justify-center overflow-hidden shrink-0">
+          {value ? (
+            <img src={value} alt="Logo preview" className="w-full h-full object-contain p-1" />
+          ) : (
+            <Building2 size={20} className="text-slate-400" />
+          )}
+        </div>
+        <div className="flex-1 space-y-1.5 min-w-0">
+          <div className="flex items-center gap-2">
+            <label className="px-3 py-1.5 bg-indigo-50 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400 rounded-lg text-xs font-medium cursor-pointer hover:bg-indigo-100 dark:hover:bg-indigo-900/50 transition-colors inline-flex items-center gap-1.5">
+              <Upload size={13} /> Upload Image
+              <input type="file" accept="image/*" onChange={handleFile} className="hidden" />
+            </label>
+            {value && (
+              <button
+                type="button"
+                onClick={() => onChange('')}
+                className="px-2.5 py-1.5 text-xs text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/30 rounded-lg transition-colors"
+              >
+                Remove
+              </button>
+            )}
+          </div>
+          <input
+            type="text"
+            value={value.startsWith('data:') ? '' : value}
+            onChange={(e) => onChange(e.target.value)}
+            placeholder={value.startsWith('data:') ? 'Uploaded image (paste URL to replace)' : 'https://... or upload an image'}
+            className="w-full px-3 py-1.5 text-xs border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-700 text-slate-900 dark:text-white"
+          />
+        </div>
+      </div>
+      {hint && <p className="text-xs text-slate-500 dark:text-slate-400">{hint}</p>}
+    </div>
+  );
+};
 
 interface TenantUser {
   id: string;
@@ -457,9 +521,17 @@ const TenantsTab: React.FC<{ tenants: Tenant[]; loading: boolean; onRefresh: () 
                 <tr key={tenant.id} className="hover:bg-slate-50 dark:hover:bg-slate-700/50">
                   <td className="px-6 py-4">
                     <div className="flex items-center gap-3">
-                      <div className="w-10 h-10 rounded-lg bg-indigo-100 dark:bg-indigo-900/30 flex items-center justify-center shrink-0">
-                        <Building2 className="text-indigo-600" size={20} />
-                      </div>
+                      {tenant.settings?.logoUrl ? (
+                        <img
+                          src={tenant.settings.logoUrl}
+                          alt={tenant.name}
+                          className="w-10 h-10 rounded-lg object-contain bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 p-0.5 shrink-0"
+                        />
+                      ) : (
+                        <div className="w-10 h-10 rounded-lg bg-indigo-100 dark:bg-indigo-900/30 flex items-center justify-center shrink-0">
+                          <Building2 className="text-indigo-600" size={20} />
+                        </div>
+                      )}
                       <div>
                         <p className="font-medium text-slate-900 dark:text-white">{tenant.name}</p>
                         {tenant.legal_name && (
@@ -2187,6 +2259,7 @@ interface PlatformSettingsState {
   strictPasswordRotation: boolean;
   backupFrequency: 'daily' | 'weekly' | 'manual';
   systemLogLevel: 'info' | 'detailed' | 'debug';
+  erpLogo: string;
   updatedAt?: string | null;
 }
 
@@ -2202,6 +2275,7 @@ const DEFAULT_PLATFORM_SETTINGS: PlatformSettingsState = {
   strictPasswordRotation: false,
   backupFrequency: 'daily',
   systemLogLevel: 'info',
+  erpLogo: '',
   updatedAt: null,
 };
 
@@ -2267,6 +2341,7 @@ const SettingsTab: React.FC = () => {
           strictPasswordRotation: settings.strictPasswordRotation,
           backupFrequency: settings.backupFrequency,
           systemLogLevel: settings.systemLogLevel,
+          erpLogo: settings.erpLogo,
         }),
       });
       const data = await response.json().catch(() => ({}));
@@ -2533,6 +2608,20 @@ const SettingsTab: React.FC = () => {
                   Last updated: {new Date(settings.updatedAt).toLocaleString()}
                 </p>
               )}
+            </div>
+
+            <div className="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 p-6 space-y-4">
+              <div className="flex items-center gap-2 border-b border-slate-200 dark:border-slate-700 pb-3">
+                <Building2 size={18} className="text-indigo-500" />
+                <h3 className="font-semibold text-slate-900 dark:text-white">ERP Branding &amp; Logo</h3>
+              </div>
+
+              <LogoUploadField
+                label="ERP Platform Logo"
+                hint="Displayed in the ERP header and login screen across the platform"
+                value={settings.erpLogo}
+                onChange={(erpLogo) => updateField('erpLogo', erpLogo)}
+              />
             </div>
           </div>
         </div>

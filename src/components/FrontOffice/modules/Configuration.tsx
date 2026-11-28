@@ -459,6 +459,57 @@ const Configuration = () => {
                 />
               </div>
             </div>
+            <div className="md:col-span-2 pt-4 border-t border-slate-100">
+              <label className="block text-sm font-medium text-slate-700 mb-2">Subdomain Logo</label>
+              <div className="flex items-center gap-4">
+                <div className="w-14 h-14 rounded-xl border border-slate-200 bg-slate-50 flex items-center justify-center overflow-hidden shrink-0">
+                  {globalHotelSettings.hotelLogo ? (
+                    <img src={globalHotelSettings.hotelLogo} alt="Subdomain logo" className="w-full h-full object-contain p-1" />
+                  ) : (
+                    <Building2 size={22} className="text-slate-400" />
+                  )}
+                </div>
+                <div className="flex-1 space-y-2">
+                  <div className="flex items-center gap-2">
+                    <label className="px-3 py-1.5 bg-indigo-50 text-indigo-600 rounded-lg text-xs font-medium cursor-pointer hover:bg-indigo-100 transition-colors">
+                      Upload Logo
+                      <input
+                        type="file"
+                        accept="image/*"
+                        className="hidden"
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          if (!file) return;
+                          const reader = new FileReader();
+                          reader.onloadend = () => {
+                            if (typeof reader.result === 'string') {
+                              submitGlobalSettingsChange('Subdomain Logo', 'Update subdomain logo', 'global-setting', { hotelLogo: reader.result });
+                            }
+                          };
+                          reader.readAsDataURL(file);
+                        }}
+                      />
+                    </label>
+                    {globalHotelSettings.hotelLogo && (
+                      <button
+                        type="button"
+                        onClick={() => submitGlobalSettingsChange('Subdomain Logo', 'Remove subdomain logo', 'global-setting', { hotelLogo: '' })}
+                        className="px-2.5 py-1.5 text-xs text-rose-600 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer"
+                      >
+                        Remove
+                      </button>
+                    )}
+                  </div>
+                  <input
+                    type="url"
+                    value={globalHotelSettings.hotelLogo?.startsWith('data:') ? '' : (globalHotelSettings.hotelLogo || '')}
+                    onChange={(e) => submitGlobalSettingsChange('Subdomain Logo', 'Update subdomain logo URL', 'global-setting', { hotelLogo: e.target.value })}
+                    placeholder={globalHotelSettings.hotelLogo?.startsWith('data:') ? 'Uploaded image (paste URL to replace)' : 'https://... or upload an image'}
+                    className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
+                  />
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       )}

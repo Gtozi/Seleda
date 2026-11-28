@@ -762,6 +762,7 @@ const mapPlatformSettingsRow = (row: Record<string, any> | null | undefined) => 
   strictPasswordRotation: Boolean(row?.strict_password_rotation),
   backupFrequency: (['daily', 'weekly', 'manual'].includes(row?.backup_frequency) ? row?.backup_frequency : 'daily') as 'daily' | 'weekly' | 'manual',
   systemLogLevel: (['info', 'detailed', 'debug'].includes(row?.system_log_level) ? row?.system_log_level : 'info') as 'info' | 'detailed' | 'debug',
+  erpLogo: row?.erp_logo || row?.hotel_logo || '',
   updatedAt: row?.updated_at || null,
 });
 
@@ -1269,8 +1270,16 @@ router.patch('/platform-settings', authenticate, requireSuperAdmin, async (req, 
     rawUpdates.system_log_level = body.systemLogLevel;
   }
 
+  if (body.erpLogo !== undefined) {
+    rawUpdates.erp_logo = typeof body.erpLogo === 'string' ? body.erpLogo.trim() : '';
+  }
+
   try {
     const filteredUpdates = await filterKnownColumns(rawUpdates);
+    if (body.erpLogo !== undefined && filteredUpdates.erp_logo === undefined) {
+      const fallback = await filterKnownColumns({ hotel_logo: rawUpdates.erp_logo });
+      if (fallback.hotel_logo !== undefined) filteredUpdates.hotel_logo = fallback.hotel_logo;
+    }
     if (Object.keys(filteredUpdates).length === 0) {
       return res.status(400).json({ error: 'No valid platform settings provided' });
     }
