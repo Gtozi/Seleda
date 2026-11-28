@@ -87,6 +87,7 @@ router.get('/', authenticate, async (req, res) => {
     // Shallow-clone & merge tenant overrides within SuperAdmin boundaries
     const data = mergeTenantErpSettings(rawData, tenantSettings);
     data.erp_logo = rawData.erp_logo || rawData.hotel_logo || '';
+    data.erp_name = rawData.erp_name || 'SELEDA';
 
     // Mask API keys on read — use encrypted_api_integrations if available, fall back to api_integrations
     const encryptedIntegrations = data.encrypted_api_integrations || data.api_integrations;

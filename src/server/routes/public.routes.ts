@@ -171,6 +171,7 @@ router.get('/settings', async (req, res) => {
         : 'https://images.unsplash.com/photo-1540555700478-4be289fbecef?auto=format&fit=crop&q=80&w=1920',
       hotelLogo: req.tenant?.settings?.erpSettings?.hotel_logo || req.tenant?.settings?.logoUrl || data.hotel_logo || '',
       erpLogo: data.erp_logo || data.hotel_logo || '',
+      erpName: data.erp_name || 'SELEDA',
       contactPhone: data.contact_phone || '',
       contactEmail: data.contact_email || '',
       taxPercent: vatFee ? vatFee.value : (data.tax_percent || 0),

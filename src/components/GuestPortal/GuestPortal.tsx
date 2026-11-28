@@ -131,7 +131,11 @@ interface GuestIdentity {
 // Sign-in screen shown when the visitor has no guest session and no
 // guestId+reservationId bearer link. Username = guest name as on the
 // booking; first-login password = the guest's own id.
-const GuestLoginScreen: React.FC<{ onSuccess: (g: GuestIdentity) => void }> = ({ onSuccess }) => {
+const GuestLoginScreen: React.FC<{
+  onSuccess: (g: GuestIdentity) => void;
+  hotelLogo?: string;
+  hotelName?: string;
+}> = ({ onSuccess, hotelLogo, hotelName }) => {
   const [name, setName] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -162,10 +166,25 @@ const GuestLoginScreen: React.FC<{ onSuccess: (g: GuestIdentity) => void }> = ({
   return (
     <div className="min-h-screen bg-slate-100 dark:bg-slate-900 flex items-center justify-center p-4">
       <form onSubmit={submit} className="w-full max-w-sm bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 shadow-lg p-6 sm:p-8">
-        <div className="w-12 h-12 rounded-xl bg-indigo-100 dark:bg-indigo-900/30 flex items-center justify-center mb-4">
-          <Lock className="w-6 h-6 text-indigo-600 dark:text-indigo-400" />
+        <div className="flex items-center gap-3 mb-4">
+          {hotelLogo ? (
+            <img
+              src={hotelLogo}
+              alt={hotelName || 'Hotel'}
+              className="w-12 h-12 rounded-xl object-contain bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 p-1 shrink-0"
+            />
+          ) : (
+            <div className="w-12 h-12 rounded-xl bg-indigo-100 dark:bg-indigo-900/30 flex items-center justify-center shrink-0">
+              <Lock className="w-6 h-6 text-indigo-600 dark:text-indigo-400" />
+            </div>
+          )}
+          <div className="min-w-0">
+            <h1 className="text-xl font-bold text-slate-900 dark:text-white truncate">Guest Portal</h1>
+            {hotelName && (
+              <p className="text-xs text-slate-500 dark:text-slate-400 truncate">{hotelName}</p>
+            )}
+          </div>
         </div>
-        <h1 className="text-xl font-bold text-slate-900 dark:text-white mb-1">Guest Portal</h1>
         <p className="text-sm text-slate-500 dark:text-slate-400 mb-6">
           Sign in with your name as it appears on your booking.
         </p>
@@ -502,6 +521,8 @@ const GuestPortal: React.FC<GuestPortalProps> = ({
   if (authState === 'login') {
     return (
       <GuestLoginScreen
+        hotelLogo={publicSettings.hotelLogo}
+        hotelName={portalName}
         onSuccess={(g) => {
           setSessionGuest(g);
           sessionStorage.setItem('guest_portal_guest_id', g.guestId);

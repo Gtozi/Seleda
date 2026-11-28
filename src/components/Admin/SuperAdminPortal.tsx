@@ -2260,6 +2260,7 @@ interface PlatformSettingsState {
   backupFrequency: 'daily' | 'weekly' | 'manual';
   systemLogLevel: 'info' | 'detailed' | 'debug';
   erpLogo: string;
+  erpName: string;
   updatedAt?: string | null;
 }
 
@@ -2276,6 +2277,7 @@ const DEFAULT_PLATFORM_SETTINGS: PlatformSettingsState = {
   backupFrequency: 'daily',
   systemLogLevel: 'info',
   erpLogo: '',
+  erpName: 'SELEDA',
   updatedAt: null,
 };
 
@@ -2342,6 +2344,7 @@ const SettingsTab: React.FC = () => {
           backupFrequency: settings.backupFrequency,
           systemLogLevel: settings.systemLogLevel,
           erpLogo: settings.erpLogo,
+          erpName: settings.erpName,
         }),
       });
       const data = await response.json().catch(() => ({}));
@@ -2613,12 +2616,28 @@ const SettingsTab: React.FC = () => {
             <div className="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 p-6 space-y-4">
               <div className="flex items-center gap-2 border-b border-slate-200 dark:border-slate-700 pb-3">
                 <Building2 size={18} className="text-indigo-500" />
-                <h3 className="font-semibold text-slate-900 dark:text-white">ERP Branding &amp; Logo</h3>
+                <h3 className="font-semibold text-slate-900 dark:text-white">ERP, POS &amp; KDS Branding</h3>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
+                  Platform / ERP Name
+                </label>
+                <input
+                  type="text"
+                  value={settings.erpName}
+                  onChange={(e) => updateField('erpName', e.target.value)}
+                  placeholder="SELEDA"
+                  className={inputCls}
+                />
+                <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+                  Used across ERP, POS, and KDS headers and login screens
+                </p>
               </div>
 
               <LogoUploadField
-                label="ERP Platform Logo"
-                hint="Displayed in the ERP header and login screen across the platform"
+                label="Platform / ERP Logo"
+                hint="Displayed in ERP, POS, and KDS headers and login screens"
                 value={settings.erpLogo}
                 onChange={(erpLogo) => updateField('erpLogo', erpLogo)}
               />

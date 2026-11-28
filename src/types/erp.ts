@@ -849,6 +849,7 @@ export interface GlobalHotelSettings {
   guestPortalEnabled?: boolean;
   hotelLogo?: string;
   erpLogo?: string;
+  erpName?: string;
   bookingHeroTitle?: string;
   bookingHeroDescription?: string;
   bookingStep1Label?: string;

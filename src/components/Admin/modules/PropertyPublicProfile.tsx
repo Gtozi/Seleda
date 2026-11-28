@@ -6,11 +6,12 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Globe, Save, ExternalLink, Image as ImageIcon, Building2, Loader2, CheckCircle2, AlertTriangle, Phone, Mail, MapPin, Star, RefreshCw } from 'lucide-react';
+import { Globe, Save, ExternalLink, Image as ImageIcon, Building2, Loader2, CheckCircle2, AlertTriangle, Phone, Mail, MapPin, Star, RefreshCw, Upload } from 'lucide-react';
 import StatCard from '../../FrontOffice/StatCard';
 import { PageHeader, SectionCard, Badge } from '../../FrontOffice/ui';
 import { card, button } from '../../FrontOffice/brandTheme';
 import { adminAuthHeaders } from '../shared/ResourceManager';
+import { useERP } from '../../../context/ERPContext';
 
 interface PropertyRow {
   id: string;
@@ -63,6 +64,13 @@ const Field: React.FC<{ label: string; children: React.ReactNode }> = ({ label, 
 );
 
 const PropertyPublicProfile: React.FC<{ embedded?: boolean }> = ({ embedded }) => {
+  const { globalHotelSettings, submitGlobalSettingsChange } = useERP();
+  const [logoDraft, setLogoDraft] = useState(globalHotelSettings.hotelLogo || '');
+  const [logoSaved, setLogoSaved] = useState(false);
+  useEffect(() => {
+    setLogoDraft(globalHotelSettings.hotelLogo || '');
+  }, [globalHotelSettings.hotelLogo]);
+
   const [properties, setProperties] = useState<PropertyRow[]>([]);
   const [selectedId, setSelectedId] = useState<string>('');
   const [draft, setDraft] = useState<Draft | null>(null);
@@ -169,6 +177,75 @@ const PropertyPublicProfile: React.FC<{ embedded?: boolean }> = ({ embedded }) =
           </p>
         </div>
       )}
+
+      <SectionCard
+        title="Subdomain Logo"
+        subtitle="Displayed on the public website, public page webicon (favicon), and guest portal / guest login"
+        icon={ImageIcon}
+        tone="accent"
+        pad="md"
+        actions={
+          <button
+            type="button"
+            onClick={() => {
+              submitGlobalSettingsChange('Subdomain Logo', 'Update subdomain logo', 'global-setting', { hotelLogo: logoDraft.trim() });
+              setLogoSaved(true);
+              setTimeout(() => setLogoSaved(false), 2500);
+            }}
+            className={button.primary}
+          >
+            {logoSaved ? <CheckCircle2 size={14} /> : <Save size={14} />}
+            {logoSaved ? 'Saved' : 'Save Logo'}
+          </button>
+        }
+      >
+        <div className="flex items-center gap-4">
+          <div className="w-16 h-16 rounded-xl border border-gray-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 flex items-center justify-center overflow-hidden shrink-0">
+            {logoDraft ? (
+              <img src={logoDraft} alt="Subdomain logo" className="w-full h-full object-contain p-1" />
+            ) : (
+              <Building2 size={24} className="text-slate-400" />
+            )}
+          </div>
+          <div className="flex-1 space-y-2 min-w-0">
+            <div className="flex items-center gap-2">
+              <label className="px-3 py-1.5 bg-indigo-50 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400 rounded-lg text-xs font-medium cursor-pointer hover:bg-indigo-100 dark:hover:bg-indigo-900/50 transition-colors inline-flex items-center gap-1.5">
+                <Upload size={13} /> Upload Image
+                <input
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (!file) return;
+                    const reader = new FileReader();
+                    reader.onloadend = () => {
+                      if (typeof reader.result === 'string') setLogoDraft(reader.result);
+                    };
+                    reader.readAsDataURL(file);
+                  }}
+                />
+              </label>
+              {logoDraft && (
+                <button
+                  type="button"
+                  onClick={() => setLogoDraft('')}
+                  className="px-2.5 py-1.5 text-xs text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/30 rounded-lg transition-colors cursor-pointer"
+                >
+                  Remove
+                </button>
+              )}
+            </div>
+            <input
+              type="url"
+              value={logoDraft.startsWith('data:') ? '' : logoDraft}
+              onChange={(e) => setLogoDraft(e.target.value)}
+              placeholder={logoDraft.startsWith('data:') ? 'Uploaded image (paste URL to replace)' : 'https://... or upload an image'}
+              className={inputCls}
+            />
+          </div>
+        </div>
+      </SectionCard>
 
       {loading ? (
         <div className="flex items-center gap-2 text-sm text-gray-500"><Loader2 size={16} className="animate-spin" /> Loading properties…</div>

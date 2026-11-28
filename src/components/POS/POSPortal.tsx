@@ -22,6 +22,7 @@ import {
 import POSAnalytics from './POSAnalytics';
 import POSSettings from './POSSettings';
 import ModernPOSTerminal from './ModernPOSTerminal';
+import { usePublicSettings } from '../PublicPortal/shared';
 
 export interface POSOutlet {
   id: string;
@@ -41,6 +42,9 @@ interface POSPortalProps {
 }
 
 export default function POSPortal({ user, onLogout }: POSPortalProps) {
+  const publicSettings = usePublicSettings();
+  const erpLogo = publicSettings.erpLogo || '';
+  const erpName = publicSettings.erpName || 'SELEDA';
   const [activeTab, setActiveTab] = useState<'pos' | 'outlets' | 'analytics' | 'settings'>('pos');
   const [selectedOutlet, setSelectedOutlet] = useState<POSOutlet | null>(null);
   const [userOutlets, setUserOutlets] = useState<POSOutlet[]>([]);
@@ -127,11 +131,17 @@ export default function POSPortal({ user, onLogout }: POSPortalProps) {
       {/* Header */}
       <div className="flex items-center justify-between bg-slate-900 text-white p-6 rounded-2xl border border-slate-800 shadow-xl">
         <div className="flex items-center gap-4">
-          <div className="w-12 h-12 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-2xl flex items-center justify-center text-white shadow-lg shadow-indigo-500/20">
-            <ShoppingCart size={24} />
-          </div>
+          {erpLogo ? (
+            <div className="w-12 h-12 bg-white rounded-2xl flex items-center justify-center p-1 shadow-lg shadow-indigo-500/20 overflow-hidden">
+              <img src={erpLogo} alt={erpName} className="w-full h-full object-contain" />
+            </div>
+          ) : (
+            <div className="w-12 h-12 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-2xl flex items-center justify-center text-white shadow-lg shadow-indigo-500/20">
+              <ShoppingCart size={24} />
+            </div>
+          )}
           <div>
-            <h2 className="text-xl font-black uppercase tracking-tight">POS Portal</h2>
+            <h2 className="text-xl font-black uppercase tracking-tight">{erpName} POS</h2>
             <p className="text-[10px] font-mono text-slate-400 uppercase tracking-widest">
               Point of Sale System
             </p>

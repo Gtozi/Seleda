@@ -763,6 +763,7 @@ const mapPlatformSettingsRow = (row: Record<string, any> | null | undefined) => 
   backupFrequency: (['daily', 'weekly', 'manual'].includes(row?.backup_frequency) ? row?.backup_frequency : 'daily') as 'daily' | 'weekly' | 'manual',
   systemLogLevel: (['info', 'detailed', 'debug'].includes(row?.system_log_level) ? row?.system_log_level : 'info') as 'info' | 'detailed' | 'debug',
   erpLogo: row?.erp_logo || row?.hotel_logo || '',
+  erpName: row?.erp_name || 'SELEDA',
   updatedAt: row?.updated_at || null,
 });
 
@@ -1199,7 +1200,7 @@ router.get('/platform-settings', authenticate, requireSuperAdmin, async (_req, r
     const { data, error } = await supabaseAdmin
       .from('global_settings')
       .select('*')
-      .eq('id', 'main')
+      .limit(1)
       .maybeSingle();
 
     if (error) {
@@ -1274,6 +1275,10 @@ router.patch('/platform-settings', authenticate, requireSuperAdmin, async (req, 
     rawUpdates.erp_logo = typeof body.erpLogo === 'string' ? body.erpLogo.trim() : '';
   }
 
+  if (body.erpName !== undefined) {
+    rawUpdates.erp_name = typeof body.erpName === 'string' ? body.erpName.trim() : '';
+  }
+
   try {
     const filteredUpdates = await filterKnownColumns(rawUpdates);
     if (body.erpLogo !== undefined && filteredUpdates.erp_logo === undefined) {
@@ -1287,12 +1292,13 @@ router.patch('/platform-settings', authenticate, requireSuperAdmin, async (req, 
     const { data: existing } = await supabaseAdmin
       .from('global_settings')
       .select('id')
-      .eq('id', 'main')
+      .limit(1)
       .maybeSingle();
 
+    const targetId = existing?.id || 'main';
     const query = existing
-      ? supabaseAdmin.from('global_settings').update(filteredUpdates).eq('id', 'main').select('*').single()
-      : supabaseAdmin.from('global_settings').insert({ id: 'main', ...filteredUpdates }).select('*').single();
+      ? supabaseAdmin.from('global_settings').update(filteredUpdates).eq('id', targetId).select('*').single()
+      : supabaseAdmin.from('global_settings').insert({ id: targetId, ...filteredUpdates }).select('*').single();
 
     const { data: updated, error } = await query;
     if (error) {
@@ -1306,7 +1312,7 @@ router.patch('/platform-settings', authenticate, requireSuperAdmin, async (req, 
       user: req.user,
       action: 'platform.settings_update',
       entityType: 'global_settings',
-      entityId: 'main',
+      entityId: targetId,
       module: 'admin',
       details: { updatedFields: Object.keys(filteredUpdates) },
     });

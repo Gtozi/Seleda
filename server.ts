@@ -43,7 +43,7 @@ async function startServer() {
   await ensurePendingAdminChangesTable();
   await ensureAuditEventsTable();
 
-  app.use(express.json());
+  app.use(express.json({ limit: '10mb' }));
 
   // Global middleware to set session context for RLS policies
   app.use(async (req, res, next) => {

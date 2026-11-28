@@ -105,7 +105,9 @@ interface KitchenDisplayModuleProps {
 }
 
 export default function KitchenDisplayModule({ standalone = false, userName, onExit }: KitchenDisplayModuleProps = {}) {
-  const { addNotification } = useERP();
+  const { addNotification, globalHotelSettings } = useERP();
+  const erpLogo = globalHotelSettings.erpLogo || '';
+  const erpName = globalHotelSettings.erpName || 'SELEDA';
   const [connection, setConnection] = useState<{ ok: boolean; failures: number; authError: boolean; lastUpdated: number | null }>({ ok: true, failures: 0, authError: false, lastUpdated: null });
   const [soundOn, setSoundOn] = useState(() => localStorage.getItem('kds_sound') !== 'off');
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -454,8 +456,12 @@ export default function KitchenDisplayModule({ standalone = false, userName, onE
       {standalone && (
         <div className="flex items-center justify-between gap-3 bg-slate-900 border border-slate-800 rounded-2xl px-4 py-3 text-white">
           <div className="flex items-center gap-3">
-            <ChefHat size={20} className="text-amber-500" />
-            <span className="font-black text-sm tracking-tight">SELEDA Kitchen Display</span>
+            {erpLogo ? (
+              <img src={erpLogo} alt={erpName} className="w-7 h-7 rounded-lg object-contain bg-white p-0.5" />
+            ) : (
+              <ChefHat size={20} className="text-amber-500" />
+            )}
+            <span className="font-black text-sm tracking-tight">{erpName} Kitchen Display</span>
             {userName && <span className="text-xs text-slate-400 hidden sm:inline">· {userName}</span>}
           </div>
           <div className="flex items-center gap-2">

@@ -9,6 +9,7 @@ export interface PublicSettings {
   heroImageUrl?: string;
   hotelLogo?: string;
   erpLogo?: string;
+  erpName?: string;
   contactPhone?: string;
   contactEmail?: string;
   checkInTime?: string;

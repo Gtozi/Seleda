@@ -28,10 +28,8 @@ interface LoginPageProps {
 
 export default function LoginPage({ onLoginSuccess }: LoginPageProps) {
   const publicSettings = usePublicSettings();
-  const brandLogo = publicSettings.tenant
-    ? (publicSettings.hotelLogo || publicSettings.erpLogo)
-    : (publicSettings.erpLogo || publicSettings.hotelLogo);
-  const brandTitle = publicSettings.tenant?.name || 'SELEDA';
+  const brandLogo = publicSettings.erpLogo || '';
+  const brandTitle = publicSettings.erpName || 'SELEDA';
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);

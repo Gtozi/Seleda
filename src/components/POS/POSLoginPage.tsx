@@ -7,6 +7,7 @@ import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Store, Lock, User, ArrowRight } from 'lucide-react';
 import { login, logout } from '../../lib/auth';
+import { usePublicSettings } from '../PublicPortal/shared';
 
 interface POSLoginProps {
   onLoginSuccess: (user: any) => void;
@@ -33,6 +34,9 @@ export function buildPOSUser(user: any, outlets: any[]) {
 
 export default function POSLoginPage({ onLoginSuccess }: POSLoginProps) {
   const navigate = useNavigate();
+  const publicSettings = usePublicSettings();
+  const erpLogo = publicSettings.erpLogo || '';
+  const erpName = publicSettings.erpName || 'SELEDA';
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
@@ -74,10 +78,16 @@ export default function POSLoginPage({ onLoginSuccess }: POSLoginProps) {
       <div className="w-full max-w-md">
         {/* Logo and Header */}
         <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center w-20 h-20 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-3xl shadow-2xl shadow-indigo-500/30 mb-6">
-            <Store size={40} className="text-white" />
-          </div>
-          <h1 className="text-3xl font-black text-white mb-2">POS Terminal</h1>
+          {erpLogo ? (
+            <div className="inline-flex items-center justify-center w-20 h-20 bg-white/95 rounded-3xl shadow-2xl shadow-indigo-500/30 mb-6 p-2 overflow-hidden">
+              <img src={erpLogo} alt={erpName} className="w-full h-full object-contain" />
+            </div>
+          ) : (
+            <div className="inline-flex items-center justify-center w-20 h-20 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-3xl shadow-2xl shadow-indigo-500/30 mb-6">
+              <Store size={40} className="text-white" />
+            </div>
+          )}
+          <h1 className="text-3xl font-black text-white mb-2">{erpName} POS</h1>
           <p className="text-slate-400 text-sm">Point of Sale System</p>
         </div>
 
