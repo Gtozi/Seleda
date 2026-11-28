@@ -147,6 +147,7 @@ import {
   UserMinus,
   CalendarPlus,
   FileWarning,
+  Globe,
   type LucideIcon
 } from 'lucide-react';
 
